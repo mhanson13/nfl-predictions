@@ -1,0 +1,20 @@
+{
+  "best_value": 0.4907871451447092,
+  "best_params": {
+    "model_type": "hist",
+    "hgb_learning_rate": 0.04494170590217354,
+    "hgb_max_depth": 4,
+    "hgb_max_leaf_nodes": 56,
+    "hgb_min_samples_leaf": 52,
+    "hgb_l2_regularization": 0.000324711840722388,
+    "hgb_max_bins": 246
+  },
+  "user_attrs": {
+    "accuracy": 0.7633136094674556,
+    "auc": 0.8196095076400679,
+    "brier": 0.1689819598448571,
+    "logloss": 0.4907871451447092,
+    "model_choice": "hist",
+    "used_gpu": false
+  }
+}

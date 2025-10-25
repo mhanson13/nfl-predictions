@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import joblib
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
@@ -84,6 +86,202 @@ TEAM_NAME_TO_ABBR: Dict[str, str] = {
     "Tennessee": "TEN",
     "Washington": "WAS",
 }
+
+
+def _column_or_default(
+    df: pd.DataFrame,
+    column: str,
+    default_value: Any = pd.NA,
+    dtype: Optional[str] = None,
+) -> pd.Series:
+    """Return an existing column or a Series aligned to df.index filled with default_value."""
+    if column in df.columns:
+        return df[column]
+    if dtype is not None:
+        return pd.Series(default_value, index=df.index, dtype=dtype)
+    if default_value is pd.NA:
+        return pd.Series(pd.NA, index=df.index, dtype="object")
+    return pd.Series(default_value, index=df.index)
+
+
+def _round_or_none(value: Any, digits: int) -> Optional[float]:
+    """Round numeric-like scalars, returning None for missing values."""
+    if pd.isna(value):
+        return None
+    return round(float(value), digits)
+
+
+PREDICTIONS_ARCHIVE_DIR = Path("predictions")
+
+
+def _backup_existing_file(path: Path) -> None:
+    """Rename an existing file to the next available .backup_N suffix."""
+    if not path.exists():
+        return
+    counter = 1
+    while True:
+        backup_path = path.with_name(f"{path.name}.backup_{counter}")
+        if not backup_path.exists():
+            path.rename(backup_path)
+            return
+        counter += 1
+
+
+def _archive_prediction_file(source_path: Optional[str], week: Optional[Any]) -> Optional[Path]:
+    """Copy the freshly generated prediction file into the archive directory with a week prefix."""
+    if not source_path:
+        return None
+    src = Path(source_path)
+    if not src.exists():
+        return None
+    try:
+        week_int = int(week) if week is not None else None
+    except Exception:
+        week_int = None
+    prefix = f"w{week_int}" if week_int is not None else "wNA"
+    archive_dir = PREDICTIONS_ARCHIVE_DIR
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target_name = f"{prefix}_{src.name}"
+    target_path = archive_dir / target_name
+    _backup_existing_file(target_path)
+    shutil.copy2(src, target_path)
+    return target_path
+
+
+def _load_penalty_frame() -> pd.DataFrame:
+    path = RAW_DIR / "nfl_pbp.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    columns = [
+        "season",
+        "week",
+        "game_id",
+        "season_type",
+        "penalty",
+        "penalty_team",
+        "penalty_player_id",
+        "penalty_player_name",
+        "penalty_yards",
+    ]
+    df = pd.read_parquet(path, columns=columns)
+    df = df.copy()
+    df["season"] = pd.to_numeric(_column_or_default(df, "season"), errors="coerce")
+    df["week"] = pd.to_numeric(_column_or_default(df, "week"), errors="coerce")
+    df = df[pd.notna(df["season"]) & pd.notna(df["week"])]
+    if df.empty:
+        return df
+    df["season"] = df["season"].astype("int64")
+    df["week"] = df["week"].astype("int64")
+    season_type_series = _column_or_default(df, "season_type", default_value="REG", dtype="object")
+    df["season_type"] = season_type_series.fillna("").astype(str)
+    mask_reg = df["season_type"].str.upper().isin({"REG", "R", "2"})
+    if mask_reg.any():
+        df = df[mask_reg]
+    df.drop(columns=["season_type"], inplace=True, errors="ignore")
+    df["penalty"] = pd.to_numeric(_column_or_default(df, "penalty"), errors="coerce").fillna(0).astype("int64")
+    df = df[df["penalty"] > 0]
+    if df.empty:
+        return df
+    game_ids = _column_or_default(df, "game_id", default_value="", dtype="object")
+    df["game_id"] = game_ids.fillna("").astype(str)
+    penalty_team = _column_or_default(df, "penalty_team", default_value="", dtype="object")
+    df["penalty_team"] = penalty_team.fillna("").astype(str).str.upper()
+    player_ids = _column_or_default(df, "penalty_player_id", default_value="", dtype="object")
+    df["penalty_player_id"] = player_ids.fillna("").astype(str)
+    player_names = _column_or_default(df, "penalty_player_name", default_value="", dtype="object")
+    df["penalty_player_name"] = player_names.fillna("").astype(str)
+    df["penalty_yards"] = pd.to_numeric(_column_or_default(df, "penalty_yards"), errors="coerce").fillna(0.0)
+    df = df[df["penalty_team"] != ""]
+    return df
+
+
+def _select_penalty_window(penalties: pd.DataFrame, season: int, week: Optional[int]) -> pd.DataFrame:
+    if penalties is None or penalties.empty:
+        return pd.DataFrame()
+    current = pd.DataFrame()
+    if week is not None:
+        try:
+            week_int = int(week)
+        except Exception:
+            week_int = None
+        if week_int is not None:
+            current = penalties[(penalties["season"] == season) & (penalties["week"] < week_int)].copy()
+    else:
+        current = penalties[penalties["season"] == season].copy()
+    history = penalties[penalties["season"] < season].copy()
+    if history.empty and current.empty:
+        return pd.DataFrame()
+    subset = pd.concat([history, current], ignore_index=True)
+    return subset
+
+
+def _aggregate_player_penalties(penalties: pd.DataFrame) -> pd.DataFrame:
+    if penalties is None or penalties.empty:
+        return pd.DataFrame()
+    players = penalties[penalties["penalty_player_id"] != ""].copy()
+    if players.empty:
+        return pd.DataFrame()
+    players["player_id"] = players["penalty_player_id"].astype(str)
+    players["team"] = players["penalty_team"].astype(str).str.upper()
+    players["game_key"] = players["game_id"].astype(str)
+    agg = players.groupby(["player_id", "team"], as_index=False).agg(
+        penalty_count=("penalty", "sum"),
+        penalty_yards=("penalty_yards", "sum"),
+        penalty_games=("game_key", "nunique"),
+        penalty_player_name=("penalty_player_name", "last"),
+    )
+    if agg.empty:
+        return agg
+    games = agg["penalty_games"].replace({0: pd.NA})
+    agg["penalty_rate_per_game"] = (agg["penalty_count"] / games).astype(float)
+    return agg
+
+
+def _aggregate_team_penalties(penalties: pd.DataFrame) -> pd.DataFrame:
+    if penalties is None or penalties.empty:
+        return pd.DataFrame()
+    penalties = penalties.copy()
+    penalties["game_key"] = penalties["game_id"].astype(str)
+    agg = penalties.groupby("penalty_team", as_index=False).agg(
+        penalty_count=("penalty", "sum"),
+        penalty_yards=("penalty_yards", "sum"),
+        penalty_games=("game_key", "nunique"),
+    )
+    if agg.empty:
+        return agg
+    games = agg["penalty_games"].replace({0: pd.NA})
+    agg["penalties_per_game"] = (agg["penalty_count"] / games).astype(float)
+    agg["penalty_yards_per_game"] = (agg["penalty_yards"] / games).astype(float)
+    agg.rename(columns={"penalty_team": "team"}, inplace=True)
+    agg["team"] = agg["team"].astype(str).str.upper()
+    return agg
+
+
+def _attach_team_penalty_metrics(
+    preds: pd.DataFrame,
+    penalties: pd.DataFrame,
+    season: int,
+    week: Optional[int],
+    debug: bool = False,
+) -> Tuple[pd.DataFrame, List[str]]:
+    if penalties is None or penalties.empty or preds.empty:
+        return preds, []
+    subset = _select_penalty_window(penalties, season, week)
+    team_stats = _aggregate_team_penalties(subset)
+    if team_stats.empty:
+        if debug:
+            print("[predict][penalties] no team penalty history available for attachment")
+        return preds, []
+    team_stats.set_index("team", inplace=True)
+    cols_added: List[str] = []
+    for prefix, team_col in (("home", "home_team"), ("away", "away_team")):
+        rate_col = f"{prefix}_penalties_per_game"
+        yards_col = f"{prefix}_penalty_yards_per_game"
+        preds[rate_col] = preds[team_col].astype(str).str.upper().map(team_stats["penalties_per_game"])
+        preds[yards_col] = preds[team_col].astype(str).str.upper().map(team_stats["penalty_yards_per_game"])
+        cols_added.extend([rate_col, yards_col])
+    return preds, cols_added
+
 
 def _make_feature_diffs(df: pd.DataFrame) -> pd.DataFrame:
     """Create *_diff = *_home - *_away features to mirror training preprocessing."""
@@ -177,7 +375,8 @@ def _slugify_bookmaker(name: str) -> str:
 def _attach_odds_spreads(preds: pd.DataFrame, odds: Optional[list[dict]], debug: bool = False) -> List[str]:
     if odds is None or preds.empty:
         return []
-    cols_added: Set[str] = set()
+    cols_needed: Set[str] = set()
+    updates: List[Tuple[pd.Series, Dict[str, Any]]] = []
     for event in odds:
         try:
             home_abbr = _normalize_team_name(event.get("home_team"))
@@ -219,17 +418,22 @@ def _attach_odds_spreads(preds: pd.DataFrame, odds: Optional[list[dict]], debug:
                 }
                 if commence:
                     columns[f"odds_{slug}_last_update"] = book.get("last_update") or commence
-                for col in columns:
-                    if col not in preds.columns:
-                        preds[col] = pd.NA
-                    cols_added.add(col)
-                for col, value in columns.items():
-                    preds.loc[mask, col] = value
+                cols_needed.update(columns.keys())
+                updates.append((mask, columns))
         except Exception:
             if debug:
                 print("[predict][odds] failed to merge an odds event")
             continue
-    return sorted(cols_added)
+    if not updates:
+        return []
+    missing = [col for col in cols_needed if col not in preds.columns]
+    for col in missing:
+        # Avoid DataFrame reindex (which fails when existing columns contain duplicates)
+        preds.loc[:, col] = pd.NA
+    for mask, columns in updates:
+        for col, value in columns.items():
+            preds.loc[mask, col] = value
+    return sorted(cols_needed)
 
 
 
@@ -241,26 +445,24 @@ def _load_player_stats_frame() -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.read_parquet(path)
     df = df.copy()
-    df["season"] = pd.to_numeric(df.get("season"), errors="coerce")
-    df["week"] = pd.to_numeric(df.get("week"), errors="coerce")
+    df["season"] = pd.to_numeric(_column_or_default(df, "season"), errors="coerce")
+    df["week"] = pd.to_numeric(_column_or_default(df, "week"), errors="coerce")
     df = df[pd.notna(df["season"]) & pd.notna(df["week"])]
     df["season"] = df["season"].astype("int64")
     df["week"] = df["week"].astype("int64")
-    df["season_type"] = pd.to_numeric(df.get("season_type"), errors="coerce")
+    df["season_type"] = pd.to_numeric(_column_or_default(df, "season_type"), errors="coerce")
     df = df[df["season_type"].fillna(2) == 2]
-    if "recent_team" not in df.columns:
-        df["recent_team"] = pd.NA
-    df["recent_team"] = df["recent_team"].fillna("").astype(str).str.upper()
-    if "player_id" not in df.columns:
-        df["player_id"] = pd.NA
-    df["player_id"] = df["player_id"].fillna("").astype(str)
+    recent_team = _column_or_default(df, "recent_team", default_value="", dtype="object")
+    df["recent_team"] = recent_team.fillna("").astype(str).str.upper()
+    player_ids = _column_or_default(df, "player_id", default_value="", dtype="object")
+    df["player_id"] = player_ids.fillna("").astype(str)
     if "player_name" not in df.columns:
         if "player_display_name" in df.columns:
             df["player_name"] = df["player_display_name"].astype(str)
         else:
             df["player_name"] = ""
-    else:
-        df["player_name"] = df["player_name"].astype(str)
+    player_names = _column_or_default(df, "player_name", default_value="", dtype="object")
+    df["player_name"] = player_names.fillna("").astype(str)
     return df
 
 
@@ -270,20 +472,82 @@ def _load_roster_frame() -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.read_parquet(path)
     df = df.copy()
-    df["season"] = pd.to_numeric(df.get("season"), errors="coerce")
+    df["season"] = pd.to_numeric(_column_or_default(df, "season"), errors="coerce")
     df = df[pd.notna(df["season"])]
     df["season"] = df["season"].astype("int64")
-    if "team" not in df.columns:
-        df["team"] = pd.NA
-    df["team"] = df["team"].fillna("").astype(str).str.upper()
-    if "gsis_id" not in df.columns:
-        df["gsis_id"] = pd.NA
-    df["gsis_id"] = df["gsis_id"].fillna("").astype(str)
+    team_series = _column_or_default(df, "team", default_value="", dtype="object")
+    df["team"] = team_series.fillna("").astype(str).str.upper()
+    gsis_ids = _column_or_default(df, "gsis_id", default_value="", dtype="object")
+    df["gsis_id"] = gsis_ids.fillna("").astype(str)
     if "jersey_number" not in df.columns:
         df["jersey_number"] = pd.NA
     if "full_name" not in df.columns:
         df["full_name"] = pd.NA
-    return df[["season", "team", "gsis_id", "jersey_number", "full_name"]]
+    status_series = _column_or_default(df, "status", default_value="", dtype="object")
+    df["status"] = status_series.fillna("").astype(str).str.upper()
+    position_series = _column_or_default(df, "position", default_value="", dtype="object")
+    df["position"] = position_series.fillna("").astype(str).str.upper()
+    depth_chart_series = _column_or_default(df, "depth_chart_position", default_value="", dtype="object")
+    df["depth_chart_position"] = depth_chart_series.fillna("").astype(str).str.upper()
+    return df[
+        ["season", "team", "gsis_id", "jersey_number", "full_name", "status", "position", "depth_chart_position"]
+    ]
+
+def _active_player_ids(roster: pd.DataFrame, season: int, team: str, active_status: Optional[Set[str]]) -> Optional[Set[str]]:
+    if roster is None or roster.empty:
+        return None
+    df = roster[(roster["season"] == season) & (roster["team"] == team)].copy()
+    if df.empty:
+        return None
+    if active_status and "status" in df.columns:
+        df = df[df["status"].isin(active_status)]
+        if df.empty:
+            return None
+    ids = df["gsis_id"].dropna().astype(str)
+    if ids.empty:
+        return None
+    return set(ids)
+
+
+def _active_roster_records(
+    roster: pd.DataFrame,
+    season: int,
+    team: str,
+    active_status: Optional[Set[str]],
+    allowed_positions: Optional[Set[str]] = None,
+) -> pd.DataFrame:
+    if roster is None or roster.empty:
+        return pd.DataFrame()
+    df = roster[(roster["season"] == season) & (roster["team"] == team)].copy()
+    if df.empty:
+        return pd.DataFrame()
+    if active_status and "status" in df.columns:
+        df = df[df["status"].isin(active_status)]
+    if df.empty:
+        return pd.DataFrame()
+    position_series = _column_or_default(df, "position", default_value="", dtype="object")
+    df["position"] = position_series.fillna("").astype(str).str.upper()
+    if allowed_positions is not None:
+        df = df[df["position"].isin(allowed_positions)]
+        if df.empty:
+            return pd.DataFrame()
+    depth_series = _column_or_default(df, "depth_chart_position", default_value="", dtype="object")
+    df["depth_chart_position"] = depth_series.fillna("").astype(str).str.upper()
+    player_names = _column_or_default(df, "full_name", default_value="", dtype="object")
+    df["player_name"] = player_names.fillna("").astype(str)
+    if "jersey_number" not in df.columns:
+        df["jersey_number"] = pd.NA
+    jersey_series = _column_or_default(df, "jersey_number")
+    df["jersey_number"] = jersey_series
+    gsis = df.get("gsis_id")
+    if gsis is None:
+        return pd.DataFrame()
+    df = df.dropna(subset=["gsis_id"]).copy()
+    df["player_id"] = df["gsis_id"].astype(str)
+    df = df.drop_duplicates(subset=["player_id"], keep="last")
+    return df[["player_id", "player_name", "jersey_number", "position", "depth_chart_position", "status"]]
+
+
 
 
 def _attach_roster_info(
@@ -297,7 +561,8 @@ def _attach_roster_info(
     if "jersey_number" not in agg.columns:
         agg["jersey_number"] = pd.NA
     if roster is None or roster.empty:
-        agg[team_col] = agg.get(team_col, "").fillna("").astype(str).str.upper()
+        team_series = _column_or_default(agg, team_col, default_value="", dtype="object")
+        agg[team_col] = team_series.fillna("").astype(str).str.upper()
         return agg
 
     roster_all = roster
@@ -343,7 +608,8 @@ def _attach_roster_info(
     if missing_mask.any():
         _apply(roster_all, missing_mask, update_team=False)
 
-    agg[team_col] = agg.get(team_col, "").fillna("").astype(str).str.upper()
+    team_series = _column_or_default(agg, team_col, default_value="", dtype="object")
+    agg[team_col] = team_series.fillna("").astype(str).str.upper()
     return agg
 
 
@@ -380,7 +646,8 @@ def _player_qb_predictions(
             print("[predict][players] no player stats available for QB projections")
         return None
 
-    qb_stats = stats[stats.get("position_group").isin(["QB"])].copy()
+    position_group = _column_or_default(stats, "position_group", default_value="", dtype="object")
+    qb_stats = stats[position_group.fillna("").isin(["QB"])].copy()
     if qb_stats.empty:
         if debug:
             print("[predict][players] no QB stats available")
@@ -398,6 +665,9 @@ def _player_qb_predictions(
         if col not in qb_stats.columns:
             qb_stats[col] = 0.0
 
+    active_statuses: Optional[Set[str]] = {"ACT"} if (roster is not None and not roster.empty and "status" in roster.columns) else None
+    active_cache: Dict[Tuple[int, str], Optional[Set[str]]] = {}
+    
     results: List[Dict[str, Any]] = []
     grouped = pred_games.groupby(["season", "week"])
     for (season, week), games in grouped:
@@ -421,8 +691,23 @@ def _player_qb_predictions(
         )
         if agg.empty:
             continue
+        last_season = subset.groupby("player_id")["season"].max()
+        agg["last_season"] = pd.to_numeric(agg["player_id"].map(last_season), errors="coerce")
+        last_team = (
+            subset.sort_values(["season", "week"])
+            .groupby("player_id")
+            .tail(1)
+            .set_index("player_id")["recent_team"]
+        )
+        agg["last_team"] = agg["player_id"].map(last_team).astype(str).str.upper()
+        recent_threshold = int(season) - 1
+        agg = agg[agg["last_season"].notna() & (agg["last_season"] >= recent_threshold)]
+        agg = agg[agg["recent_team"] == agg["last_team"]]
+        if agg.empty:
+            continue
         agg["season"] = season
         agg = _attach_roster_info(agg, roster, int(season), team_col="recent_team")
+        agg.drop(columns=["last_season", "last_team"], inplace=True, errors="ignore")
         gp = agg["games_played"].replace({0: pd.NA})
         agg["projected_passing_yards"] = (agg["passing_yards"] / gp).astype(float)
         agg["projected_passing_tds"] = (agg["passing_tds"] / gp).astype(float)
@@ -439,6 +724,16 @@ def _player_qb_predictions(
                 if not team:
                     continue
                 players = agg[agg["recent_team"] == team].copy()
+                if roster is not None and not roster.empty:
+                    key = (int(season), team)
+                    if key not in active_cache:
+                        active_cache[key] = _active_player_ids(roster, int(season), team, active_statuses)
+                    valid_ids = active_cache.get(key)
+                    if valid_ids is None:
+                        if debug:
+                            print(f"[predict][players][qb] missing roster data for {season} {team}, skipping")
+                        continue
+                    players = players[players["player_id"].isin(valid_ids)]
                 if players.empty:
                     continue
                 players = players.sort_values(
@@ -458,18 +753,19 @@ def _player_qb_predictions(
                             "player_name": row.player_name,
                             "jersey_number": row.jersey_number,
                             "games_sampled": row.games_played,
-                            "projected_passing_yards": None if pd.isna(row.projected_passing_yards) else round(float(row.projected_passing_yards), 1),
-                            "projected_passing_tds": None if pd.isna(row.projected_passing_tds) else round(float(row.projected_passing_tds), 2),
-                            "projected_rushing_tds": None if pd.isna(row.projected_rushing_tds) else round(float(row.projected_rushing_tds), 2),
-                            "projected_passing_attempts": None if pd.isna(row.projected_passing_attempts) else round(float(row.projected_passing_attempts), 2),
-                            "projected_interceptions": None if pd.isna(row.projected_interceptions) else round(float(row.projected_interceptions), 2),
-                            "projected_completions": None if pd.isna(row.projected_completions) else round(float(row.projected_completions), 2),
-                            "projected_rushing_yards": None if pd.isna(row.projected_rushing_yards) else round(float(row.projected_rushing_yards), 1),
+                            "projected_passing_yards": _round_or_none(row.projected_passing_yards, 1),
+                            "projected_passing_tds": _round_or_none(row.projected_passing_tds, 2),
+                            "projected_rushing_tds": _round_or_none(row.projected_rushing_tds, 2),
+                            "projected_passing_attempts": _round_or_none(row.projected_passing_attempts, 2),
+                            "projected_interceptions": _round_or_none(row.projected_interceptions, 2),
+                            "projected_completions": _round_or_none(row.projected_completions, 2),
+                            "projected_rushing_yards": _round_or_none(row.projected_rushing_yards, 1),
                         }
                     )
     if not results:
         return None
     df_qb = pd.DataFrame(results)
+    _backup_existing_file(Path(save_path))
     df_qb.to_csv(save_path, index=False)
     if debug:
         print(f"[predict][players] saved QB projections -> {save_path} (rows={len(df_qb)})")
@@ -482,6 +778,7 @@ def _player_offense_predictions(
     save_path: Optional[str],
     stats: pd.DataFrame,
     roster: pd.DataFrame,
+    penalties: pd.DataFrame,
     debug: bool = False,
 ) -> Optional[pd.DataFrame]:
     if not save_path:
@@ -489,7 +786,10 @@ def _player_offense_predictions(
     if pred_games is None or pred_games.empty or stats is None or stats.empty:
         return None
 
-    offense_stats = stats[stats.get("position_group").isin(["RB", "WR", "TE"])].copy()
+    penalties_available = penalties is not None and not penalties.empty
+
+    position_group = _column_or_default(stats, "position_group", default_value="", dtype="object")
+    offense_stats = stats[position_group.fillna("").isin(["RB", "WR", "TE"])].copy()
     if offense_stats.empty:
         if debug:
             print("[predict][players] no offensive skill-position stats available")
@@ -508,10 +808,21 @@ def _player_offense_predictions(
         if col not in offense_stats.columns:
             offense_stats[col] = 0.0
 
+    active_statuses: Optional[Set[str]] = {"ACT"} if (roster is not None and not roster.empty and "status" in roster.columns) else None
+    active_cache: Dict[Tuple[int, str], Optional[Set[str]]] = {}
+    roster_cache: Dict[Tuple[int, str], pd.DataFrame] = {}
+    allowed_positions: Set[str] = {"RB", "WR", "TE", "FB"}
+
     results: List[Dict[str, Any]] = []
     grouped = pred_games.groupby(["season", "week"])
     for (season, week), games in grouped:
         subset = _select_stats_window(offense_stats, int(season), int(week))
+        penalty_stats = pd.DataFrame()
+        if penalties_available:
+            penalty_subset = _select_penalty_window(penalties, int(season), int(week))
+            penalty_stats = _aggregate_player_penalties(penalty_subset)
+            if not penalty_stats.empty:
+                penalty_stats["team"] = penalty_stats["team"].astype(str).str.upper()
         if subset.empty:
             continue
         subset = subset[subset["recent_team"].notna() & (subset["recent_team"] != "")]
@@ -531,8 +842,23 @@ def _player_offense_predictions(
         )
         if agg.empty:
             continue
+        last_season = subset.groupby("player_id")["season"].max()
+        agg["last_season"] = pd.to_numeric(agg["player_id"].map(last_season), errors="coerce")
+        last_team = (
+            subset.sort_values(["season", "week"])
+            .groupby("player_id")
+            .tail(1)
+            .set_index("player_id")["recent_team"]
+        )
+        agg["last_team"] = agg["player_id"].map(last_team).astype(str).str.upper()
+        recent_threshold = int(season) - 1
+        agg = agg[agg["last_season"].notna() & (agg["last_season"] >= recent_threshold)]
+        agg = agg[agg["recent_team"] == agg["last_team"]]
+        if agg.empty:
+            continue
         agg["season"] = season
         agg = _attach_roster_info(agg, roster, int(season), team_col="recent_team")
+        agg.drop(columns=["last_season", "last_team"], inplace=True, errors="ignore")
         gp = agg["games_played"].replace({0: pd.NA})
         agg["projected_rushing_yards"] = (agg["rushing_yards"] / gp).astype(float)
         agg["projected_rushing_tds"] = (agg["rushing_tds"] / gp).astype(float)
@@ -551,12 +877,116 @@ def _player_offense_predictions(
                 if not team:
                     continue
                 players = agg[agg["recent_team"] == team].copy()
+                roster_details = pd.DataFrame()
+                if roster is not None and not roster.empty:
+                    key = (int(season), team)
+                    if key not in active_cache:
+                        active_cache[key] = _active_player_ids(roster, int(season), team, active_statuses)
+                    if key not in roster_cache:
+                        roster_cache[key] = _active_roster_records(roster, int(season), team, active_statuses, allowed_positions)
+                    valid_ids = active_cache.get(key)
+                    roster_details = roster_cache.get(key, pd.DataFrame())
+                    skill_ids = set(roster_details["player_id"]) if roster_details is not None and not roster_details.empty else set()
+                    if not valid_ids:
+                        if debug:
+                            print(f"[predict][players][offense] missing roster data for {season} {team}, skipping")
+                        continue
+                    valid_ids = set(valid_ids)
+                    if skill_ids:
+                        valid_ids &= skill_ids
+                    if not valid_ids:
+                        if debug:
+                            print(f"[predict][players][offense] no ACT skill players for {season} {team}, skipping")
+                        continue
+                    players = players[players["player_id"].isin(valid_ids)]
+                    if not roster_details.empty:
+                        players = players.merge(
+                            roster_details[["player_id", "player_name", "jersey_number"]],
+                            on="player_id",
+                            how="left",
+                            suffixes=("", "_roster"),
+                        )
+                        if "player_name_roster" in players.columns:
+                            name_fill_mask = players["player_name"].isna() | (players["player_name"] == "")
+                            if name_fill_mask.any():
+                                players.loc[name_fill_mask, "player_name"] = players.loc[name_fill_mask, "player_name_roster"]
+                            players.drop(columns=["player_name_roster"], inplace=True)
+                        if "jersey_number_roster" in players.columns:
+                            jersey_fill_mask = players["jersey_number"].isna()
+                            if jersey_fill_mask.any():
+                                players.loc[jersey_fill_mask, "jersey_number"] = players.loc[jersey_fill_mask, "jersey_number_roster"]
+                            players.drop(columns=["jersey_number_roster"], inplace=True)
+                if not penalty_stats.empty:
+                    team_penalties = penalty_stats[penalty_stats["team"] == team]
+                    if not team_penalties.empty:
+                        players = players.merge(
+                            team_penalties[
+                                [
+                                    "player_id",
+                                    "penalty_count",
+                                    "penalty_yards",
+                                    "penalty_games",
+                                    "penalty_rate_per_game",
+                                    "penalty_player_name",
+                                ]
+                            ],
+                            on="player_id",
+                            how="left",
+                        )
+                        if "penalty_player_name" in players.columns:
+                            name_fill_mask = players["player_name"].isna() | (players["player_name"] == "")
+                            if name_fill_mask.any():
+                                players.loc[name_fill_mask, "player_name"] = players.loc[name_fill_mask, "penalty_player_name"]
+                            players.drop(columns=["penalty_player_name"], inplace=True)
                 if players.empty:
+                    if debug:
+                        print(f"[predict][players][offense] no projection data for {season} {team}, skipping")
                     continue
+                if not roster_details.empty and len(players) < 10:
+                    missing = roster_details[~roster_details["player_id"].isin(players["player_id"])]
+                    if not missing.empty:
+                        filler_needed = 10 - len(players)
+                        filler_rows: List[Dict[str, Any]] = []
+                        for filler in missing.itertuples(index=False):
+                            filler_rows.append(
+                                {
+                                    "player_id": filler.player_id,
+                                    "recent_team": team,
+                                    "player_name": filler.player_name,
+                                    "jersey_number": filler.jersey_number,
+                                    "games_played": 0,
+                                    "projected_rushing_yards": 0.0,
+                                    "projected_rushing_tds": 0.0,
+                                    "projected_carries": 0.0,
+                                    "projected_receiving_yards": 0.0,
+                                    "projected_receiving_tds": 0.0,
+                                    "projected_receptions": 0.0,
+                                    "projected_targets": 0.0,
+                                    "projected_total_yards": 0.0,
+                                    "projected_total_tds": 0.0,
+                                }
+                            )
+                            if len(filler_rows) >= filler_needed:
+                                break
+                        if filler_rows:
+                            filler_df = pd.DataFrame(filler_rows)
+                            players = pd.concat([players, filler_df], ignore_index=True, sort=False)
+                for col, fill_value in (
+                    ("penalty_count", 0),
+                    ("penalty_games", 0),
+                    ("penalty_yards", 0.0),
+                    ("penalty_rate_per_game", 0.0),
+                ):
+                    if col not in players.columns:
+                        players[col] = fill_value
+                    else:
+                        players[col] = players[col].fillna(fill_value)
                 players = players.sort_values(
                     ["projected_total_yards", "projected_total_tds", "projected_receptions"],
                     ascending=[False, False, False]
                 ).head(10)
+                if len(players) < 10 and debug:
+                    print(f"[predict][players][offense] only {len(players)} ACT skill players found for {season} {team}")
                 for rank, row in enumerate(players.itertuples(index=False), start=1):
                     results.append(
                         {
@@ -570,20 +1000,24 @@ def _player_offense_predictions(
                             "player_name": row.player_name,
                             "jersey_number": row.jersey_number,
                             "games_sampled": row.games_played,
-                                            "projected_rushing_yards": None if pd.isna(row.projected_rushing_yards) else round(float(row.projected_rushing_yards), 1),
-                            "projected_rushing_tds": None if pd.isna(row.projected_rushing_tds) else round(float(row.projected_rushing_tds), 2),
-                            "projected_carries": None if pd.isna(row.projected_carries) else round(float(row.projected_carries), 2),
-                            "projected_receiving_yards": None if pd.isna(row.projected_receiving_yards) else round(float(row.projected_receiving_yards), 1),
-                            "projected_receiving_tds": None if pd.isna(row.projected_receiving_tds) else round(float(row.projected_receiving_tds), 2),
-                            "projected_receptions": None if pd.isna(row.projected_receptions) else round(float(row.projected_receptions), 2),
-                            "projected_targets": None if pd.isna(row.projected_targets) else round(float(row.projected_targets), 2),
-                            "projected_total_yards": None if pd.isna(row.projected_total_yards) else round(float(row.projected_total_yards), 1),
-                            "projected_total_tds": None if pd.isna(row.projected_total_tds) else round(float(row.projected_total_tds), 2),
+                            "projected_rushing_yards": _round_or_none(row.projected_rushing_yards, 1),
+                            "projected_rushing_tds": _round_or_none(row.projected_rushing_tds, 2),
+                            "projected_carries": _round_or_none(row.projected_carries, 2),
+                            "projected_receiving_yards": _round_or_none(row.projected_receiving_yards, 1),
+                            "projected_receiving_tds": _round_or_none(row.projected_receiving_tds, 2),
+                            "projected_receptions": _round_or_none(row.projected_receptions, 2),
+                            "projected_targets": _round_or_none(row.projected_targets, 2),
+                            "projected_total_yards": _round_or_none(row.projected_total_yards, 1),
+                            "projected_total_tds": _round_or_none(row.projected_total_tds, 2),
+                            "penalties_per_game": _round_or_none(getattr(row, "penalty_rate_per_game", pd.NA), 3),
+                            "penalty_count": None if pd.isna(getattr(row, "penalty_count", pd.NA)) else int(getattr(row, "penalty_count", 0)),
+                            "penalty_yards": _round_or_none(getattr(row, "penalty_yards", pd.NA), 1),
                         }
                     )
     if not results:
         return None
     df_off = pd.DataFrame(results)
+    _backup_existing_file(Path(save_path))
     df_off.to_csv(save_path, index=False)
     if debug:
         print(f"[predict][players] saved offensive projections -> {save_path} (rows={len(df_off)})")
@@ -611,12 +1045,15 @@ def _player_defense_predictions(
     pred_games: pd.DataFrame,
     save_path: Optional[str],
     roster: pd.DataFrame,
+    penalties: pd.DataFrame,
     debug: bool = False,
 ) -> Optional[pd.DataFrame]:
     if not save_path:
         return None
     if pred_games is None or pred_games.empty:
         return None
+
+    penalties_available = penalties is not None and not penalties.empty
 
     pbp_path = RAW_DIR / "nfl_pbp.parquet"
     if not pbp_path.exists():
@@ -629,16 +1066,21 @@ def _player_defense_predictions(
         return None
 
     pbp = pbp.copy()
-    pbp["season"] = pd.to_numeric(pbp.get("season"), errors="coerce")
-    pbp["week"] = pd.to_numeric(pbp.get("week"), errors="coerce")
+    pbp["season"] = pd.to_numeric(_column_or_default(pbp, "season"), errors="coerce")
+    pbp["week"] = pd.to_numeric(_column_or_default(pbp, "week"), errors="coerce")
     pbp = pbp[pd.notna(pbp["season"]) & pd.notna(pbp["week"])]
     if pbp.empty:
         return None
     pbp["season"] = pbp["season"].astype("int64")
     pbp["week"] = pbp["week"].astype("int64")
-    pbp = pbp[pbp.get("season_type", "REG") == "REG"]
-    pbp["defteam"] = pbp.get("defteam", "").fillna("").astype(str).str.upper()
+    season_type = _column_or_default(pbp, "season_type", default_value="REG", dtype="object")
+    pbp = pbp[season_type.fillna("REG").astype(str) == "REG"]
+    defteam = _column_or_default(pbp, "defteam", default_value="", dtype="object")
+    pbp["defteam"] = defteam.fillna("").astype(str).str.upper()
     pbp = pbp[pbp["defteam"] != ""]
+
+    active_statuses: Optional[Set[str]] = {"ACT"} if (roster is not None and not roster.empty and "status" in roster.columns) else None
+    active_cache: Dict[Tuple[int, str], Optional[Set[str]]] = {}
 
     stats_columns = [
         "sack",
@@ -659,6 +1101,11 @@ def _player_defense_predictions(
         "punt_blocked",
         "blocked_player_id",
         "blocked_player_name",
+        "penalty",
+        "penalty_team",
+        "penalty_player_id",
+        "penalty_player_name",
+        "penalty_yards",
     ]
     keep_cols = ["season", "week", "defteam", "yards_gained"] + [c for c in stats_columns if c in pbp.columns]
     pbp = pbp[keep_cols]
@@ -667,8 +1114,16 @@ def _player_defense_predictions(
     grouped = pred_games.groupby(["season", "week"])
     for (season, week), games in grouped:
         subset = _select_pbp_window(pbp, int(season), int(week))
+        penalty_stats = pd.DataFrame()
+        if penalties_available:
+            penalty_subset = _select_penalty_window(penalties, int(season), int(week))
+            penalty_stats = _aggregate_player_penalties(penalty_subset)
+            if not penalty_stats.empty:
+                penalty_stats["team"] = penalty_stats["team"].astype(str).str.upper()
         if subset.empty:
             continue
+
+        recent_threshold = int(season) - 1
 
         player_stats: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
@@ -743,21 +1198,34 @@ def _player_defense_predictions(
 
         records = []
         for entry in player_stats.values():
+            pid = entry.get("player_id")
+            if not pid:
+                continue
+            if not entry.get("games"):
+                continue
+            last_season = max((g[0] for g in entry["games"]), default=None)
+            if last_season is None or last_season < recent_threshold:
+                continue
+            team_current = entry.get("team")
+            if not team_current:
+                continue
             games_played = len(entry["games"]) or 1
             records.append(
                 {
-                    "player_id": entry.get("player_id"),
+                    "player_id": pid,
                     "player_name": entry.get("player_name"),
-                    "team": entry.get("team"),
+                    "team": team_current,
                     "games_played": games_played,
                     "projected_sacks": entry["sacks"] / games_played,
                     "projected_qb_hits": entry["qb_hits"] / games_played,
                     "projected_tfl": entry["tfl"] / games_played,
                     "projected_blocked_punts": entry["blocked_punts"] / games_played,
                     "projected_loss_yards": entry["loss_yards"] / games_played,
-                                    }
+                }
             )
 
+        if not records:
+            continue
         agg = pd.DataFrame(records)
         agg["season"] = season
         agg = _attach_roster_info(agg, roster, int(season), team_col="team", fill_name=True)
@@ -769,16 +1237,55 @@ def _player_defense_predictions(
                 if not team:
                     continue
                 players = agg[agg["team"] == team].copy()
+                if roster is not None and not roster.empty:
+                    key = (int(season), team)
+                    if key not in active_cache:
+                        active_cache[key] = _active_player_ids(roster, int(season), team, active_statuses)
+                    valid_ids = active_cache.get(key)
+                    if valid_ids is None:
+                        if debug:
+                            print(f"[predict][players][defense] missing roster data for {season} {team}, skipping")
+                        continue
+                    players = players[players["player_id"].isin(valid_ids)]
                 if players.empty:
                     continue
+                if not penalty_stats.empty:
+                    team_penalties = penalty_stats[penalty_stats["team"] == team]
+                    if not team_penalties.empty:
+                        players = players.merge(
+                            team_penalties[
+                                [
+                                    "player_id",
+                                    "penalty_count",
+                                    "penalty_yards",
+                                    "penalty_games",
+                                    "penalty_rate_per_game",
+                                    "penalty_player_name",
+                                ]
+                            ],
+                            on="player_id",
+                            how="left",
+                        )
+                        if "penalty_player_name" in players.columns:
+                            name_fill_mask = players["player_name"].isna() | (players["player_name"] == "")
+                            if name_fill_mask.any():
+                                players.loc[name_fill_mask, "player_name"] = players.loc[name_fill_mask, "penalty_player_name"]
+                            players.drop(columns=["penalty_player_name"], inplace=True)
+                for col, fill_value in (
+                    ("penalty_count", 0),
+                    ("penalty_games", 0),
+                    ("penalty_yards", 0.0),
+                    ("penalty_rate_per_game", 0.0),
+                ):
+                    if col not in players.columns:
+                        players[col] = fill_value
+                    else:
+                        players[col] = players[col].fillna(fill_value)
                 players = players.sort_values(
                     ["projected_sacks", "projected_qb_hits", "projected_tfl"],
                     ascending=[False, False, False]
                 ).head(10)
                 for rank, row in enumerate(players.itertuples(index=False), start=1):
-                    def _round(val: float) -> Optional[float]:
-                        return None if pd.isna(val) else round(float(val), 2)
-
                     results.append(
                         {
                             "season": season,
@@ -791,16 +1298,20 @@ def _player_defense_predictions(
                             "player_name": row.player_name,
                             "jersey_number": row.jersey_number,
                             "games_sampled": row.games_played,
-                                            "projected_sacks": _round(row.projected_sacks),
-                            "projected_qb_hits": _round(row.projected_qb_hits),
-                            "projected_tfl": _round(row.projected_tfl),
-                            "projected_blocked_punts": _round(row.projected_blocked_punts),
-                            "projected_loss_yards": _round(row.projected_loss_yards),
+                            "projected_sacks": _round_or_none(row.projected_sacks, 2),
+                            "projected_qb_hits": _round_or_none(row.projected_qb_hits, 2),
+                            "projected_tfl": _round_or_none(row.projected_tfl, 2),
+                            "projected_blocked_punts": _round_or_none(row.projected_blocked_punts, 2),
+                            "projected_loss_yards": _round_or_none(row.projected_loss_yards, 2),
+                            "penalties_per_game": _round_or_none(getattr(row, "penalty_rate_per_game", pd.NA), 3),
+                            "penalty_count": None if pd.isna(getattr(row, "penalty_count", pd.NA)) else int(getattr(row, "penalty_count", 0)),
+                            "penalty_yards": _round_or_none(getattr(row, "penalty_yards", pd.NA), 1),
                         }
                     )
     if not results:
         return None
     df_def = pd.DataFrame(results)
+    _backup_existing_file(Path(save_path))
     df_def.to_csv(save_path, index=False)
     if debug:
         print(f"[predict][players] saved defensive projections -> {save_path} (rows={len(df_def)})")
@@ -856,6 +1367,8 @@ def main():
     else:
         week = int(args.week)
 
+    penalty_frame = _load_penalty_frame()
+
     # Build the feature slice for that season/week and compute *_diff features
     this_week = feats[(feats["season"] == season) & (feats["week"] == week)].copy()
     this_week = _make_feature_diffs(this_week)
@@ -886,11 +1399,41 @@ def main():
     except Exception:
         pass
 
+    stadium_cols = [
+        "home_altitude_ft",
+        "away_altitude_ft",
+        "altitude_ft_diff",
+        "home_crowd_noise_score",
+        "away_crowd_noise_score",
+        "crowd_noise_score_diff",
+        "home_fan_hostility_score",
+        "away_fan_hostility_score",
+        "fan_hostility_score_diff",
+        "home_weather_snow_index",
+        "away_weather_snow_index",
+        "weather_snow_index_diff",
+        "home_weather_rain_index",
+        "away_weather_rain_index",
+        "weather_rain_index_diff",
+        "home_indoor",
+        "away_indoor",
+        "indoor_diff",
+        "rivalry_intensity",
+        "rivalry_is_divisional",
+        "rivalry_has_historic_component",
+    ]
+    context_cols = [c for c in stadium_cols if c in this_week.columns]
+    if context_cols:
+        preds = pd.concat([preds, this_week[context_cols].copy()], axis=1)
+
     try:
         win_art = joblib.load(Path("models/winprob_gb.pkl"))
         win_model = win_art.get("model", win_art)
         win_feats = win_art.get("features", [])
         feat_ranges = win_art.get("feature_ranges", {})
+        logistic_model = win_art.get("logistic_model")
+        logistic_feats = win_art.get("logistic_features", [])
+        ensemble_weight = float(win_art.get("ensemble_weight", 1.0))
         use_cols = [c for c in win_feats if c in this_week_nodup.columns]
         if use_cols:
             Xw = this_week_nodup[use_cols].copy()
@@ -900,8 +1443,17 @@ def main():
                     if c in feat_ranges:
                         lo, hi = feat_ranges[c]
                         Xw[c] = pd.to_numeric(Xw[c], errors="coerce").clip(lower=lo, upper=hi)
-            proba_vec = win_model.predict_proba(Xw.values)[:, 1]
-            preds["home_win_prob"] = proba_vec
+            proba_gb = win_model.predict_proba(Xw.values)[:, 1]
+
+            proba_final = proba_gb
+            if logistic_model is not None and logistic_feats:
+                missing_log_feats = [c for c in logistic_feats if c not in this_week_nodup.columns]
+                if not missing_log_feats:
+                    X_log = this_week_nodup[logistic_feats].copy()
+                    proba_log = logistic_model.predict_proba(X_log.values)[:, 1]
+                    proba_final = ensemble_weight * proba_gb + (1.0 - ensemble_weight) * proba_log
+                else:
+                    print(f"[win_prob][predict] missing logistic features: {missing_log_feats}")
 
             # Per-game explanation using SHAP (best-effort)
             try:
@@ -938,7 +1490,7 @@ def main():
                 preds["decision_opposing_metrics"] = opp_list
                 # Confidence explanation
                 conf_expl = []
-                for p in proba_vec:
+                for p in proba_gb:
                     if pd.isna(p):
                         conf_expl.append("confidence: N/A")
                     elif p >= 0.5:
@@ -975,7 +1527,7 @@ def main():
                             opp_list.append("; ".join(oppose))
                         preds["decision_supporting_metrics"] = supp_list
                         preds["decision_opposing_metrics"] = opp_list
-                        preds["decision_confidence_expl"] = [f"confidence: {p:.1%}" if pd.notna(p) else "confidence: N/A" for p in proba_vec]
+                        preds["decision_confidence_expl"] = [f"confidence: {p:.1%}" if pd.notna(p) else "confidence: N/A" for p in proba_gb]
                 except Exception:
                     # Final fallback: use top-|diff| features to summarize
                     try:
@@ -984,9 +1536,7 @@ def main():
                         for i in range(len(Xw)):
                             row = Xw.iloc[i]
                             pairs = list(zip(use_cols, row.values))
-                            # sort by absolute value
                             pairs.sort(key=lambda t: abs(float(t[1]) if t[1] is not None else 0.0), reverse=True)
-                            # Treat positive diffs as "home-leaning", negative as "away-leaning"
                             support = [f"{k}={float(v):+.3g}" for k, v in pairs if float(v) > 0][:6]
                             oppose = [f"{k}={float(v):+.3g}" for k, v in pairs if float(v) < 0][:6]
                             supp_list.append("; ".join(support))
@@ -995,22 +1545,50 @@ def main():
                         preds["decision_opposing_metrics"] = opp_list
                         preds["decision_confidence_expl"] = [
                             (f"confidence: {p:.1%} home" if pd.notna(p) and float(p) >= 0.5 else (f"confidence: {(1-float(p)):.1%} away" if pd.notna(p) else "confidence: N/A"))
-                            for p in proba_vec
+                            for p in proba_gb
                         ]
                     except Exception:
                         pass
+            cal_path = Path("models/winprob_calibrator.pkl")
+            final_proba = proba_final.copy() if isinstance(proba_final, pd.Series) else np.asarray(proba_final, dtype=float)
+            if cal_path.exists():
+                try:
+                    cal_art = joblib.load(cal_path)
+                    calibrator = cal_art.get("calibrator")
+                    if calibrator is not None:
+                        if hasattr(calibrator, "predict"):
+                            final_proba = calibrator.predict(final_proba)
+                        elif hasattr(calibrator, "transform"):
+                            final_proba = calibrator.transform(final_proba)
+                except Exception as ex:
+                    print(f"[win_prob][predict] calibrator load failed: {ex}")
+            preds["home_win_prob"] = final_proba
+
         else:
             preds["home_win_prob"] = None
     except Exception:
         preds["home_win_prob"] = None
-
     try:
         spread_art = joblib.load(Path("models/spread_gb.pkl"))
         spread_model = spread_art.get("model", spread_art)
         spread_feats = spread_art.get("features", [])
+        spread_imputer = spread_art.get("imputer")
+        quantile_models = spread_art.get("quantile_models") or {}
         use_cols = [c for c in spread_feats if c in this_week_nodup.columns]
         if use_cols:
-            preds["pred_home_margin"] = spread_model.predict(this_week_nodup[use_cols].values)
+            X_spread = this_week_nodup[use_cols].values
+            if spread_imputer is not None:
+                X_spread = spread_imputer.transform(X_spread)
+            preds["pred_home_margin"] = spread_model.predict(X_spread)
+            if quantile_models:
+                if "pred_home_margin_lo" not in preds.columns:
+                    preds["pred_home_margin_lo"] = pd.NA
+                if "pred_home_margin_hi" not in preds.columns:
+                    preds["pred_home_margin_hi"] = pd.NA
+                if 0.2 in quantile_models:
+                    preds.loc[:, "pred_home_margin_lo"] = quantile_models[0.2].predict(X_spread)
+                if 0.8 in quantile_models:
+                    preds.loc[:, "pred_home_margin_hi"] = quantile_models[0.8].predict(X_spread)
         else:
             preds["pred_home_margin"] = None
     except Exception:
@@ -1020,13 +1598,13 @@ def main():
     def _fmt_prob(p: float, home: str) -> str:
         if p is None or pd.isna(p):
             return "Win probability unavailable"
-        return f"{home} win chance: {p:.1%} (0.5≈coin flip)"
+        return f"{home} win chance: {p:.1%} (50% = coin flip)"
 
     def _fmt_margin(m: float) -> str:
         if m is None or pd.isna(m):
             return "Predicted margin unavailable"
         if abs(m) < 0.25:
-            return "Pick'em (≈0 pts)"
+            return "Pick'em (~0 pts)"
         side = "Home" if m >= 0 else "Away"
         return f"{side} by {abs(m):.1f} pts"
 
@@ -1679,6 +2257,14 @@ def main():
     # Final cleanup: drop duplicate / empty columns so exports focus on populated predictions
     preds = _cleanup_prediction_columns(preds)
 
+    penalty_columns: List[str] = []
+    try:
+        preds, penalty_columns = _attach_team_penalty_metrics(preds, penalty_frame, season, week, debug=args.debug)
+    except Exception as exc:
+        if args.debug:
+            print(f"[predict][penalties] unable to attach team penalty metrics: {exc}")
+        penalty_columns = []
+
     # Optionally save full dump (consolidate decision columns: keep only pick_expl)
     if args.dump_all:
         drop_cols = [
@@ -1689,8 +2275,12 @@ def main():
             "decision_opposing_metrics",
         ]
         dump_df = preds.drop(columns=[c for c in drop_cols if c in preds.columns], errors="ignore")
+        _backup_existing_file(Path(args.dump_all))
         dump_df.to_csv(args.dump_all, index=False)
         print(f"Saved full predictions to {args.dump_all} (cols={len(dump_df.columns)})")
+        archived_dump = _archive_prediction_file(args.dump_all, week)
+        if archived_dump and args.debug:
+            print(f"[predict][archive] archived full predictions -> {archived_dump}")
 
     # Curated default output: highlight identity, weather, and actual prediction fields
     curated = [
@@ -1711,6 +2301,15 @@ def main():
         "pred_home_downs_4thmd", "pred_away_downs_4thmd",
         "pred_home_punts", "pred_away_punts",
         "pred_home_field_goals", "pred_away_field_goals",
+        "home_penalties_per_game", "away_penalties_per_game",
+        "home_penalty_yards_per_game", "away_penalty_yards_per_game",
+        "home_altitude_ft", "away_altitude_ft", "altitude_ft_diff",
+        "home_crowd_noise_score", "away_crowd_noise_score", "crowd_noise_score_diff",
+        "home_fan_hostility_score", "away_fan_hostility_score", "fan_hostility_score_diff",
+        "home_weather_snow_index", "away_weather_snow_index", "weather_snow_index_diff",
+        "home_weather_rain_index", "away_weather_rain_index", "weather_rain_index_diff",
+        "home_indoor", "away_indoor", "indoor_diff",
+        "rivalry_intensity", "rivalry_is_divisional", "rivalry_has_historic_component",
         # narrative / explanation
         "decision_explanation", "decision_narrative", "decision_confidence_expl", "decision_supporting_metrics", "decision_opposing_metrics",
     ]
@@ -1718,25 +2317,58 @@ def main():
         for col in odds_columns:
             if col not in curated:
                 curated.append(col)
+    if penalty_columns:
+        for col in penalty_columns:
+            if col not in curated:
+                curated.append(col)
     curated_cols = [c for c in curated if c in preds.columns]
+    _backup_existing_file(Path(args.save))
     preds[curated_cols].to_csv(args.save, index=False)
     print(f"Saved predictions to {args.save} (season={season}, week={week}, games={len(preds)}, cols={len(curated_cols)})")
+    archived_main = _archive_prediction_file(args.save, week)
+    if archived_main and args.debug:
+        print(f"[predict][archive] archived curated predictions -> {archived_main}")
 
     player_games = preds[["season", "week", "game_id", "home_team", "away_team"]].drop_duplicates()
     player_stats_frame = _load_player_stats_frame()
     roster_frame = _load_roster_frame()
     try:
-        _player_qb_predictions(player_games, args.save_players_qb, player_stats_frame, roster_frame, debug=args.debug)
+        qb_df = _player_qb_predictions(player_games, args.save_players_qb, player_stats_frame, roster_frame, debug=args.debug)
+        if qb_df is not None:
+            archived_qb = _archive_prediction_file(args.save_players_qb, week)
+            if archived_qb and args.debug:
+                print(f"[predict][archive] archived QB predictions -> {archived_qb}")
     except Exception as exc:
         if args.debug:
             print(f"[predict][players] unable to save QB projections: {exc}")
     try:
-        _player_offense_predictions(player_games, args.save_players_offense, player_stats_frame, roster_frame, debug=args.debug)
+        off_df = _player_offense_predictions(
+            player_games,
+            args.save_players_offense,
+            player_stats_frame,
+            roster_frame,
+            penalty_frame,
+            debug=args.debug,
+        )
+        if off_df is not None:
+            archived_off = _archive_prediction_file(args.save_players_offense, week)
+            if archived_off and args.debug:
+                print(f"[predict][archive] archived offensive predictions -> {archived_off}")
     except Exception as exc:
         if args.debug:
             print(f"[predict][players] unable to save offensive projections: {exc}")
     try:
-        _player_defense_predictions(player_games, args.save_players_defense, roster_frame, debug=args.debug)
+        def_df = _player_defense_predictions(
+            player_games,
+            args.save_players_defense,
+            roster_frame,
+            penalty_frame,
+            debug=args.debug,
+        )
+        if def_df is not None:
+            archived_def = _archive_prediction_file(args.save_players_defense, week)
+            if archived_def and args.debug:
+                print(f"[predict][archive] archived defensive predictions -> {archived_def}")
     except Exception as exc:
         if args.debug:
             print(f"[predict][players] unable to save defensive projections: {exc}")

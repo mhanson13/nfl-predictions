@@ -1,0 +1,18 @@
+{
+  "best_value": 10.349009105641729,
+  "best_params": {
+    "model_type": "huber",
+    "hgb_learning_rate": 0.02838934251314221,
+    "hgb_max_depth": 5,
+    "hgb_max_leaf_nodes": 46,
+    "hgb_min_samples_leaf": 54,
+    "hgb_l2_regularization": 0.0024744812397996517,
+    "hgb_max_bins": 148
+  },
+  "user_attrs": {
+    "mae": 10.349009105641729,
+    "model_choice": "huber",
+    "rmse": 13.068452926176716,
+    "used_gpu": false
+  }
+}

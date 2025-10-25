@@ -1,0 +1,157 @@
+team_abbr,rival_abbr,rivalry_type,intensity,notes
+BUF,MIA,divisional,0.6,Divisional rivalry (AFC East)
+BUF,NE,divisional,0.6,Divisional rivalry (AFC East)
+BUF,NYJ,divisional,0.6,Divisional rivalry (AFC East)
+MIA,BUF,divisional,0.6,Divisional rivalry (AFC East)
+MIA,NE,divisional,0.6,Divisional rivalry (AFC East)
+MIA,NYJ,divisional,0.6,Divisional rivalry (AFC East)
+NE,BUF,divisional,0.6,Divisional rivalry (AFC East)
+NE,MIA,divisional,0.6,Divisional rivalry (AFC East)
+NE,NYJ,divisional,0.6,Divisional rivalry (AFC East)
+NYJ,BUF,divisional,0.6,Divisional rivalry (AFC East)
+NYJ,MIA,divisional,0.6,Divisional rivalry (AFC East)
+NYJ,NE,divisional,0.6,Divisional rivalry (AFC East)
+BAL,CIN,divisional,0.7,Divisional rivalry (AFC North)
+BAL,CLE,divisional,0.7,Divisional rivalry (AFC North)
+BAL,PIT,divisional,0.7,Divisional rivalry (AFC North)
+CIN,BAL,divisional,0.7,Divisional rivalry (AFC North)
+CIN,CLE,divisional,0.7,Divisional rivalry (AFC North)
+CIN,PIT,divisional,0.7,Divisional rivalry (AFC North)
+CLE,BAL,divisional,0.7,Divisional rivalry (AFC North)
+CLE,CIN,divisional,0.7,Divisional rivalry (AFC North)
+CLE,PIT,divisional,0.7,Divisional rivalry (AFC North)
+PIT,BAL,divisional,0.7,Divisional rivalry (AFC North)
+PIT,CIN,divisional,0.7,Divisional rivalry (AFC North)
+PIT,CLE,divisional,0.7,Divisional rivalry (AFC North)
+HOU,IND,divisional,0.6,Divisional rivalry (AFC South)
+HOU,JAX,divisional,0.6,Divisional rivalry (AFC South)
+HOU,TEN,divisional,0.6,Divisional rivalry (AFC South)
+IND,HOU,divisional,0.6,Divisional rivalry (AFC South)
+IND,JAX,divisional,0.6,Divisional rivalry (AFC South)
+IND,TEN,divisional,0.6,Divisional rivalry (AFC South)
+JAX,HOU,divisional,0.6,Divisional rivalry (AFC South)
+JAX,IND,divisional,0.6,Divisional rivalry (AFC South)
+JAX,TEN,divisional,0.6,Divisional rivalry (AFC South)
+TEN,HOU,divisional,0.6,Divisional rivalry (AFC South)
+TEN,IND,divisional,0.6,Divisional rivalry (AFC South)
+TEN,JAX,divisional,0.6,Divisional rivalry (AFC South)
+DEN,KC,divisional,0.7,Divisional rivalry (AFC West)
+DEN,LV,divisional,0.7,Divisional rivalry (AFC West)
+DEN,LAC,divisional,0.7,Divisional rivalry (AFC West)
+KC,DEN,divisional,0.7,Divisional rivalry (AFC West)
+KC,LV,divisional,0.7,Divisional rivalry (AFC West)
+KC,LAC,divisional,0.7,Divisional rivalry (AFC West)
+LV,DEN,divisional,0.7,Divisional rivalry (AFC West)
+LV,KC,divisional,0.7,Divisional rivalry (AFC West)
+LV,LAC,divisional,0.7,Divisional rivalry (AFC West)
+LAC,DEN,divisional,0.7,Divisional rivalry (AFC West)
+LAC,KC,divisional,0.7,Divisional rivalry (AFC West)
+LAC,LV,divisional,0.7,Divisional rivalry (AFC West)
+DAL,NYG,divisional,0.7,Divisional rivalry (NFC East)
+DAL,PHI,divisional,0.7,Divisional rivalry (NFC East)
+DAL,WAS,divisional,0.7,Divisional rivalry (NFC East)
+NYG,DAL,divisional,0.7,Divisional rivalry (NFC East)
+NYG,PHI,divisional,0.7,Divisional rivalry (NFC East)
+NYG,WAS,divisional,0.7,Divisional rivalry (NFC East)
+PHI,DAL,divisional,0.7,Divisional rivalry (NFC East)
+PHI,NYG,divisional,0.7,Divisional rivalry (NFC East)
+PHI,WAS,divisional,0.7,Divisional rivalry (NFC East)
+WAS,DAL,divisional,0.7,Divisional rivalry (NFC East)
+WAS,NYG,divisional,0.7,Divisional rivalry (NFC East)
+WAS,PHI,divisional,0.7,Divisional rivalry (NFC East)
+CHI,DET,divisional,0.7,Divisional rivalry (NFC North)
+CHI,GB,divisional,0.7,Divisional rivalry (NFC North)
+CHI,MIN,divisional,0.7,Divisional rivalry (NFC North)
+DET,CHI,divisional,0.7,Divisional rivalry (NFC North)
+DET,GB,divisional,0.7,Divisional rivalry (NFC North)
+DET,MIN,divisional,0.7,Divisional rivalry (NFC North)
+GB,CHI,divisional,0.7,Divisional rivalry (NFC North)
+GB,DET,divisional,0.7,Divisional rivalry (NFC North)
+GB,MIN,divisional,0.7,Divisional rivalry (NFC North)
+MIN,CHI,divisional,0.7,Divisional rivalry (NFC North)
+MIN,DET,divisional,0.7,Divisional rivalry (NFC North)
+MIN,GB,divisional,0.7,Divisional rivalry (NFC North)
+ATL,CAR,divisional,0.6,Divisional rivalry (NFC South)
+ATL,NO,divisional,0.6,Divisional rivalry (NFC South)
+ATL,TB,divisional,0.6,Divisional rivalry (NFC South)
+CAR,ATL,divisional,0.6,Divisional rivalry (NFC South)
+CAR,NO,divisional,0.6,Divisional rivalry (NFC South)
+CAR,TB,divisional,0.6,Divisional rivalry (NFC South)
+NO,ATL,divisional,0.6,Divisional rivalry (NFC South)
+NO,CAR,divisional,0.6,Divisional rivalry (NFC South)
+NO,TB,divisional,0.6,Divisional rivalry (NFC South)
+TB,ATL,divisional,0.6,Divisional rivalry (NFC South)
+TB,CAR,divisional,0.6,Divisional rivalry (NFC South)
+TB,NO,divisional,0.6,Divisional rivalry (NFC South)
+ARI,LAR,divisional,0.7,Divisional rivalry (NFC West)
+ARI,SEA,divisional,0.7,Divisional rivalry (NFC West)
+ARI,SF,divisional,0.7,Divisional rivalry (NFC West)
+LAR,ARI,divisional,0.7,Divisional rivalry (NFC West)
+LAR,SEA,divisional,0.7,Divisional rivalry (NFC West)
+LAR,SF,divisional,0.7,Divisional rivalry (NFC West)
+SEA,ARI,divisional,0.7,Divisional rivalry (NFC West)
+SEA,LAR,divisional,0.7,Divisional rivalry (NFC West)
+SEA,SF,divisional,0.7,Divisional rivalry (NFC West)
+SF,ARI,divisional,0.7,Divisional rivalry (NFC West)
+SF,LAR,divisional,0.7,Divisional rivalry (NFC West)
+SF,SEA,divisional,0.7,Divisional rivalry (NFC West)
+DAL,SF,postseason,0.8,Classic 1990s playoff rivalry rekindled in recent seasons
+DAL,GB,postseason,0.75,Multiple iconic playoff meetings
+DAL,PIT,Super Bowl,0.7,Three Super Bowl clashes define series
+CHI,GB,historic,0.9,NFL’s oldest rivalry dating to 1921
+MIN,GB,regional,0.8,Border battle born after Vikings joined league
+DET,GB,Thanksgiving,0.7,Long-running NFC North foes with holiday spotlight
+NYG,PHI,historic,0.8,Over 150 meetings with playoff stakes
+NYG,WAS,historic,0.7,NFC East original rivals
+PHI,DAL,national,0.85,High-profile NFC East feud
+PHI,WAS,historic,0.7,Divisional animus with political undertones
+BUF,MIA,historic,0.75,1970s-1990s AFC East dominance battles
+BUF,NE,modern,0.7,Brady-era dominance spurred resentment
+NE,NYJ,historic,0.8,Spygate and coaching drama add spice
+KC,LV,historic,0.85,AFL roots and physical clashes
+KC,DEN,historic,0.8,Border rivalry heightened by Elway/Mahomes eras
+DEN,LV,historic,0.75,Old AFC West grudge match
+SEA,SF,modern,0.85,"Legion of Boom vs Kaepernick, renewed 2020s"
+SEA,LAR,modern,0.7,Pete Carroll vs Sean McVay chess matches
+BAL,PIT,historic,0.9,Hard-hitting AFC North classic
+BAL,CLE,historic,0.7,Franchise relocation fuels animosity
+CIN,PIT,playoff,0.75,Recent postseason clashes and physical games
+TEN,IND,historic,0.65,AFC South title races from Manning to Luck
+NO,ATL,historic,0.85,Gulf Coast vs Georgia rivalry
+NO,CAR,modern,0.7,NFC South with overlapping playoff runs
+CAR,ATL,modern,0.7,South divisional with proximity
+TB,NO,modern,0.7,Brees vs Brady/Tampa clashes
+CLE,PIT,historic,0.8,Turnpike rivalry predating Super Bowl era
+HOU,DAL,state,0.65,"Texas bragging rights, Battle of the Lone Star"
+JAX,MIA,state,0.6,Florida bragging rights including 2023 streak
+GB,SEA,postseason,0.75,Recent NFC Championship drama
+SF,DAL,postseason,0.8,Classic 1990s playoff rivalry rekindled in recent seasons
+GB,DAL,postseason,0.75,Multiple iconic playoff meetings
+PIT,DAL,Super Bowl,0.7,Three Super Bowl clashes define series
+GB,CHI,historic,0.9,NFL’s oldest rivalry dating to 1921
+GB,MIN,regional,0.8,Border battle born after Vikings joined league
+GB,DET,Thanksgiving,0.7,Long-running NFC North foes with holiday spotlight
+PHI,NYG,historic,0.8,Over 150 meetings with playoff stakes
+WAS,NYG,historic,0.7,NFC East original rivals
+DAL,PHI,national,0.85,High-profile NFC East feud
+WAS,PHI,historic,0.7,Divisional animus with political undertones
+MIA,BUF,historic,0.75,1970s-1990s AFC East dominance battles
+NE,BUF,modern,0.7,Brady-era dominance spurred resentment
+NYJ,NE,historic,0.8,Spygate and coaching drama add spice
+LV,KC,historic,0.85,AFL roots and physical clashes
+DEN,KC,historic,0.8,Border rivalry heightened by Elway/Mahomes eras
+LV,DEN,historic,0.75,Old AFC West grudge match
+SF,SEA,modern,0.85,"Legion of Boom vs Kaepernick, renewed 2020s"
+LAR,SEA,modern,0.7,Pete Carroll vs Sean McVay chess matches
+PIT,BAL,historic,0.9,Hard-hitting AFC North classic
+CLE,BAL,historic,0.7,Franchise relocation fuels animosity
+PIT,CIN,playoff,0.75,Recent postseason clashes and physical games
+IND,TEN,historic,0.65,AFC South title races from Manning to Luck
+ATL,NO,historic,0.85,Gulf Coast vs Georgia rivalry
+CAR,NO,modern,0.7,NFC South with overlapping playoff runs
+ATL,CAR,modern,0.7,South divisional with proximity
+NO,TB,modern,0.7,Brees vs Brady/Tampa clashes
+PIT,CLE,historic,0.8,Turnpike rivalry predating Super Bowl era
+DAL,HOU,state,0.65,"Texas bragging rights, Battle of the Lone Star"
+MIA,JAX,state,0.6,Florida bragging rights including 2023 streak
+SEA,GB,postseason,0.75,Recent NFC Championship drama
