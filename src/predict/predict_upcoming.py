@@ -13,6 +13,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from src.utils.io import RAW_DIR, PROC_DIR
 from src.utils.logging import configure as configure_logging
 from src.utils.odds import fetch_odds
+from src.predict.utils import apply_probability_caps, moneyline_to_prob
+from src.predict.volatility import (
+    DEFAULT_VOLATILITY_ARTIFACT,
+    apply_shrinkage as apply_volatility_shrinkage,
+    load_volatility_artifact,
+    score_volatility,
+)
 
 TEAM_NAME_TO_ABBR: Dict[str, str] = {
     "Arizona Cardinals": "ARI",
@@ -1327,9 +1334,39 @@ def main():
     ap.add_argument("--save-players-qb", dest="save_players_qb", type=str, default="predictions_players_qb.csv", help="Path to save quarterback projections; set empty to skip")
     ap.add_argument("--save-players-offense", dest="save_players_offense", type=str, default="predictions_players_offense.csv", help="Path to save offensive skill-player projections (top 10 per team); set empty to skip")
     ap.add_argument("--save-players-defense", dest="save_players_defense", type=str, default="predictions_players_defense.csv", help="Path to save defensive projections; set empty to skip")
+    ap.add_argument(
+        "--volatility-artifact",
+        type=str,
+        default=str(DEFAULT_VOLATILITY_ARTIFACT),
+        help="Path to trained volatility classifier artifact.",
+    )
+    ap.add_argument(
+        "--volatility-threshold",
+        type=float,
+        default=None,
+        help="Override volatility probability threshold (defaults to artifact value).",
+    )
+    ap.add_argument(
+        "--volatility-strength",
+        type=float,
+        default=0.35,
+        help="Shrinkage strength (0-1) towards 0.5 for high-volatility win probabilities.",
+    )
+    ap.add_argument(
+        "--volatility-margin-strength",
+        type=float,
+        default=0.45,
+        help="Shrinkage strength (0-1) towards 0 margin for high-volatility spreads.",
+    )
+    ap.add_argument(
+        "--disable-volatility",
+        action="store_true",
+        help="Skip volatility-based adjustments even if an artifact is available.",
+    )
     args = ap.parse_args()
 
     configure_logging(args.debug)
+    volatility_artifact_path = Path(args.volatility_artifact) if args.volatility_artifact else DEFAULT_VOLATILITY_ARTIFACT
 
     sched = pd.read_parquet(RAW_DIR / "espn_schedule.parquet")
     feats = pd.read_parquet(PROC_DIR / "matchup_features.parquet")
@@ -1379,6 +1416,7 @@ def main():
         this_week_nodup = this_week
     # Load models if present
     preds = this_week[["season","week","home_team","away_team"]].copy()
+    preds["prediction_source"] = "upcoming"
     # Optionally add game identifiers and date if available
     date_col = next((c for c in ["date", "start_date"] if c in this_week.columns), None)
     if date_col is not None and date_col not in preds.columns:
@@ -1549,9 +1587,13 @@ def main():
                         ]
                     except Exception:
                         pass
-            cal_path = Path("models/winprob_calibrator.pkl")
+            cal_candidates = [
+                Path("models/isotonic_calibrator.pkl"),
+                Path("models/winprob_calibrator.pkl"),
+            ]
+            cal_path = next((p for p in cal_candidates if p.exists()), None)
             final_proba = proba_final.copy() if isinstance(proba_final, pd.Series) else np.asarray(proba_final, dtype=float)
-            if cal_path.exists():
+            if cal_path is not None:
                 try:
                     cal_art = joblib.load(cal_path)
                     calibrator = cal_art.get("calibrator")
@@ -1562,6 +1604,12 @@ def main():
                             final_proba = calibrator.transform(final_proba)
                 except Exception as ex:
                     print(f"[win_prob][predict] calibrator load failed: {ex}")
+            market_caps = None
+            if "sched_implied_prob_home" in preds.columns:
+                market_caps = pd.to_numeric(preds["sched_implied_prob_home"], errors="coerce")
+            elif "home_moneyline" in preds.columns:
+                market_caps = moneyline_to_prob(preds["home_moneyline"])
+            final_proba = apply_probability_caps(final_proba, market_caps)
             preds["home_win_prob"] = final_proba
 
         else:
@@ -1574,25 +1622,76 @@ def main():
         spread_feats = spread_art.get("features", [])
         spread_imputer = spread_art.get("imputer")
         quantile_models = spread_art.get("quantile_models") or {}
+        spread_bias = float(spread_art.get("bias_correction", 0.0))
         use_cols = [c for c in spread_feats if c in this_week_nodup.columns]
         if use_cols:
             X_spread = this_week_nodup[use_cols].values
             if spread_imputer is not None:
                 X_spread = spread_imputer.transform(X_spread)
-            preds["pred_home_margin"] = spread_model.predict(X_spread)
+            margin_vals = spread_model.predict(X_spread)
+            if spread_bias:
+                margin_vals = margin_vals - spread_bias
+            preds["pred_home_margin"] = margin_vals
             if quantile_models:
                 if "pred_home_margin_lo" not in preds.columns:
                     preds["pred_home_margin_lo"] = pd.NA
                 if "pred_home_margin_hi" not in preds.columns:
                     preds["pred_home_margin_hi"] = pd.NA
                 if 0.2 in quantile_models:
-                    preds.loc[:, "pred_home_margin_lo"] = quantile_models[0.2].predict(X_spread)
+                    lo_vals = quantile_models[0.2].predict(X_spread)
+                    if spread_bias:
+                        lo_vals = lo_vals - spread_bias
+                    preds.loc[:, "pred_home_margin_lo"] = lo_vals
                 if 0.8 in quantile_models:
-                    preds.loc[:, "pred_home_margin_hi"] = quantile_models[0.8].predict(X_spread)
+                    hi_vals = quantile_models[0.8].predict(X_spread)
+                    if spread_bias:
+                        hi_vals = hi_vals - spread_bias
+                    preds.loc[:, "pred_home_margin_hi"] = hi_vals
         else:
             preds["pred_home_margin"] = None
     except Exception:
         preds["pred_home_margin"] = None
+
+    if not args.disable_volatility:
+        if volatility_artifact_path.exists():
+            try:
+                artifact = load_volatility_artifact(volatility_artifact_path)
+                threshold = args.volatility_threshold if args.volatility_threshold is not None else artifact.threshold
+                vol_prob, _ = score_volatility(this_week_nodup, artifact)
+                win_raw = preds["home_win_prob"] if "home_win_prob" in preds.columns else pd.Series(np.nan, index=preds.index)
+                win_series = pd.Series(pd.to_numeric(win_raw, errors="coerce"), index=preds.index, dtype=float)
+                margin_series = None
+                margin_raw = None
+                if "pred_home_margin" in preds.columns:
+                    margin_raw = preds["pred_home_margin"]
+                    margin_series = pd.Series(pd.to_numeric(margin_raw, errors="coerce"), index=preds.index, dtype=float)
+                adj_prob, adj_margin, labels = apply_volatility_shrinkage(
+                    win_series,
+                    margin_series,
+                    vol_prob.reindex(preds.index),
+                    threshold=float(threshold),
+                    prob_strength=float(args.volatility_strength),
+                    margin_strength=float(args.volatility_margin_strength),
+                )
+                preds["home_win_prob_raw"] = win_raw
+                preds["home_win_prob"] = adj_prob
+                if adj_margin is not None:
+                    preds["pred_home_margin_raw"] = margin_raw if margin_raw is not None else pd.NA
+                    preds["pred_home_margin"] = adj_margin
+                preds["volatility_prob"] = vol_prob.reindex(preds.index)
+                preds["volatility_label"] = labels.reindex(preds.index)
+                if args.debug:
+                    coverage = float((preds["volatility_label"] == 1).mean()) if len(preds) else 0.0
+                    print(
+                        "[predict][volatility] applied shrinkage: "
+                        f"threshold={threshold:.2f} prob_strength={args.volatility_strength:.2f} "
+                        f"margin_strength={args.volatility_margin_strength:.2f} coverage={coverage:.1%}"
+                    )
+            except Exception as exc:
+                if args.debug:
+                    print(f"[predict][volatility] adjustment skipped: {exc}")
+        elif args.debug:
+            print(f"[predict][volatility] artifact {volatility_artifact_path} not found; skipping adjustments")
 
     # Build human-readable explanations for the two prediction values
     def _fmt_prob(p: float, home: str) -> str:
@@ -2216,8 +2315,10 @@ def main():
             + pd.to_numeric(preds["inj_doubtful_away"], errors="coerce")
             + qa
         )
-        preds["questionable_rate_home"] = (qh / th.replace(0, pd.NA)).astype(float)
-        preds["questionable_rate_away"] = (qa / ta.replace(0, pd.NA)).astype(float)
+        denom_h = th.replace(0, np.nan)
+        denom_a = ta.replace(0, np.nan)
+        preds["questionable_rate_home"] = (qh / denom_h).astype(float)
+        preds["questionable_rate_away"] = (qa / denom_a).astype(float)
         preds["questionable_rate_diff"] = preds["questionable_rate_home"] - preds["questionable_rate_away"]
 
     # Approximate punts and field goals if still missing using team totals (very rough placeholder)

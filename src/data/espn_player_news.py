@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -12,6 +13,7 @@ from src.utils.io import RAW_DIR, read_df, write_df
 from src.utils.logging import configure as configure_logging
 
 NEWS_ENDPOINT = "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players"
+META_PATH = RAW_DIR / "espn_player_news_meta.json"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -99,15 +101,59 @@ def _filter_time_window(df: pd.DataFrame, season: int) -> pd.DataFrame:
     return df.drop(columns=["published_dt"])
 
 
+def _load_meta() -> Optional[Dict[str, Any]]:
+    if not META_PATH.exists():
+        return None
+    try:
+        with open(META_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def _write_meta(timestamp: datetime) -> None:
+    META_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(META_PATH, "w", encoding="utf-8") as fh:
+        json.dump({"last_run_utc": timestamp.replace(microsecond=0).isoformat() + "Z"}, fh)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--season", type=int, nargs="+", required=True, help="Season year(s) to collect news for.")
     ap.add_argument("--limit", type=int, default=10, help="Max news items to request per player (default: 10).")
     ap.add_argument("--sleep", type=float, default=0.15, help="Seconds to sleep between requests (default: 0.15).")
+    ap.add_argument("--min-interval-minutes", type=float, default=240.0,
+                    help="Minimum interval between fetches (default: 240 minutes / 4 hours).")
+    ap.add_argument("--grace-minutes", type=float, default=15.0,
+                    help="Always skip if the last run occurred less than this many minutes ago (default: 15).")
+    ap.add_argument("--force-refresh", action="store_true", help="Ignore caching interval and fetch news now.")
     ap.add_argument("--debug", action="store_true", help="Enable verbose logging.")
     args = ap.parse_args()
 
     configure_logging(args.debug)
+
+    now_utc = datetime.utcnow()
+    if not args.force_refresh:
+        meta = _load_meta()
+        if meta and isinstance(meta, dict) and meta.get("last_run_utc"):
+            try:
+                last_run = datetime.fromisoformat(str(meta["last_run_utc"]).replace("Z", "+00:00"))
+            except ValueError:
+                last_run = None
+            if last_run is not None:
+                delta = now_utc - last_run.replace(tzinfo=None)
+                if delta < timedelta(minutes=args.grace_minutes):
+                    print(
+                        "[espn_player_news] Last run was "
+                        f"{delta.total_seconds()/60:.1f} minutes ago (<{args.grace_minutes}m); skipping."
+                    )
+                    return
+                if delta < timedelta(minutes=args.min_interval_minutes):
+                    print(
+                        "[espn_player_news] Last run was "
+                        f"{delta.total_seconds()/60:.1f} minutes ago (<{args.min_interval_minutes}m); skipping."
+                    )
+                    return
 
     seasons = sorted(set(args.season))
     roster_ids = _load_roster_player_ids(seasons)
@@ -120,9 +166,8 @@ def main() -> None:
     processed = 0
 
     for season in seasons:
-        player_ids = roster_ids.loc[
-            (roster_ids["first_season"] <= season) & (roster_ids["last_season"] >= season), "espn_id"
-        ].dropna().astype(int)
+        player_mask = (roster_ids["first_season"] <= season) & (roster_ids["last_season"] >= season)
+        player_ids = roster_ids["espn_id"].where(player_mask).dropna().astype(int)
         if player_ids.empty:
             print(f"[espn_player_news] No players with ESPN ids found for season {season}.")
             continue
@@ -148,6 +193,7 @@ def main() -> None:
 
     if not news_frames:
         print("[espn_player_news] No news collected; nothing to write.")
+        _write_meta(now_utc)
         return
 
     combined = pd.concat(news_frames, ignore_index=True)
@@ -162,6 +208,7 @@ def main() -> None:
 
     write_df(combined, out_path)
     print(f"[espn_player_news] Saved {len(combined)} rows -> {out_path}")
+    _write_meta(now_utc)
 
 
 if __name__ == "__main__":

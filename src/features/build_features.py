@@ -8,8 +8,12 @@ import re
 from pathlib import Path
 import uuid
 from datetime import timedelta
+
+from src.features.volatility import engineer_volatility_inputs
 from src.utils.io import RAW_DIR, PROC_DIR, write_df, read_df
 from src.utils.logging import configure as configure_logging
+
+EARTH_RADIUS_KM = 6371.0
 
 # =========================== Abbreviation normalization ===========================
 
@@ -884,6 +888,8 @@ def build_matchup_features(schedule: pd.DataFrame, team_stats: pd.DataFrame) -> 
         feats["home_margin"] = np.nan
         feats["home_win"] = np.nan
 
+    feats = _add_travel_features(feats)
+
     return feats
 
 # =========================== CLI ===========================
@@ -1035,9 +1041,103 @@ def main():
 
     # ==== Merge game-level weather if available ====
     try:
+        weather_frames: List[Tuple[int, pd.DataFrame]] = []
+
+        visual_path = PROC_DIR / "visualcrossing_weather.parquet"
+        if visual_path.exists():
+            vx_weather = read_df(visual_path)
+            if not vx_weather.empty:
+                vx_weather = vx_weather.copy()
+                for col in ("season", "week"):
+                    if col in vx_weather.columns:
+                        vx_weather[col] = pd.to_numeric(vx_weather[col], errors="coerce").astype("Int64")
+                if "game_id" in vx_weather.columns:
+                    vx_weather["game_id"] = vx_weather["game_id"].astype(str)
+                for team_col in ("home_team", "away_team"):
+                    if team_col in vx_weather.columns:
+                        vx_weather[team_col] = vx_weather[team_col].astype(str).str.upper().str.strip()
+                if "weather_source" not in vx_weather.columns:
+                    vx_weather["weather_source"] = "visualcrossing"
+                weather_frames.append((-1, vx_weather))
+
         weather_path = PROC_DIR / "weather_games.parquet"
         if weather_path.exists():
-            w = read_df(weather_path)
+            base_weather = read_df(weather_path)
+            if not base_weather.empty:
+                if "weather_source" not in base_weather.columns:
+                    base_weather = base_weather.copy()
+                    base_weather["weather_source"] = "tomorrow"
+                weather_frames.append((0, base_weather))
+
+        noaa_path = PROC_DIR / "noaa_weather.parquet"
+        if noaa_path.exists():
+            noaa_weather = read_df(noaa_path)
+            if not noaa_weather.empty:
+                noaa_weather = noaa_weather.copy()
+                if "game_id" in noaa_weather.columns:
+                    noaa_weather["game_id"] = noaa_weather["game_id"].astype(str)
+                for col in ("season", "week"):
+                    if col in noaa_weather.columns:
+                        noaa_weather[col] = pd.to_numeric(noaa_weather[col], errors="coerce").astype("Int64")
+                for team_col in ("home_team", "away_team"):
+                    if team_col in noaa_weather.columns:
+                        noaa_weather[team_col] = (
+                            noaa_weather[team_col].astype(str).str.upper().str.strip()
+                        )
+                rename_map = {
+                    "noaa_temp_f": "weather_temp_f",
+                    "noaa_wind_mph": "weather_wind_mph",
+                    "noaa_wind_gust_mph": "weather_windgust_mph",
+                    "noaa_relative_humidity_pct": "weather_humidity_pct",
+                    "noaa_is_windy": "weather_is_windy",
+                    "noaa_is_cold": "weather_is_cold",
+                    "noaa_is_hot": "weather_is_hot",
+                    "noaa_is_precip": "weather_is_precip",
+                }
+                for src, dest in rename_map.items():
+                    if src in noaa_weather.columns and dest not in noaa_weather.columns:
+                        noaa_weather[dest] = pd.to_numeric(noaa_weather[src], errors="coerce")
+                if "noaa_precip_mm_total" in noaa_weather.columns and "weather_precip_mm_total" not in noaa_weather.columns:
+                    noaa_weather["weather_precip_mm_total"] = pd.to_numeric(
+                        noaa_weather["noaa_precip_mm_total"], errors="coerce"
+                    )
+                if "noaa_precip_mm" in noaa_weather.columns and "weather_precip_mm" not in noaa_weather.columns:
+                    noaa_weather["weather_precip_mm"] = pd.to_numeric(
+                        noaa_weather["noaa_precip_mm"], errors="coerce"
+                    )
+                if "weather_precip_mm" in noaa_weather.columns and "weather_precip_intensity_inph" not in noaa_weather.columns:
+                    noaa_weather["weather_precip_intensity_inph"] = (
+                        pd.to_numeric(noaa_weather["weather_precip_mm"], errors="coerce") / 25.4
+                    )
+                if "start_utc" in noaa_weather.columns and "kickoff" not in noaa_weather.columns:
+                    noaa_weather["kickoff"] = pd.to_datetime(
+                        noaa_weather["start_utc"], errors="coerce", utc=True
+                    )
+                if "weather_temp_f" in noaa_weather.columns and "weather_temp_kickoff_f" not in noaa_weather.columns:
+                    noaa_weather["weather_temp_kickoff_f"] = noaa_weather["weather_temp_f"]
+                if "weather_source" not in noaa_weather.columns:
+                    noaa_weather["weather_source"] = "noaa"
+                weather_frames.append((1, noaa_weather))
+
+        if weather_frames:
+            weather_frames.sort(key=lambda item: item[0])
+            w = pd.concat([frame for _, frame in weather_frames], ignore_index=True, sort=False)
+            w["_weather_rank"] = (
+                w.get("weather_source")
+                .map({"visualcrossing": -1, "tomorrow": 0, "noaa": 1})
+                .fillna(0)
+            )
+            if "game_id" in w.columns:
+                w = w.sort_values(["game_id", "_weather_rank"])
+                w = w.drop_duplicates(subset=["game_id"], keep="last")
+            elif all(col in w.columns for col in ["game_uid", "season", "week", "home_team", "away_team"]):
+                w = w.sort_values(["game_uid", "_weather_rank"])
+                w = w.drop_duplicates(subset=["game_uid"], keep="last")
+            elif all(col in w.columns for col in ["season", "week", "home_team", "away_team"]):
+                w = w.sort_values(["season", "week", "home_team", "away_team", "_weather_rank"])
+                w = w.drop_duplicates(subset=["season", "week", "home_team", "away_team"], keep="last")
+            w = w.drop(columns=["_weather_rank"], errors="ignore")
+
             # Diagnostics: show weather keys and feature keys to debug merge mismatches
             try:
                 print("[weather][diag] weather rows:", len(w))
@@ -1099,9 +1199,10 @@ def main():
                     w[tcol] = w[tcol].astype(str).str.upper().str.strip()
             wx_cols = [c for c in w.columns if c.startswith("weather_") or c in ("kickoff", "roof", "venue_lat", "venue_lon")]
             # Ensure destination columns exist so we can track fills
-            for c in wx_cols:
-                if c not in feats.columns:
-                    feats[c] = pd.NA
+            missing_cols = [c for c in wx_cols if c not in feats.columns]
+            if missing_cols:
+                filler = pd.DataFrame(pd.NA, index=feats.index, columns=missing_cols)
+                feats = pd.concat([feats, filler], axis=1)
             def _wx_mask(df: pd.DataFrame) -> pd.Series:
                 cols = [x for x in ("weather_temp_kickoff_f", "kickoff") if x in df.columns]
                 if not cols:
@@ -1173,7 +1274,7 @@ def main():
                 hit_after_swha = _wx_mask(feats)
                 print(f"[weather] merge season/week/home/away filled: {(hit_after_swha & ~hit_before).sum()} rows (cumulative)")
             # Cleanup any temporary weather merge columns
-            drop_tmp = [c for c in feats.columns if c.endswith("_wx2") or c.endswith("_wx3") or c.endswith("_wx4")]
+            drop_tmp = [c for c in feats.columns if c.endswith("_wx") or c.endswith("_wx2") or c.endswith("_wx3") or c.endswith("_wx4")]
             if drop_tmp:
                 feats.drop(columns=drop_tmp, inplace=True, errors="ignore")
             # Final hit rate
@@ -1188,6 +1289,28 @@ def main():
                     pass
     except Exception as e:
         print(f"[weather] merge skipped: {e}")
+
+    # Weather deltas for modeling (reuse volatility engineering for consistency)
+    try:
+        vol_inputs = engineer_volatility_inputs(feats)
+        feats["wx_temp_delta"] = pd.to_numeric(vol_inputs.get("weather_temp_delta"), errors="coerce")
+        feats["wx_wind_delta"] = pd.to_numeric(vol_inputs.get("wind_mph_delta"), errors="coerce")
+        if "weather_rain_index_diff" in feats.columns:
+            rain_delta = pd.to_numeric(feats["weather_rain_index_diff"], errors="coerce")
+        else:
+            rain_delta = pd.Series(np.nan, index=feats.index)
+        feats["wx_rain_index_delta"] = rain_delta
+        indoor_mask = vol_inputs.get("indoor_game")
+        if indoor_mask is not None:
+            indoor_mask = indoor_mask.astype(bool)
+            for col in ["wx_temp_delta", "wx_wind_delta", "wx_rain_index_delta"]:
+                if col in feats.columns:
+                    feats.loc[indoor_mask, col] = 0.0
+        feats["wx_temp_delta"] = pd.to_numeric(feats["wx_temp_delta"], errors="coerce")
+        feats["wx_wind_delta"] = pd.to_numeric(feats["wx_wind_delta"], errors="coerce")
+        feats["wx_rain_index_delta"] = pd.to_numeric(feats["wx_rain_index_delta"], errors="coerce")
+    except Exception as e:
+        print(f"[weather] delta computation skipped: {e}")
 
     # Stadium context (noise, altitude, weather risk)
     try:
@@ -1368,6 +1491,7 @@ def main():
 
 STADIUM_CONTEXT_PATH = Path("data/reference/stadium_advantages.csv")
 RIVALRIES_PATH = Path("data/reference/rivalries.csv")
+TEAM_LOCATIONS_PATH = Path("data/reference/team_locations.csv")
 
 
 def load_stadium_context() -> pd.DataFrame:
@@ -1401,6 +1525,127 @@ def load_rivalry_table() -> pd.DataFrame:
     df["rivalry_type"] = df["rivalry_type"].astype(str)
     df["notes"] = df.get("notes", "").astype(str)
     return df[["team_abbr", "rival_abbr", "rivalry_type", "intensity"]].copy()
+
+
+def load_team_locations() -> pd.DataFrame:
+    if not TEAM_LOCATIONS_PATH.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(TEAM_LOCATIONS_PATH)
+    if df.empty:
+        return df
+    df["team_abbr"] = df["team_abbr"].astype(str).str.upper()
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+    df["timezone_offset_hours"] = pd.to_numeric(df["timezone_offset_hours"], errors="coerce")
+    return df
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    lat1 = pd.to_numeric(lat1, errors="coerce")
+    lon1 = pd.to_numeric(lon1, errors="coerce")
+    lat2 = pd.to_numeric(lat2, errors="coerce")
+    lon2 = pd.to_numeric(lon2, errors="coerce")
+
+    lat1_rad = np.deg2rad(lat1)
+    lat2_rad = np.deg2rad(lat2)
+    dlat = lat2_rad - lat1_rad
+    dlon = np.deg2rad(lon2 - lon1)
+
+    sin_dlat = np.sin(dlat / 2.0)
+    sin_dlon = np.sin(dlon / 2.0)
+    a = sin_dlat ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * sin_dlon ** 2
+    a = np.clip(a, 0.0, 1.0)
+    c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+    return EARTH_RADIUS_KM * c
+
+
+def _add_travel_features(feats: pd.DataFrame) -> pd.DataFrame:
+    locs = load_team_locations()
+    if locs.empty:
+        return feats
+
+    enriched = feats.copy()
+
+    home_loc = locs.rename(
+        columns={
+            "team_abbr": "home_team",
+            "latitude": "home_base_lat",
+            "longitude": "home_base_lon",
+            "timezone_offset_hours": "home_timezone_offset",
+            "city": "home_base_city",
+            "state": "home_base_state",
+        }
+    )
+    away_loc = locs.rename(
+        columns={
+            "team_abbr": "away_team",
+            "latitude": "away_base_lat",
+            "longitude": "away_base_lon",
+            "timezone_offset_hours": "away_timezone_offset",
+            "city": "away_base_city",
+            "state": "away_base_state",
+        }
+    )
+
+    enriched = enriched.merge(home_loc, on="home_team", how="left")
+    enriched = enriched.merge(away_loc, on="away_team", how="left")
+
+    if "venue_lat" in enriched.columns:
+        venue_lat = pd.to_numeric(enriched["venue_lat"], errors="coerce")
+    else:
+        venue_lat = pd.Series(np.nan, index=enriched.index)
+    if "venue_lon" in enriched.columns:
+        venue_lon = pd.to_numeric(enriched["venue_lon"], errors="coerce")
+    else:
+        venue_lon = pd.Series(np.nan, index=enriched.index)
+    venue_lat = venue_lat.fillna(enriched.get("home_base_lat"))
+    venue_lon = venue_lon.fillna(enriched.get("home_base_lon"))
+
+    enriched["away_travel_distance_km"] = _haversine_km(
+        enriched.get("away_base_lat"),
+        enriched.get("away_base_lon"),
+        venue_lat,
+        venue_lon,
+    )
+    enriched["home_travel_distance_km"] = _haversine_km(
+        enriched.get("home_base_lat"),
+        enriched.get("home_base_lon"),
+        venue_lat,
+        venue_lon,
+    )
+    enriched["away_travel_distance_miles"] = enriched["away_travel_distance_km"] * 0.621371
+    enriched["home_travel_distance_miles"] = enriched["home_travel_distance_km"] * 0.621371
+
+    enriched["home_timezone_offset"] = pd.to_numeric(enriched.get("home_timezone_offset"), errors="coerce")
+    enriched["away_timezone_offset"] = pd.to_numeric(enriched.get("away_timezone_offset"), errors="coerce")
+    enriched["timezone_diff_hours"] = enriched["home_timezone_offset"] - enriched["away_timezone_offset"]
+    enriched["timezone_diff_hours_abs"] = enriched["timezone_diff_hours"].abs()
+    enriched["away_travel_east"] = (enriched["timezone_diff_hours"] > 0).astype("Int64")
+    enriched["away_travel_west"] = (enriched["timezone_diff_hours"] < 0).astype("Int64")
+
+    if "sched_short_rest_flag_away" in enriched.columns:
+        short_rest_flag = pd.to_numeric(enriched["sched_short_rest_flag_away"], errors="coerce").fillna(0)
+    else:
+        short_rest_flag = pd.Series(0, index=enriched.index)
+    if "sched_back_to_back_travel_away" in enriched.columns:
+        back_to_back_flag = pd.to_numeric(enriched["sched_back_to_back_travel_away"], errors="coerce").fillna(0)
+    else:
+        back_to_back_flag = pd.Series(0, index=enriched.index)
+    if "sched_rest_days_away" in enriched.columns:
+        rest_days = pd.to_numeric(enriched["sched_rest_days_away"], errors="coerce")
+    else:
+        rest_days = pd.Series(np.nan, index=enriched.index)
+
+    enriched["travel_km_short_rest"] = enriched["away_travel_distance_km"] * short_rest_flag
+    enriched["travel_km_back_to_back"] = enriched["away_travel_distance_km"] * back_to_back_flag
+    enriched["travel_km_per_rest_day"] = np.where(
+        rest_days > 0,
+        enriched["away_travel_distance_km"] / rest_days,
+        np.nan,
+    )
+    enriched["timezone_diff_short_rest"] = enriched["timezone_diff_hours_abs"] * short_rest_flag
+
+    return enriched
 
 
 def _aggregate_team_week(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
@@ -1482,6 +1727,149 @@ def _add_weekly_deltas(
     out["season"] = out["season"].astype("Int64")
     out["week"] = out["week"].astype("Int64")
     return out
+
+
+def _moneyline_to_prob(odds: pd.Series | np.ndarray | Any) -> np.ndarray:
+    arr = pd.to_numeric(odds, errors="coerce")
+    if isinstance(arr, pd.Series):
+        values = arr.to_numpy(dtype=float, copy=False)
+    else:
+        values = np.asarray(arr, dtype=float)
+    result = np.full_like(values, np.nan, dtype=float)
+    if result.size == 0:
+        return result
+    pos_mask = values > 0
+    neg_mask = values < 0
+    result[pos_mask] = 100.0 / (values[pos_mask] + 100.0)
+    result[neg_mask] = (-values[neg_mask]) / ((-values[neg_mask]) + 100.0)
+    return result
+
+
+def _consecutive_counts(series: pd.Series) -> pd.Series:
+    values = series.fillna(0).astype(int).tolist()
+    out: list[int] = []
+    run = 0
+    for val in values:
+        if val:
+            run += 1
+        else:
+            run = 0
+        out.append(run)
+    return pd.Series(out, index=series.index, dtype="Int64")
+
+
+def _build_schedule_team_features(
+    sched_df: pd.DataFrame,
+    seasons: List[int],
+) -> pd.DataFrame:
+    if sched_df is None or sched_df.empty:
+        return pd.DataFrame()
+
+    sched = _normalize_schedule_columns(sched_df)
+    required = {"season", "week", "home_team", "away_team"}
+    if not required.issubset(sched.columns):
+        return pd.DataFrame()
+
+    sched = sched[sched["season"].isin(seasons)].copy()
+    if sched.empty:
+        return pd.DataFrame()
+
+    sched["gameday_dt"] = pd.to_datetime(sched.get("gameday"), errors="coerce")
+    sched["week"] = pd.to_numeric(sched["week"], errors="coerce")
+    sched["season"] = pd.to_numeric(sched["season"], errors="coerce")
+    sched = sched.dropna(subset=["season", "week", "home_team", "away_team"])
+    if sched.empty:
+        return pd.DataFrame()
+
+    records: list[dict[str, Any]] = []
+    for _, row in sched.iterrows():
+        season = int(row["season"])
+        week = int(row["week"])
+        gameday = row.get("gameday_dt")
+        spread_line = pd.to_numeric(row.get("spread_line"), errors="coerce")
+        total_line = pd.to_numeric(row.get("total_line"), errors="coerce")
+        home_ml = pd.to_numeric(row.get("home_moneyline"), errors="coerce")
+        away_ml = pd.to_numeric(row.get("away_moneyline"), errors="coerce")
+        neutral = bool(row.get("neutral_site", False))
+        for side in ("home", "away"):
+            team = row.get(f"{side}_team")
+            if not isinstance(team, str):
+                continue
+            team = team.upper().strip()
+            rest_val = pd.to_numeric(row.get(f"{side}_rest"), errors="coerce")
+            is_home = 1 if side == "home" else 0
+            is_away = 1 - is_home
+
+            spread_team = spread_line
+            if pd.notna(spread_team) and side == "away":
+                spread_team = -spread_team
+
+            ml_team = home_ml if side == "home" else away_ml
+            implied_prob = _moneyline_to_prob([ml_team])[0] if ml_team is not None else np.nan
+
+            record = {
+                "season": season,
+                "week": week,
+                "team": team,
+                "sched_gameday": gameday,
+                "sched_rest_days": rest_val,
+                "sched_is_home": is_home,
+                "sched_is_away": is_away,
+                "sched_is_neutral_site": int(neutral),
+                "sched_spread_close": spread_team,
+                "sched_spread_close_abs": abs(spread_team) if pd.notna(spread_team) else np.nan,
+                "sched_total_line": total_line,
+                "sched_moneyline": ml_team,
+                "sched_implied_prob": implied_prob,
+            }
+            records.append(record)
+
+    if not records:
+        return pd.DataFrame()
+
+    team_df = pd.DataFrame(records)
+    team_df = team_df.dropna(subset=["season", "week", "team"])
+    if team_df.empty:
+        return pd.DataFrame()
+
+    team_df["season"] = team_df["season"].astype(int)
+    team_df["week"] = team_df["week"].astype(int)
+    team_df.sort_values(["season", "team", "sched_gameday", "week"], inplace=True)
+
+    grouped = team_df.groupby(["season", "team"], group_keys=False)
+    prev_date = grouped["sched_gameday"].shift(1)
+    team_df["sched_days_since_last_game"] = (
+        (team_df["sched_gameday"] - prev_date).dt.days
+    )
+    team_df["sched_prev_is_away"] = grouped["sched_is_away"].shift(1).fillna(0).astype("Int64")
+    team_df["sched_prev_is_home"] = grouped["sched_is_home"].shift(1).fillna(0).astype("Int64")
+
+    team_df["sched_rest_days"] = team_df["sched_rest_days"].fillna(team_df["sched_days_since_last_game"])
+    team_df["sched_rest_days"] = pd.to_numeric(team_df["sched_rest_days"], errors="coerce")
+
+    team_df["sched_short_rest_flag"] = (
+        (team_df["sched_rest_days"] <= 6).astype("Int64")
+    )
+    team_df["sched_long_rest_flag"] = (
+        (team_df["sched_rest_days"] >= 9).astype("Int64")
+    )
+
+    team_df["sched_consecutive_away"] = grouped["sched_is_away"].transform(_consecutive_counts)
+    team_df["sched_consecutive_home"] = grouped["sched_is_home"].transform(_consecutive_counts)
+    team_df["sched_back_to_back_travel"] = (
+        ((team_df["sched_is_away"] == 1) & (team_df["sched_prev_is_away"] == 1))
+        .astype("Int64")
+    )
+
+    numeric_cols = [
+        c
+        for c in team_df.columns
+        if c.startswith("sched_") and pd.api.types.is_numeric_dtype(team_df[c])
+    ]
+    team_df = _add_weekly_deltas(team_df, value_cols=numeric_cols)
+    team_df.drop(columns=["sched_gameday"], inplace=True, errors="ignore")
+
+    return team_df
 
 
 def _build_player_news_features(
@@ -1755,6 +2143,35 @@ def _augment_team_week_features(
         merged.drop(columns=["team"], inplace=True, errors="ignore")
         return merged
 
+    sched_team_features = _build_schedule_team_features(sched_df, seasons)
+    if not sched_team_features.empty:
+        out = _merge_home_away(sched_team_features)
+        sched_cols = [c for c in out.columns if c.startswith("sched_")]
+        for col in sched_cols:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        diff_candidates = [
+            "sched_rest_days",
+            "sched_spread_close",
+            "sched_spread_close_abs",
+            "sched_implied_prob",
+            "sched_consecutive_away",
+            "sched_consecutive_home",
+            "sched_back_to_back_travel",
+            "sched_short_rest_flag",
+            "sched_long_rest_flag",
+            "sched_rest_days_delta",
+            "sched_spread_close_delta",
+            "sched_spread_close_prev",
+            "sched_implied_prob_delta",
+        ]
+        diff_data = {}
+        for base in diff_candidates:
+            h_col, a_col = f"{base}_home", f"{base}_away"
+            if h_col in out.columns and a_col in out.columns:
+                diff_data[f"{base}_diff"] = pd.to_numeric(out[h_col], errors="coerce") - pd.to_numeric(out[a_col], errors="coerce")
+        if diff_data:
+            out = pd.concat([out, pd.DataFrame(diff_data, index=out.index)], axis=1)
+
     # Injuries
     inj = load_raw("nfl_injuries.parquet")
     if not inj.empty and "season" in inj.columns:
@@ -1783,6 +2200,15 @@ def _augment_team_week_features(
                 injc["inj_practice_dnp"] = 0
                 injc["inj_practice_limited"] = 0
                 injc["inj_practice_full"] = 0
+            if "position" in injc.columns:
+                pos_series = injc["position"].astype(str).str.upper()
+            else:
+                pos_series = pd.Series([""] * len(injc), index=injc.index)
+            is_qb = pos_series.str.contains("QB", na=False)
+            injc["inj_qb_out"] = injc["inj_out"] * is_qb.astype(int)
+            injc["inj_qb_doubtful"] = injc["inj_doubtful"] * is_qb.astype(int)
+            injc["inj_qb_questionable"] = injc["inj_questionable"] * is_qb.astype(int)
+            injc["inj_qb_reserve"] = injc["inj_reserve"] * is_qb.astype(int)
             injc["inj_listed_total"] = (
                 injc[["inj_out", "inj_doubtful", "inj_questionable", "inj_reserve"]]
                 .sum(axis=1, min_count=1)
@@ -1797,6 +2223,10 @@ def _augment_team_week_features(
                 "inj_practice_limited",
                 "inj_practice_full",
                 "inj_listed_total",
+                "inj_qb_out",
+                "inj_qb_doubtful",
+                "inj_qb_questionable",
+                "inj_qb_reserve",
             ]
             inj_agg = (
                 injc.groupby(["season", "week", team_col], as_index=False)[agg_cols]
@@ -1898,3 +2328,4 @@ def _augment_team_week_features(
 
 if __name__ == "__main__":
     main()
+EARTH_RADIUS_KM = 6371.0

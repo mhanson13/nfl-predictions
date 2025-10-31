@@ -5,8 +5,75 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.utils.io import RAW_DIR, write_df
+from datetime import datetime
+
+from src.utils.io import RAW_DIR, write_df, read_df
 from src.utils.logging import configure as configure_logging
+
+SEASON_HISTORY_PATH = Path("data/reference/nfl_seasons_history.csv")
+
+
+def _load_finalized_seasons() -> set[int]:
+    try:
+        df = pd.read_csv(SEASON_HISTORY_PATH)
+    except FileNotFoundError:
+        return set()
+    current_year = datetime.utcnow().year
+    finalized = (
+        df[df["champion"].notna() & (df["season"].astype(int) < current_year)]["season"]
+        .astype(int)
+        .tolist()
+    )
+    return set(finalized)
+
+
+def _load_existing(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = read_df(path)
+        if df is None:
+            return pd.DataFrame()
+        return df
+    except Exception as exc:
+        print(f"[nflverse] warning: unable to read {path}: {exc}")
+        return pd.DataFrame()
+
+
+def _determine_seasons_to_fetch(
+    existing: pd.DataFrame,
+    requested: List[int],
+    finalized: set[int],
+    *,
+    force: bool,
+) -> List[int]:
+    if force or existing.empty or "season" not in existing.columns:
+        return requested
+    existing_seasons = set(
+        pd.to_numeric(existing["season"], errors="coerce").dropna().astype(int).tolist()
+    )
+    to_fetch: List[int] = []
+    for season in requested:
+        if force:
+            to_fetch.append(season)
+        elif season not in existing_seasons:
+            to_fetch.append(season)
+        elif season not in finalized:
+            to_fetch.append(season)
+    return to_fetch
+
+
+def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> None:
+    if existing.empty:
+        combined = new_df
+    else:
+        combined = pd.concat([existing, new_df], ignore_index=True)
+    combined = combined.drop_duplicates(ignore_index=True)
+    write_df(combined, path)
+
+
+def _print_skip(dataset: str, seasons: List[int]) -> None:
+    print(f"[nflverse] {dataset}: all requested seasons {seasons} already cached (finalized). Skipping fetch.")
 
 
 def _try_import_nfl():
@@ -201,116 +268,73 @@ def main():
     ap.add_argument("--depthcharts", action="store_true")
     ap.add_argument("--players", action="store_true")
     ap.add_argument("--pfr", nargs="*", choices=["passing", "rushing", "receiving"], help="PFR tables to fetch")
+    ap.add_argument("--force-refresh", action="store_true", help="Ignore caches and re-download data")
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
     args = ap.parse_args()
 
     configure_logging(args.debug)
 
     seasons = [int(s) for s in args.season]
+    finalized_seasons = _load_finalized_seasons()
+
+    def run_dataset(
+        label: str,
+        path: Path,
+        fetch_fn: Callable[[List[int]], Optional[pd.DataFrame]],
+        fallback_fn: Optional[Callable[[List[int]], Optional[pd.DataFrame]]] = None,
+    ) -> None:
+        existing = _load_existing(path)
+        seasons_to_fetch = _determine_seasons_to_fetch(existing, seasons, finalized_seasons, force=args.force_refresh)
+        if not seasons_to_fetch:
+            _print_skip(label, seasons)
+            return
+
+        df = fetch_fn(seasons_to_fetch)
+        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+            _merge_and_write(path, existing, df)
+            print(f"[nflverse] saved {label} rows={len(df)} -> {path}")
+            return
+
+        if fallback_fn is not None:
+            df_fallback = fallback_fn(seasons_to_fetch)
+            if df_fallback is not None and isinstance(df_fallback, pd.DataFrame) and not df_fallback.empty:
+                _merge_and_write(path, existing, df_fallback)
+                print(f"[nflverse] downloaded {label} rows={len(df_fallback)} -> {path}")
+                return
+
+        print(f"[nflverse] no {label} returned for seasons {seasons_to_fetch}")
 
     if args.pbp:
-        pbp = fetch_pbp(seasons)
-        if pbp is not None and not pbp.empty:
-            write_df(pbp, RAW_DIR / "nfl_pbp.parquet")
-            print(f"[nflverse] saved PBP rows={len(pbp)} -> {RAW_DIR / 'nfl_pbp.parquet'}")
-        else:
-            print("[nflverse] no PBP returned")
+        run_dataset("PBP", RAW_DIR / "nfl_pbp.parquet", fetch_pbp)
 
     if args.schedules:
-        sched = fetch_schedules(seasons)
-        if sched is not None and not sched.empty:
-            write_df(sched, RAW_DIR / "nfl_schedules.parquet")
-            print(f"[nflverse] saved schedules rows={len(sched)} -> {RAW_DIR / 'nfl_schedules.parquet'}")
-        else:
-            print("[nflverse] no schedules returned")
+        run_dataset("schedules", RAW_DIR / "nfl_schedules.parquet", fetch_schedules)
 
     if args.rosters:
-        df = fetch_rosters(seasons)
-        if df is not None and not df.empty:
-            write_df(df, RAW_DIR / "nfl_rosters.parquet")
-            print(f"[nflverse] saved rosters rows={len(df)}")
-        else:
-            dfd = download_rosters(seasons)
-            if dfd is not None and not dfd.empty:
-                write_df(dfd, RAW_DIR / "nfl_rosters.parquet")
-                print(f"[nflverse] downloaded rosters rows={len(dfd)}")
+        run_dataset("rosters", RAW_DIR / "nfl_rosters.parquet", fetch_rosters, download_rosters)
 
     if args.injuries:
-        df = fetch_injuries(seasons)
-        if df is not None and not df.empty:
-            write_df(df, RAW_DIR / "nfl_injuries.parquet")
-            print(f"[nflverse] saved injuries rows={len(df)}")
-        else:
-            dfd = download_injuries(seasons)
-            if dfd is not None and not dfd.empty:
-                write_df(dfd, RAW_DIR / "nfl_injuries.parquet")
-                print(f"[nflverse] downloaded injuries rows={len(dfd)}")
+        run_dataset("injuries", RAW_DIR / "nfl_injuries.parquet", fetch_injuries, download_injuries)
 
     if args.snaps:
-        df = fetch_snap_counts(seasons)
-        if df is not None and not df.empty:
-            write_df(df, RAW_DIR / "nfl_snap_counts.parquet")
-            print(f"[nflverse] saved snap counts rows={len(df)}")
+        run_dataset("snap counts", RAW_DIR / "nfl_snap_counts.parquet", fetch_snap_counts)
 
     if args.participation:
-        df = fetch_participation(seasons)
-        if df is not None and not df.empty:
-            write_df(df, RAW_DIR / "nfl_participation.parquet")
-            print(f"[nflverse] saved participation rows={len(df)}")
-        else:
-            dfd = download_participation(seasons)
-            if dfd is not None and not dfd.empty:
-                write_df(dfd, RAW_DIR / "nfl_participation.parquet")
-                print(f"[nflverse] downloaded participation rows={len(dfd)}")
+        run_dataset("participation", RAW_DIR / "nfl_participation.parquet", fetch_participation, download_participation)
 
     if args.depthcharts:
-        df = fetch_depth_charts(seasons)
-        if df is not None and not df.empty:
-            write_df(df, RAW_DIR / "nfl_depth_charts.parquet")
-            print(f"[nflverse] saved depth charts rows={len(df)}")
+        run_dataset("depth charts", RAW_DIR / "nfl_depth_charts.parquet", fetch_depth_charts)
 
     if args.players:
-        df = fetch_player_stats(seasons)
-        if df is not None and not df.empty:
-            write_df(df, RAW_DIR / "nfl_player_stats.parquet")
-            print(f"[nflverse] saved player stats rows={len(df)}")
-        else:
-            dfd = download_player_stats(seasons)
-            if dfd is not None and not dfd.empty:
-                write_df(dfd, RAW_DIR / "nfl_player_stats.parquet")
-                print(f"[nflverse] downloaded player stats rows={len(dfd)}")
+        run_dataset("player stats", RAW_DIR / "nfl_player_stats.parquet", fetch_player_stats, download_player_stats)
 
     if args.pfr:
         if "passing" in args.pfr:
-            df = fetch_pfr_passing(seasons)
-            if df is not None and not df.empty:
-                write_df(df, RAW_DIR / "pfr_passing.parquet")
-                print(f"[nflverse] saved PFR passing rows={len(df)}")
-            else:
-                dfd = download_pfr_passing(seasons)
-                if dfd is not None and not dfd.empty:
-                    write_df(dfd, RAW_DIR / "pfr_passing.parquet")
-                    print(f"[nflverse] downloaded PFR passing rows={len(dfd)}")
+            run_dataset("pfr_passing", RAW_DIR / "pfr_passing.parquet", fetch_pfr_passing, download_pfr_passing)
         if "rushing" in args.pfr:
-            df = fetch_pfr_rushing(seasons)
-            if df is not None and not df.empty:
-                write_df(df, RAW_DIR / "pfr_rushing.parquet")
-                print(f"[nflverse] saved PFR rushing rows={len(df)}")
-            else:
-                dfd = download_pfr_rushing(seasons)
-                if dfd is not None and not dfd.empty:
-                    write_df(dfd, RAW_DIR / "pfr_rushing.parquet")
-                    print(f"[nflverse] downloaded PFR rushing rows={len(dfd)}")
+            run_dataset("pfr_rushing", RAW_DIR / "pfr_rushing.parquet", fetch_pfr_rushing, download_pfr_rushing)
         if "receiving" in args.pfr:
-            df = fetch_pfr_receiving(seasons)
-            if df is not None and not df.empty:
-                write_df(df, RAW_DIR / "pfr_receiving.parquet")
-                print(f"[nflverse] saved PFR receiving rows={len(df)}")
-            else:
-                dfd = download_pfr_receiving(seasons)
-                if dfd is not None and not dfd.empty:
-                    write_df(dfd, RAW_DIR / "pfr_receiving.parquet")
-                    print(f"[nflverse] downloaded PFR receiving rows={len(dfd)}")
+            run_dataset("pfr_receiving", RAW_DIR / "pfr_receiving.parquet", fetch_pfr_receiving, download_pfr_receiving)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,110 @@
+[
+  {
+    "volatility_threshold": 0.4,
+    "volatility_strength": 0.1,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:00.938714Z"
+  },
+  {
+    "volatility_threshold": 0.4,
+    "volatility_strength": 0.2,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:10.257468Z"
+  },
+  {
+    "volatility_threshold": 0.4,
+    "volatility_strength": 0.3,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:19.405534Z"
+  },
+  {
+    "volatility_threshold": 0.5,
+    "volatility_strength": 0.1,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:28.554217Z"
+  },
+  {
+    "volatility_threshold": 0.5,
+    "volatility_strength": 0.2,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:37.794359Z"
+  },
+  {
+    "volatility_threshold": 0.5,
+    "volatility_strength": 0.3,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:46.938301Z"
+  },
+  {
+    "volatility_threshold": 0.6,
+    "volatility_strength": 0.1,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:45:55.995301Z"
+  },
+  {
+    "volatility_threshold": 0.6,
+    "volatility_strength": 0.2,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:46:05.294233Z"
+  },
+  {
+    "volatility_threshold": 0.6,
+    "volatility_strength": 0.3,
+    "n_games": 2581.0,
+    "accuracy": 0.6784192173576133,
+    "brier": 0.217756883628737,
+    "log_loss": 0.6269682571830609,
+    "auc": 0.745209185148474,
+    "mae_margin": 10.241838010396773,
+    "rmse_margin": 13.207839935396333,
+    "run_timestamp": "2025-10-27T00:46:14.477722Z"
+  }
+]

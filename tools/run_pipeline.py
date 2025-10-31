@@ -48,9 +48,34 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip running the evaluation module at the end of the pipeline.",
     )
     parser.add_argument(
-        "--skip-sportradar",
+        "--skip-market-roi",
         action="store_true",
-        help="Skip Sportradar data fetch even if an API key is configured.",
+        help="Skip market ROI analysis after evaluation.",
+    )
+    parser.add_argument(
+        "--skip-sportsdataio",
+        action="store_true",
+        help="Skip SportsDataIO data fetch even if an API key is configured.",
+    )
+    parser.add_argument(
+        "--skip-visualcrossing",
+        action="store_true",
+        help="Skip Visual Crossing weather fetch even if an API key is configured.",
+    )
+    parser.add_argument(
+        "--skip-yahoo",
+        action="store_true",
+        help="Skip Yahoo Sports API fetch even if credentials are configured.",
+    )
+    parser.add_argument(
+        "--skip-volatility",
+        action="store_true",
+        help="Skip volatility classifier and shrinkage adjustments before calibration.",
+    )
+    parser.add_argument(
+        "--skip-logit",
+        action="store_true",
+        help="Skip logistic companion model during win probability training.",
     )
     parser.add_argument(
         "--use-gpu",
@@ -99,28 +124,63 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Prefix for Optuna study names created by the pipeline.",
     )
     parser.add_argument(
+        "--volatility-model",
+        choices=["logreg", "xgb", "rf"],
+        default="logreg",
+        help="Model to use for volatility classifier.",
+    )
+    parser.add_argument(
+        "--volatility-percentile",
+        type=float,
+        default=0.6,
+        help="Percentile for labeling high-error (volatile) games.",
+    )
+    parser.add_argument(
+        "--volatility-random-state",
+        type=int,
+        default=42,
+        help="Random seed for volatility classifier splits.",
+    )
+    parser.add_argument(
+        "--volatility-threshold",
+        type=float,
+        default=0.55,
+        help="Volatility probability threshold triggering win-prob shrinkage.",
+    )
+    parser.add_argument(
+        "--volatility-strength",
+        type=float,
+        default=0.35,
+        help="Shrinkage strength toward 0.5 for volatile games (0-1).",
+    )
+    parser.add_argument(
+        "--calibrate-winprob",
+        action="store_true",
+        help="Calibrate the win probability model during training (CalibratedClassifierCV).",
+    )
+    parser.add_argument(
         "--calibration-season-window",
         type=int,
         default=3,
         help="Number of most recent seasons to use when fitting win probability calibration.",
     )
     parser.add_argument(
-        "--sportradar-feeds",
+        "--sportsdataio-feeds",
         nargs="+",
         default=None,
-        help="Override the list of Sportradar feeds (Phase A static feeds only).",
+        help="Override SportsDataIO feeds (default: teams stadiums schedules standings projections dfs_slates betting_futures draft_picks free_agents).",
     )
     parser.add_argument(
-        "--sportradar-args",
-        nargs=argparse.REMAINDER,
+        "--yahoo-feeds",
+        nargs="+",
         default=None,
-        help="Additional arguments forwarded to the Sportradar data module.",
+        help="Override Yahoo feeds (default: game teams players injuries).",
     )
     parser.add_argument(
-        "--sportradar-mode",
-        choices=["full", "nightly"],
-        default="full",
-        help="Sportradar fetch mode: 'full' runs static + change feeds, 'nightly' focuses on change feeds.",
+        "--yahoo-season",
+        type=int,
+        default=None,
+        help="Optional season value for Yahoo scoreboard feed.",
     )
     parser.add_argument(
         "--dry-run",
@@ -184,6 +244,7 @@ def run_jobs_parallel(
     env: dict[str, str] | None,
     dry_run: bool,
 ) -> None:
+    optional_jobs = {"yahoo_static"}
     if max_workers <= 1 or len(jobs) <= 1:
         run_jobs_sequential(jobs, env, dry_run)
         return
@@ -200,6 +261,9 @@ def run_jobs_parallel(
             try:
                 future.result()
             except Exception as exc:  # pragma: no cover - propagate with context
+                if job.name in optional_jobs:
+                    print(f"[pipeline] Warning: optional job {job.name} failed ({exc}); continuing.")
+                    continue
                 raise RuntimeError(f"Data job {job.name} failed") from exc
 
 
@@ -208,10 +272,11 @@ def build_data_jobs(
     current_year: int,
     debug_flag: list[str],
     *,
-    include_sportradar: bool,
-    sportradar_feeds: list[str] | None,
-    sportradar_args: list[str] | None,
-    sportradar_mode: str,
+    include_sportsdataio: bool,
+    sportsdataio_feeds: list[str] | None,
+    include_yahoo: bool,
+    yahoo_feeds: list[str] | None,
+    yahoo_season: int | None,
 ) -> list[Job]:
     season_args = [str(y) for y in years]
     debug = debug_flag.copy()
@@ -247,39 +312,31 @@ def build_data_jobs(
             ["python", "-m", "src.data.espn_team_news", "--season", str(current_year), "--limit", "50", *debug],
         )
     )
-    if include_sportradar:
-        if sportradar_feeds:
-            feeds = list(sportradar_feeds)
-        elif sportradar_mode == "nightly":
-            feeds = []
-        else:
-            feeds = ["league_hierarchy", "teams", "seasons", "season_schedule", "team_roster"]
-        for change_feed in ("daily_change_log", "daily_transactions"):
-            if change_feed not in feeds:
-                feeds.append(change_feed)
-        season_params: list[str] = []
-        needs_seasons = {"season_schedule", "weekly_schedule", "weekly_depth_charts", "seasonal_statistics"}
-        if any(feed in needs_seasons for feed in feeds):
-            has_custom_seasons = bool(sportradar_args) and "--seasons" in sportradar_args
-            if not has_custom_seasons:
-                season_params = ["--seasons", str(current_year)]
-        command = [
+    jobs.append(
+        Job(
+            "noaa_weather",
+            ["python", "-m", "src.data.noaa", "--seasons", *season_args, *debug],
+        )
+    )
+    if include_sportsdataio:
+        sportsdataio_cmd = [
             "python",
             "-m",
-            "src.data.sportradar",
-            "--feeds",
-            *feeds,
+            "src.data.sportsdataio",
+            "--seasons",
+            str(current_year),
             *debug,
-            *season_params,
         ]
-        if sportradar_args:
-            command.extend(sportradar_args)
-        jobs.append(
-            Job(
-                "sportradar_static",
-                command,
-            )
-        )
+        if sportsdataio_feeds:
+            sportsdataio_cmd.extend(["--feeds", *sportsdataio_feeds])
+        jobs.append(Job("sportsdataio", sportsdataio_cmd))
+    if include_yahoo:
+        yahoo_cmd = ["python", "-m", "src.data.yahoo", *debug]
+        if yahoo_feeds:
+            yahoo_cmd.extend(["--feeds", *yahoo_feeds])
+        if yahoo_season is not None:
+            yahoo_cmd.extend(["--season", str(yahoo_season)])
+        jobs.append(Job("yahoo_static", yahoo_cmd))
     return jobs
 
 
@@ -289,36 +346,40 @@ def build_sequential_jobs(
     pred_dir: Path,
     debug_flag: list[str],
     skip_evaluation: bool,
-    include_sportradar: bool,
+    include_visualcrossing: bool,
     train_start_year: int,
     calibration_season_window: int,
     use_gpu: bool,
+    calibrate_winprob: bool,
     *,
     enable_tuning: bool,
     tuning_dir: Path,
     tuning_options: dict[str, object],
+    skip_logit: bool,
+    skip_market_roi: bool,
+    volatility_options: dict[str, object] | None = None,
 ) -> list[Job]:
     season_args = [str(y) for y in years]
     debug = debug_flag.copy()
     jobs: list[Job] = []
+    vol_cfg = volatility_options or {}
+    volatility_dataset_path = Path(vol_cfg.get("dataset_path", Path("analysis/volatility_classifier_dataset.csv")))
+    skip_volatility = vol_cfg.get("skip", False)
 
+    jobs.append(Job("nfl_reference_refresh", ["python", "-m", "src.data.reference.update_regular_season", *debug]))
     winprob_config_path = tuning_dir / "winprob_best.json"
     spread_config_path = tuning_dir / "spread_best.json"
+    apply_winprob_config = enable_tuning or winprob_config_path.exists()
+    apply_spread_config = enable_tuning or spread_config_path.exists()
 
-    if include_sportradar:
+    jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
+    if include_visualcrossing:
         jobs.append(
             Job(
-                "sportradar_transform",
-                ["python", "-m", "src.data.sportradar_transform", *debug],
+                "visualcrossing_weather",
+                ["python", "-m", "src.data.visualcrossing", "--seasons", *season_args, "--only-missing", *debug],
             )
         )
-        jobs.append(
-            Job(
-                "sportradar_report",
-                ["python", "-m", "tools.sportradar_report", *debug],
-        )
-        )
-    jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
     jobs.append(Job("build_features", ["python", "-m", "src.features.build_features", "--season", *season_args, *debug]))
 
     if enable_tuning:
@@ -383,12 +444,16 @@ def build_sequential_jobs(
             tune_spread_cmd.extend(["--timeout", str(timeout_spread)])
         jobs.append(Job("tune_spread", tune_spread_cmd))
 
-    train_win_cmd = ["python", "-m", "src.models.train", "--target", "win_prob", "--calibrate", *debug]
+    train_win_cmd = ["python", "-m", "src.models.train", "--target", "win_prob", *debug]
     if train_start_year is not None:
         train_win_cmd.extend(["--train-start-year", str(train_start_year)])
     if use_gpu:
         train_win_cmd.append("--use-gpu")
-    if enable_tuning:
+    if skip_logit:
+        train_win_cmd.append("--skip-logit")
+    if calibrate_winprob:
+        train_win_cmd.append("--calibrate")
+    if apply_winprob_config:
         train_win_cmd.extend(["--param-config", str(winprob_config_path)])
     jobs.append(Job("train_win_prob", train_win_cmd))
 
@@ -397,7 +462,7 @@ def build_sequential_jobs(
         train_spread_cmd.extend(["--train-start-year", str(train_start_year)])
     if use_gpu:
         train_spread_cmd.append("--use-gpu")
-    if enable_tuning:
+    if apply_spread_config:
         train_spread_cmd.extend(["--param-config", str(spread_config_path)])
     jobs.append(Job("train_spread", train_spread_cmd))
 
@@ -445,6 +510,24 @@ def build_sequential_jobs(
     ]
     jobs.append(Job("predict_history", history_args))
 
+    if not skip_volatility:
+        volatility_dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        volatility_cmd = [
+            "python",
+            "-m",
+            "analysis.volatility_classifier",
+            "--model",
+            str(vol_cfg.get("model", "logreg")),
+            "--percentile",
+            str(vol_cfg.get("percentile", 0.6)),
+            "--random-state",
+            str(vol_cfg.get("random_state", 42)),
+            "--disable-season-split",
+            "--calibrate",
+            *debug,
+        ]
+        jobs.append(Job("volatility_classifier", volatility_cmd))
+
     calibrate_args = [
         "python",
         "-m",
@@ -455,6 +538,19 @@ def build_sequential_jobs(
         str(calibration_season_window),
         *debug,
     ]
+    if not skip_volatility:
+        calibrate_args.extend(
+            [
+                "--volatility-dataset",
+                str(volatility_dataset_path),
+                "--volatility-threshold",
+                str(vol_cfg.get("threshold", 0.55)),
+                "--volatility-strength",
+                str(vol_cfg.get("strength", 0.35)),
+            ]
+        )
+    else:
+        calibrate_args.append("--disable-volatility")
     jobs.append(Job("calibrate_winprob", calibrate_args))
 
     if not skip_evaluation:
@@ -467,11 +563,22 @@ def build_sequential_jobs(
                     "src.evaluation.evaluate_predictions",
                     "--min-games",
                     "1",
+                    "--skip-plots",
                     *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
                     *debug,
                 ],
             )
         )
+
+    if not skip_evaluation and not skip_market_roi:
+        roi_cmd = [
+            "python",
+            "-m",
+            "analysis.market_roi",
+            *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
+            *debug,
+        ]
+        jobs.append(Job("market_roi", roi_cmd))
 
     return jobs
 
@@ -507,23 +614,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         "load_if_exists": True,
     }
 
-    env = os.environ.copy()
+    volatility_options = {
+        "skip": args.skip_volatility,
+        "model": args.volatility_model,
+        "percentile": args.volatility_percentile,
+        "random_state": args.volatility_random_state,
+        "threshold": args.volatility_threshold,
+        "strength": args.volatility_strength,
+        "dataset_path": Path("analysis/volatility_classifier_dataset.csv"),
+    }
 
-    sportradar_key = get_secret("SPORTSRADAR_NFL_API_KEY")
-    include_sportradar = bool(sportradar_key) and not args.skip_sportradar
-    if args.skip_sportradar:
-        print("[pipeline] Sportradar fetch skipped via flag.")
-    elif not sportradar_key:
-        print("[pipeline] Sportradar API key not found; skipping Sportradar jobs.")
+    env = os.environ.copy()
+    sportsdataio_key = get_secret("SPORTSDATAIO_API_KEY")
+    include_sportsdataio = bool(sportsdataio_key) and not args.skip_sportsdataio
+    if args.skip_sportsdataio:
+        print("[pipeline] SportsDataIO fetch skipped via flag.")
+    elif not sportsdataio_key:
+        print("[pipeline] SportsDataIO API key not found; skipping SportsDataIO job.")
+
+    visualcrossing_key = get_secret("VISUAL_CROSSING_API_KEY")
+    include_visualcrossing = bool(visualcrossing_key) and not args.skip_visualcrossing
+    if args.skip_visualcrossing:
+        print("[pipeline] Visual Crossing fetch skipped via flag.")
+    elif not visualcrossing_key:
+        print("[pipeline] Visual Crossing API key not found; skipping Visual Crossing weather job.")
+
+    yahoo_client_id = get_secret("YAHOO_CLIENT_ID")
+    yahoo_client_secret = get_secret("YAHOO_CLIENT_SECRET")
+    yahoo_access_token = get_secret("YAHOO_ACCESS_TOKEN")
+    yahoo_access_secret = get_secret("YAHOO_ACCESS_TOKEN_SECRET")
+    yahoo_refresh_token = yahoo_access_secret  # backwards compatibility
+    if not yahoo_refresh_token:
+        yahoo_refresh_token = get_secret("YAHOO_REFRESH_TOKEN")
+    include_yahoo = bool(yahoo_client_id and yahoo_client_secret and yahoo_access_token and yahoo_refresh_token) and not args.skip_yahoo
+    if args.skip_yahoo:
+        print("[pipeline] Yahoo fetch skipped via flag.")
+    elif not include_yahoo:
+        print("[pipeline] Yahoo API credentials not found; skipping Yahoo job.")
 
     data_jobs = build_data_jobs(
         years,
         current_year,
         debug_flag,
-        include_sportradar=include_sportradar,
-        sportradar_feeds=args.sportradar_feeds,
-        sportradar_args=args.sportradar_args,
-        sportradar_mode=args.sportradar_mode,
+        include_sportsdataio=include_sportsdataio,
+        sportsdataio_feeds=args.sportsdataio_feeds,
+        include_yahoo=include_yahoo,
+        yahoo_feeds=args.yahoo_feeds,
+        yahoo_season=args.yahoo_season,
     )
     print(
         f"[pipeline] Running {len(data_jobs)} data jobs with max_parallel={args.max_parallel_data}, "
@@ -543,13 +680,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         pred_dir,
         debug_flag,
         args.skip_evaluation,
-        include_sportradar,
+        include_visualcrossing,
         args.train_start_year,
         args.calibration_season_window,
         args.use_gpu,
+        args.calibrate_winprob,
         enable_tuning=args.enable_tuning,
         tuning_dir=tuning_dir,
         tuning_options=tuning_options,
+        skip_logit=args.skip_logit,
+        skip_market_roi=args.skip_market_roi,
+        volatility_options=volatility_options,
     )
     print(f"[pipeline] Running {len(sequential_jobs)} sequential jobs")
     run_jobs_sequential(sequential_jobs, env=env, dry_run=args.dry_run)

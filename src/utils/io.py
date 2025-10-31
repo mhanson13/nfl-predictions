@@ -135,7 +135,15 @@ def write_df(df: pd.DataFrame, path: Path) -> None:
 
 def read_df(path: Path) -> pd.DataFrame:
     if path.suffix == ".parquet":
-        return pd.read_parquet(path)
+        try:
+            return pd.read_parquet(path)
+        except Exception as primary_exc:
+            try:
+                df_fallback = pd.read_parquet(path, engine="fastparquet")
+            except Exception:
+                raise primary_exc
+            print(f"[io] Warning: fell back to fastparquet for {path} ({primary_exc})")
+            return df_fallback
     return pd.read_csv(path)
 
 

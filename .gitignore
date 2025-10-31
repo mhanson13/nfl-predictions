@@ -1,4 +1,3 @@
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -57,7 +56,9 @@ predictions/
 
 # Secrets
 secrets.env
+yahoo_temp.py
 
 # OS
 .DS_Store
 Thumbs.db
+secrets.json

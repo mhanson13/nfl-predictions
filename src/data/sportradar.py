@@ -228,10 +228,19 @@ def fetch_to_path(client: SportradarClient, path: str, target: Path, dry_run: bo
         response = client.request(path)
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response else "unknown"
+        if status in (401, 403):
+            logger.warning("Unauthorized (%s) for %s; skipping Sportradar fetch.", status, path)
+            return
         if status == 404:
             logger.warning("Feed not available (404) for %s; skipping.", path)
             return
+        if status == 429:
+            logger.warning("Rate limited (429) for %s; skipping after retries.", path)
+            return
         raise
+    except Exception as exc:
+        logger.warning("Failed to fetch %s (%s); skipping.", path, exc)
+        return
     data = response.json()
     target.write_text(json.dumps(data, indent=2), encoding="utf-8")
     logger.info("Saved %s (%d bytes)", target, target.stat().st_size)
@@ -256,10 +265,19 @@ def fetch_change_feed(
         response = client.request(f"league/{feed}.json", params=params)
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response else "unknown"
+        if status in (401, 403):
+            logger.warning("Unauthorized (%s) for change feed %s; skipping.", status, feed)
+            return None
         if status == 404:
             logger.warning("Change feed %s not available (404); skipping.", feed)
             return None
+        if status == 429:
+            logger.warning("Rate limited (429) for change feed %s; skipping after retries.", feed)
+            return None
         raise
+    except Exception as exc:
+        logger.warning("Failed to fetch change feed %s (%s); skipping.", feed, exc)
+        return None
     data = response.json()
     target.write_text(json.dumps(data, indent=2), encoding="utf-8")
     logger.info("Saved %s (%d bytes)", target, target.stat().st_size)
@@ -411,13 +429,20 @@ def main() -> None:
         ids_from_schedule = extract_game_ids_from_schedule(args.schedule_json, week_filter)
         game_ids = dedupe_preserve_order(game_ids + ids_from_schedule)
 
-    feeds_needing_teams = set(args.feeds) & (ROSTER_FEEDS | {"team_profile"})
+    feeds = list(args.feeds)
+    feeds_needing_teams = set(feeds) & (ROSTER_FEEDS | {"team_profile"})
     if feeds_needing_teams and not team_ids:
         try:
             team_ids = load_latest_team_ids(args.save_dir)
             logger.info("Loaded %d team IDs from latest teams feed.", len(team_ids))
         except Exception as exc:
-            raise RuntimeError("Unable to derive team IDs for roster/profile requests.") from exc
+            logger.warning(
+                "Unable to derive team IDs for roster/profile requests (%s); skipping feeds %s.",
+                exc,
+                sorted(feeds_needing_teams),
+            )
+            feeds = [f for f in feeds if f not in feeds_needing_teams]
+            feeds_needing_teams = set()
 
     manual_change_since = None
     if args.since:
@@ -427,7 +452,7 @@ def main() -> None:
             raise ValueError("--since must be ISO8601 timestamp.") from exc
 
     feed_requests = build_requests(
-        args.feeds, seasons, weeks, team_ids, game_ids, player_ids
+        feeds, seasons, weeks, team_ids, game_ids, player_ids
     )
     logger.info("Prepared %d feed requests.", len(feed_requests))
 

@@ -1,0 +1,52 @@
+{
+  "settings": {
+    "start_season": 2016,
+    "end_season": null,
+    "moneyline_thresholds": [
+      0.0,
+      0.02,
+      0.05
+    ],
+    "spread_thresholds": [
+      0.0,
+      1.0,
+      2.0
+    ],
+    "margin_error_sigma": 13.671451280023861
+  },
+  "moneyline_best": {
+    "bet_type": "moneyline",
+    "bet_side": "away",
+    "threshold": 0.02,
+    "n_bets": 1102.0,
+    "wins": 319.0,
+    "losses": 783.0,
+    "pushes": 0.0,
+    "hit_rate": 0.2894736842105263,
+    "avg_model_prob": 0.3921422678905233,
+    "avg_implied_prob": 0.28281365227875016,
+    "avg_expected_profit": 0.5270593738235866,
+    "avg_edge_prob": 0.10932861561177315,
+    "avg_odds_decimal": 3.9478039927404716,
+    "avg_odds_american": 294.78039927404717,
+    "total_profit": -27.72,
+    "roi": -0.025154264972776768
+  },
+  "spread_best": {
+    "bet_type": "spread",
+    "bet_side": "home",
+    "threshold": 2.0,
+    "n_bets": 1520.0,
+    "wins": 1218.0,
+    "losses": 279.0,
+    "pushes": 23.0,
+    "hit_rate": 0.8136272545090181,
+    "avg_cover_prob": 0.694464792535005,
+    "avg_expected_profit": 0.3537021678396206,
+    "avg_edge_points": 7.293271220458727,
+    "avg_odds_decimal": 1.947234099855841,
+    "avg_odds_american": -65.7328947368421,
+    "total_profit": 879.0865040837652,
+    "roi": 0.578346384265635
+  }
+}

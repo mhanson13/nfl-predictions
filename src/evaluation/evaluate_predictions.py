@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If provided, only evaluate seasons <= this value.",
     )
+    parser.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="Skip generating Matplotlib plots (useful on headless systems).",
+    )
     return parser.parse_args()
 
 
@@ -131,7 +136,11 @@ def load_actuals(path: Path) -> pd.DataFrame:
         "away_score",
         "home_margin",
     ]
-    df = pd.read_parquet(path, columns=cols)
+    try:
+        df = pd.read_parquet(path, columns=cols)
+    except Exception as exc:
+        logger.warning("Primary parquet read failed (%s); retrying with fastparquet.", exc)
+        df = pd.read_parquet(path, columns=cols, engine="fastparquet")
     df = df.drop_duplicates(subset=["game_id"], keep="last")
     df = df[df["home_margin"].notna()]
     df["actual_home_win"] = np.where(
@@ -153,7 +162,22 @@ def unify_predictions(frames: list[PredictionFrame]) -> pd.DataFrame:
         needed = {"game_id", "home_team", "away_team"}
         missing = needed - set(df.columns)
         if missing:
-            raise ValueError(f"{frame.path} is missing expected columns: {sorted(missing)}")
+            logger.warning("Skipping %s missing columns %s", frame.path, sorted(missing))
+            continue
+        required_metrics = {
+            "season",
+            "week",
+            "home_win_prob",
+            "pred_home_margin",
+        }
+        missing_metrics = required_metrics - set(df.columns)
+        if missing_metrics:
+            logger.warning(
+                "Skipping %s missing probability columns %s",
+                frame.path,
+                sorted(missing_metrics),
+            )
+            continue
         df = df[
             [
                 "season",
@@ -318,39 +342,57 @@ def summarize_underperformance(merged: pd.DataFrame, output_dir: Path) -> None:
     team_summary.to_csv(output_dir / "team_error_summary.csv", index=False)
 
 
-def plot_metrics(weekly: pd.DataFrame, output_dir: Path) -> None:
+def plot_metrics(weekly: pd.DataFrame, output_dir: Path) -> bool:
     if weekly.empty:
-        return
+        return False
+    max_points = 180
+    if len(weekly) > max_points:
+        logger.warning(
+            "Skipping plot generation (%d weekly rows exceeds threshold %d).",
+            len(weekly),
+            max_points,
+        )
+        return False
     output_dir.mkdir(parents=True, exist_ok=True)
     labels = weekly.apply(lambda r: f"{int(r['season'])}-W{int(r['week']):02d}", axis=1)
+    label_values = labels.to_numpy()
+    x = np.arange(len(label_values))
+    tick_step = max(1, len(label_values) // 40)
+    tick_idx = np.arange(0, len(label_values), tick_step)
+    if tick_idx.size == 0 or tick_idx[-1] != len(label_values) - 1:
+        tick_idx = np.append(tick_idx, len(label_values) - 1)
+    tick_idx = np.unique(tick_idx)
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(labels, weekly["accuracy"], marker="o", label="Accuracy")
-    ax.plot(labels, weekly["brier"], marker="o", label="Brier (lower better)")
-    ax.plot(labels, weekly["log_loss"], marker="o", label="Log loss (lower better)")
+    ax.plot(x, weekly["accuracy"], marker="o", label="Accuracy")
+    ax.plot(x, weekly["brier"], marker="o", label="Brier (lower better)")
+    ax.plot(x, weekly["log_loss"], marker="o", label="Log loss (lower better)")
     ax.set_title("Classification Metrics by Week")
     ax.set_xlabel("Week")
     ax.set_ylabel("Metric value")
     ax.set_ylim(bottom=0)
     ax.legend()
     ax.grid(True, linestyle="--", alpha=0.4)
-    fig.autofmt_xdate(rotation=45)
-    fig.tight_layout()
+    ax.set_xticks(tick_idx)
+    ax.set_xticklabels(label_values[tick_idx], rotation=45, ha="right")
+    fig.subplots_adjust(bottom=0.28)
     fig.savefig(output_dir / "classification_metrics.png", dpi=150)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(labels, weekly["mae_margin"], marker="o", label="MAE (pts)")
-    ax.plot(labels, weekly["rmse_margin"], marker="o", label="RMSE (pts)")
+    ax.plot(x, weekly["mae_margin"], marker="o", label="MAE (pts)")
+    ax.plot(x, weekly["rmse_margin"], marker="o", label="RMSE (pts)")
     ax.set_title("Margin Regression Metrics by Week")
     ax.set_xlabel("Week")
     ax.set_ylabel("Points")
     ax.legend()
     ax.grid(True, linestyle="--", alpha=0.4)
-    fig.autofmt_xdate(rotation=45)
-    fig.tight_layout()
+    ax.set_xticks(tick_idx)
+    ax.set_xticklabels(label_values[tick_idx], rotation=45, ha="right")
+    fig.subplots_adjust(bottom=0.28)
     fig.savefig(output_dir / "margin_metrics.png", dpi=150)
     plt.close(fig)
+    return True
 
 
 def main() -> None:
@@ -399,7 +441,11 @@ def main() -> None:
 
     merged.to_csv(args.output_dir / "merged_predictions_actuals.csv", index=False)
     weekly.to_csv(args.output_dir / "weekly_metrics.csv", index=False)
-    plot_metrics(weekly, args.output_dir)
+    plotted = False
+    if args.skip_plots:
+        logger.info("Skipping plot generation (--skip-plots).")
+    else:
+        plotted = plot_metrics(weekly, args.output_dir)
     summarize_underperformance(merged, args.output_dir)
 
     overall = compute_overall_metrics(merged)
@@ -421,7 +467,10 @@ def main() -> None:
         print("No completed weeks met the minimum game threshold; metrics not generated.")
     else:
         print("Saved weekly metrics to", args.output_dir / "weekly_metrics.csv")
-        print("Saved plots to", args.output_dir)
+        if args.skip_plots or not plotted:
+            print("Skipped plot image generation; see logs for details.")
+        else:
+            print("Saved plots to", args.output_dir)
 
     if overall:
         auc_val = overall["auc"]

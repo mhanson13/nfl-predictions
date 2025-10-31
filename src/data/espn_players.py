@@ -7,6 +7,8 @@ from typing import List, Optional
 import pandas as pd
 import requests
 
+from datetime import datetime
+
 from src.utils.io import RAW_DIR, write_df
 from src.utils.logging import configure as configure_logging
 
@@ -22,6 +24,22 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     )
 }
+
+SEASON_HISTORY_PATH = Path("data/reference/nfl_seasons_history.csv")
+
+
+def _load_finalized_seasons() -> set[int]:
+    try:
+        df = pd.read_csv(SEASON_HISTORY_PATH)
+    except FileNotFoundError:
+        return set()
+    current_year = datetime.utcnow().year
+    finalized = (
+        df[df["champion"].notna() & (df["season"].astype(int) < current_year)]["season"]
+        .astype(int)
+        .tolist()
+    )
+    return set(finalized)
 
 
 def _fetch_page(url: str) -> Optional[pd.DataFrame]:
@@ -111,18 +129,30 @@ def main():
     ap.add_argument("--season_type", type=int, choices=[2, 3], default=2, help="2=regular, 3=postseason")
     ap.add_argument("--category", nargs="+", default=["passing", "rushing", "receiving"],
                     choices=["passing", "rushing", "receiving"], help="Categories to fetch")
+    ap.add_argument("--force-refresh", action="store_true", help="Download even if cached data exists for finalized seasons")
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
     args = ap.parse_args()
 
     configure_logging(args.debug)
 
+    finalized_seasons = _load_finalized_seasons()
+    if args.debug and finalized_seasons:
+        print(f"[espn_players] finalized seasons with cached preference: {sorted(finalized_seasons)[:5]}...")
+
     for year in args.season:
         for cat in args.category:
+            out_path = RAW_DIR / f"espn_playerstats_{cat}_{year}_stype{args.season_type}.parquet"
+            if (
+                not args.force_refresh
+                and year in finalized_seasons
+                and out_path.exists()
+            ):
+                print(f"[espn_players] Skip {cat} {year} (cache hit; season finalized)")
+                continue
             df = _fetch_category(year, args.season_type, cat)
             if df is None or df.empty:
                 print(f"[espn_players] No data for {cat} {year} stype={args.season_type}")
                 continue
-            out_path = RAW_DIR / f"espn_playerstats_{cat}_{year}_stype{args.season_type}.parquet"
             write_df(df, out_path)
             print(f"[espn_players] Saved {len(df)} rows -> {out_path}")
 

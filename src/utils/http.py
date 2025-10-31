@@ -89,11 +89,20 @@ class SportradarClient:
                         except ValueError:
                             wait_seconds = self.retry_config.backoff_factor
                         time.sleep(wait_seconds)
-                        continue
                     else:
                         self._sleep_backoff(attempt)
-                        continue
+                    last_exc = httpx.HTTPStatusError(
+                        "Too Many Requests",
+                        request=response.request,
+                        response=response,
+                    )
+                    continue
                 if response.status_code >= 500:
+                    last_exc = httpx.HTTPStatusError(
+                        f"Server error {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
                     self._sleep_backoff(attempt)
                     continue
                 response.raise_for_status()
