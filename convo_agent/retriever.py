@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -67,6 +67,18 @@ TEAM_CODES = {
     "TB",
     "TEN",
     "WAS",
+}
+
+WEEKDAY_KEYWORDS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+    "tomorrow": "tomorrow",
+    "today": "today",
 }
 
 
@@ -140,6 +152,7 @@ class StructuredLookup:
         season_match = re.search(r"(20[0-4]\d)", query_clean)
         threshold_match = re.search(r"(?:threshold|cut(?:off)?)\s*(0\.\d+)", query_clean)
         date_match = re.search(r"(0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])[/-](20\d{2})", query_clean)
+        weekday = next((day for day in WEEKDAY_KEYWORDS if day in query_clean), None)
 
         teams = {code for code in TEAM_CODES if code.lower() in query_clean}
 
@@ -158,6 +171,17 @@ class StructuredLookup:
                 filters["date"] = datetime(year, month, day).date()
             except ValueError:
                 pass
+        if weekday is not None:
+            weekday_value = WEEKDAY_KEYWORDS[weekday]
+            if isinstance(weekday_value, int):
+                filters["weekday"] = weekday_value
+            elif weekday_value == "tomorrow":
+                filters["date_relative"] = 1
+            elif weekday_value == "today":
+                filters["date_relative"] = 0
+
+        if any(token in query_clean for token in ("will", "upcoming", "next", "future", "this week", "predict", "tomorrow", "today")):
+            filters["stage"] = "upcoming"
 
         return filters
 
@@ -233,6 +257,8 @@ class StructuredLookup:
         week = filters.get("week")
         teams = filters.get("teams", set())
         target_date = filters.get("date")
+        weekday = filters.get("weekday")
+        stage = filters.get("stage")
 
         if season is not None and "season" in df.columns:
             mask &= df["season"] == season
@@ -246,8 +272,8 @@ class StructuredLookup:
             if "away_team" in df.columns:
                 team_mask |= df["away_team"].astype(str).str.upper().isin(teams)
             mask &= team_mask
+        kickoff_col = None
         if target_date is not None:
-            kickoff_col = None
             for candidate in ("kickoff", "game_date", "date"):
                 if candidate in df.columns:
                     kickoff_col = candidate
@@ -255,6 +281,15 @@ class StructuredLookup:
             if kickoff_col:
                 kickoff_ts = pd.to_datetime(df[kickoff_col], errors="coerce").dt.date
                 mask &= kickoff_ts == target_date
+        if weekday is not None:
+            kickoff_col = kickoff_col or next(
+                (c for c in ("kickoff", "game_date", "date") if c in df.columns), None
+            )
+            if kickoff_col:
+                kickoff_ts = pd.to_datetime(df[kickoff_col], errors="coerce")
+                mask &= kickoff_ts.dt.weekday == weekday
+        if stage is not None and "prediction_source" in df.columns:
+            mask &= df["prediction_source"].astype(str).str.lower() == str(stage).lower()
 
         subset = df.loc[mask].copy()
         if subset.empty:
