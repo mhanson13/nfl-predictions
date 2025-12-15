@@ -1,3 +1,17 @@
+# Copyright (c) 2025 Matt Hanson
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import argparse
@@ -14,27 +28,27 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from src.utils.io import MODELS_DIR
-
-
-def _load_history(paths: Iterable[Path]) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for path in paths:
-        try:
-            df = pd.read_csv(path)
-            df["_source_path"] = str(path)
-            frames.append(df)
-        except Exception as ex:
-            print(f"[calibrate] skip {path}: {ex}")
-    if not frames:
-        return pd.DataFrame()
-    combined = pd.concat(frames, ignore_index=True)
-    return combined
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Calibrate win probability model using historical predictions.")
-    parser.add_argument("--history-dir", type=Path, default=Path("predictions/history"), help="Directory with prediction history CSVs")
-    parser.add_argument("--seasons", type=int, nargs="*", help="Explicit seasons to include")
+
+
+def _load_history(paths: Iterable[Path]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for path in paths:
+        try:
+            df = pd.read_csv(path)
+            df["_source_path"] = str(path)
+            frames.append(df)
+        except Exception as ex:
+            print(f"[calibrate] skip {path}: {ex}")
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    return combined
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Calibrate win probability model using historical predictions.")
+    parser.add_argument("--history-dir", type=Path, default=Path("predictions/history"), help="Directory with prediction history CSVs")
+    parser.add_argument("--seasons", type=int, nargs="*", help="Explicit seasons to include")
     parser.add_argument("--season-window", type=int, default=2, help="If seasons not provided, use this many most recent seasons")
     parser.add_argument("--min-games", type=int, default=250, help="Minimum game count required for calibration")
     parser.add_argument("--output", type=Path, default=MODELS_DIR / "winprob_calibrator.pkl", help="Destination for calibrator artifact (deprecated; use --save-calibrator)")
@@ -48,8 +62,8 @@ def _parse_args() -> argparse.Namespace:
     parser.set_defaults(apply_isotonic=True)
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging.")
     return parser.parse_args()
-
-
+
+
 def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
@@ -57,37 +71,37 @@ def main() -> None:
 
     if not args.history_dir.exists():
         raise FileNotFoundError(f"History directory {args.history_dir} not found")
-
-    csv_paths = sorted(args.history_dir.glob("*.csv"))
-    history = _load_history(csv_paths)
-    if history.empty:
-        raise RuntimeError("No prediction history found")
-
-    if "home_win_prob" not in history.columns:
-        raise RuntimeError("History files must include home_win_prob column")
-
-    if "home_margin" not in history.columns and "actual_home_win" not in history.columns:
-        raise RuntimeError("History files must include home_margin or actual_home_win column")
-
-    # Compute season column if missing (try to infer from filename)
-    if "season" not in history.columns or history["season"].isna().all():
-        inferred = []
-        for src in history["_source_path"]:
-            stem = Path(src).stem
-            season_digits = "".join([c for c in stem if c.isdigit()])
-            inferred.append(int(season_digits[:4]) if len(season_digits) >= 4 else np.nan)
-        history["season"] = inferred
-
-    history["season"] = pd.to_numeric(history["season"], errors="coerce")
-    history = history.dropna(subset=["season"])
-    history["season"] = history["season"].astype(int)
-
-    if args.seasons:
-        seasons = sorted(set(args.seasons))
-    else:
-        seasons = sorted(history["season"].unique())[-args.season_window:]
-    history = history[history["season"].isin(seasons)].copy()
-
+
+    csv_paths = sorted(args.history_dir.glob("*.csv"))
+    history = _load_history(csv_paths)
+    if history.empty:
+        raise RuntimeError("No prediction history found")
+
+    if "home_win_prob" not in history.columns:
+        raise RuntimeError("History files must include home_win_prob column")
+
+    if "home_margin" not in history.columns and "actual_home_win" not in history.columns:
+        raise RuntimeError("History files must include home_margin or actual_home_win column")
+
+    # Compute season column if missing (try to infer from filename)
+    if "season" not in history.columns or history["season"].isna().all():
+        inferred = []
+        for src in history["_source_path"]:
+            stem = Path(src).stem
+            season_digits = "".join([c for c in stem if c.isdigit()])
+            inferred.append(int(season_digits[:4]) if len(season_digits) >= 4 else np.nan)
+        history["season"] = inferred
+
+    history["season"] = pd.to_numeric(history["season"], errors="coerce")
+    history = history.dropna(subset=["season"])
+    history["season"] = history["season"].astype(int)
+
+    if args.seasons:
+        seasons = sorted(set(args.seasons))
+    else:
+        seasons = sorted(history["season"].unique())[-args.season_window:]
+    history = history[history["season"].isin(seasons)].copy()
+
     if "actual_home_win" in history.columns:
         actual = pd.to_numeric(history["actual_home_win"], errors="coerce")
     else:
@@ -243,7 +257,7 @@ def main() -> None:
         print(f"[calibrate] saved reliability plot -> {curve_path}")
     except Exception as exc:
         print(f"[calibrate] reliability plot skipped: {exc}")
-
-
-if __name__ == "__main__":
-    main()
+
+
+if __name__ == "__main__":
+    main()

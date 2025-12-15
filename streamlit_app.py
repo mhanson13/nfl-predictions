@@ -1,808 +1,1083 @@
-import math
-from pathlib import Path
-from typing import Iterable, List
+# Copyright (c) 2025 Matt Hanson
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-import joblib
-import numpy as np
-import pandas as pd
-import streamlit as st
-
-COLUMN_DOCS = {
-    "season": "Season year",
-    "week": "NFL week number",
-    "matchup": "Formatted as 'Away @ Home'",
-    "home_team": "Home team abbreviation",
-    "away_team": "Away team abbreviation",
-    "home_win_prob": "Model-predicted probability the home team wins",
-    "pred_home_margin": "Predicted home margin (positive favors the home team)",
-    "pred_home_margin_lo": "Lower bound of predicted margin interval",
-    "pred_home_margin_hi": "Upper bound of predicted margin interval",
-    "news_count7_home": "News/injury keyword hits impacting the home team in the last 7 days",
-    "news_count7_away": "News/injury keyword hits impacting the away team in the last 7 days",
-    "inj_out_home": "Home players currently ruled out",
-    "inj_out_away": "Away players currently ruled out",
-    "weather_temp_kickoff_f": "Kickoff temperature (°F)",
-    "weather_wind_speed_mph": "Kickoff wind speed (mph)",
-    "offense_team": "Team whose offense is being evaluated",
-    "defense_team": "Opponent defense facing that offense",
-    "mismatch_score": "Composite offense-versus-defense mismatch score (higher favors the offense)",
-    "offense_signal": "Aggregated offensive signal derived from keyword metrics",
-    "defense_vulnerability": "Aggregated defensive weakness signal",
-    "win_prob": "Win probability for the highlighted offense's team",
-    "predicted_margin": "Predicted margin for the highlighted offense's team",
-    "news_7d": "News/injury hits (7-day window) affecting the highlighted offense's team",
-    "injury_count": "Count of out/doubtful/questionable players for the highlighted offense's team",
-    "run_mismatch": "Composite rushing mismatch score",
-    "rush_signal": "Aggregated rushing offense signal",
-    "defensive_rush_vulnerability": "Rush defense vulnerability signal",
-    "top_rush_metric": "Representative rushing metric (yards, attempts, etc.)",
-    "rush_allowed_metric": "Representative rushing allowed metric for the defense",
-    "receiving_mismatch": "Composite receiving mismatch score",
-    "receiving_signal": "Aggregated passing/receiving offense signal",
-    "def_pass_vulnerability": "Pass defense vulnerability signal",
-    "top_receiving_metric": "Representative receiving metric (yards, targets, etc.)",
-    "coverage_allowed_metric": "Representative coverage yards allowed metric for the defense",
-    "favorite_team": "Model favourite in the matchup",
-    "opponent": "Underdog opponent",
-    "favorite_win_prob": "Favourite's win probability",
-    "favorite_margin": "Favourite's predicted margin",
-    "injury_pressure": "Injury burden applied to the favourite",
-    "news_pressure": "News/injury keyword hits affecting the favourite",
-    "depth_pressure": "Depth chart/snap stress indicator for the favourite",
-    "weather_penalty": "Weather-based risk penalty",
-    "risk_score": "Composite upset-risk score (higher indicates more external pressure)",
-    "home_news_hits": "News/injury hits impacting the home team",
-    "away_news_hits": "News/injury hits impacting the away team",
-    "home_injuries": "Injury burden on the home team",
-    "away_injuries": "Injury burden on the away team",
-    "combined_pressure": "Combined availability/news pressure on both teams",
-    "weather_temp": "Kickoff temperature (°F)",
-    "weather_wind": "Wind speed or descriptor at kickoff",
-    "weather_notes": "Additional weather details (joined text)",
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import textwrap
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+from dateutil import tz
+
+BASE_DIR = Path(__file__).resolve().parent
+PREDICTIONS_DIR = BASE_DIR / "predictions"
+ANALYSIS_DIR = BASE_DIR / "analysis"
+PROCESSED_DIR = BASE_DIR / "data" / "processed"
+SPORTRADAR_DIR = PROCESSED_DIR / "sportradar"
+PLAYER_ACTUALS_PATH = PROCESSED_DIR / "player_actuals.parquet"
+
+MOUNTAIN_TZ = tz.gettz("America/Denver")
+
+ARTIFACTS = {
+    PREDICTIONS_DIR / "predictions_full.csv": "Upcoming team predictions",
+    PREDICTIONS_DIR / "predictions_players_offense.csv": "Upcoming offensive projections",
+    PREDICTIONS_DIR / "predictions_players_qb.csv": "Upcoming QB projections",
+    PREDICTIONS_DIR / "predictions_players_defense.csv": "Upcoming defensive projections",
+    PREDICTIONS_DIR / "evaluation" / "overall_metrics.csv": "Evaluation metrics history",
+    ANALYSIS_DIR / "volatility_classifier_metrics.json": "Volatility classifier report",
+    BASE_DIR / "models" / "isotonic_calibrator.pkl": "Win probability calibrator",
+}
+
+PIPELINE_TEMPLATES: Dict[str, str] = {
+    "Run full pipeline": "python -m tools.run_pipeline --debug",
+    "Refresh data only": "python -m tools.run_pipeline --debug --skip-evaluation --skip-market-roi",
+    "Rebuild matchup features": "python -m src.features.build_features --season 2002 2025 --debug",
+    "Retrain win probability model": "python -m src.models.train --target win_prob --use-gpu --debug",
+    "Generate upcoming predictions": "python -m src.predict.predict_upcoming --season 2025 --week 11 --overwrite --debug",
+    "Generate historical predictions": "python -m src.predict.predict_history --seasons 2025 --overwrite --debug",
+}
+
+TRANSPARENCY_DOCS = {
+    "feature_importance_winprob_full.csv": "Permutation feature importance for the current win probability model (higher = bigger impact).",
+    "feature_importance_winprob_baseline.csv": "Legacy win probability importances to compare against the current feature mix.",
+    "feature_importance_spread_full.csv": "Permutation feature importance for the point-spread regression model.",
+    "feature_importance_spread_baseline.csv": "Older spread model importances kept for before/after comparisons.",
+    "feature_lift_summary.json": "Quick summary of how the latest feature set improves lift versus the baseline configuration.",
+    "market_roi_moneyline.csv": "Backtest of model picks versus closing moneyline odds, including hit rate and ROI.",
+    "market_roi_spread.csv": "Backtest of spread edges, showing cover rate and return on investment.",
+    "market_roi_summary.json": "High-level summary of the market ROI experiments (moneyline + spread).",
+    "volatility_classifier_dataset.csv": "Full dataset used to train the active volatility classifier (logreg blend).",
+    "volatility_classifier_dataset_logreg.csv": "Logistic regression-ready version of the volatility dataset.",
+    "volatility_classifier_dataset_xgb.csv": "Gradient boosting ready volatility dataset (feature engineered for tree models).",
+    "volatility_classifier_importance.csv": "Average feature importances for the volatility ensemble.",
+    "volatility_classifier_importance_logreg.csv": "Feature contributions for the logistic-regression volatility model.",
+    "volatility_classifier_importance_xgb.csv": "Feature gains for the XGBoost volatility model.",
+    "volatility_classifier_metrics.json": "Headline precision/recall/AUC metrics for the active volatility classifier.",
+    "volatility_classifier_metrics_logreg.json": "Detailed metrics for the logistic-regression volatility model.",
+    "volatility_classifier_metrics_xgb.json": "Detailed metrics for the XGBoost volatility model.",
+    "volatility_shrink_grid.csv": "Grid search results for how strongly to shrink picks in volatile spots.",
+    "volatility_shrink_grid.json": "Summary of the shrink grid sweep—best thresholds and shrink factors.",
+    "volatility_slice_metrics.csv": "Breakdowns of model error by weather, travel, rest, and other volatility slices.",
 }
+
+
+st.set_page_config(
+    page_title="NFL Analytics Command Center",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+        body {background-color: #10121a; color: #f5f7ff;}
+        .stApp {background-color: #10121a;}
+        .stMetric-label, .stMetric-value {color: #f5f7ff !important;}
+        .stTabs [role="tablist"] button {background-color: #161a27; color: #f5f7ff;}
+        .stTabs [role="tablist"] button[aria-selected="true"] {background-color: #1f2435;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("NFL Analytics Command Center")
+st.caption("Operational control, transparency, predictions, and performance retrospectives in one place.")
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _load_parquet(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def load_csv(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return None
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def list_predictions_history() -> List[Path]:
+    history_dir = PREDICTIONS_DIR / "history"
+    if not history_dir.exists():
+        return []
+    return sorted(history_dir.glob("w*_predictions_history_*.csv"))
+
+
+@st.cache_data(show_spinner=False)
+def load_team_history() -> pd.DataFrame:
+    frames: List[pd.DataFrame] = []
+    for path in list_predictions_history():
+        df = load_csv(path)
+        if df is not None and not df.empty:
+            df["source_file"] = path.name
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    data = pd.concat(frames, ignore_index=True)
+    for col in ("season", "week"):
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce").astype("Int64")
+    return data
+
+
+@st.cache_data(show_spinner=False)
+def load_player_predictions(kind: str) -> pd.DataFrame:
+    frames: List[pd.DataFrame] = []
 
+    # Include the consolidated latest export if it exists.
+    latest_path = PREDICTIONS_DIR / f"predictions_players_{kind}.csv"
+    latest_df = load_csv(latest_path)
+    if latest_df is not None and not latest_df.empty:
+        latest_df = latest_df.copy()
+        latest_df["source_file"] = latest_path.name
+        frames.append(latest_df)
 
-st.set_page_config(page_title="NFL Predictions", layout="wide")
-st.title("NFL Predictions Intelligence Center")
+    # Pull historical week-specific exports (w##_predictions_players_*.csv).
+    pattern = f"w*_predictions_players_{kind}.csv"
+    for path in sorted(PREDICTIONS_DIR.glob(pattern)):
+        df = load_csv(path)
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["source_file"] = path.name
+        frames.append(df)
 
+    if not frames:
+        return pd.DataFrame()
 
-@st.cache_data
-def load_preds(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
+    data = pd.concat(frames, ignore_index=True, sort=False)
+    data["source_file"] = data["source_file"].astype(str)
+
+    # Prefer consolidated exports over per-week files when duplicates appear.
+    priority_flag = data["source_file"].eq(f"predictions_players_{kind}.csv").astype(int)
+    data["_priority"] = priority_flag
+    # Stable sort so higher priority rows appear first.
+    data = data.sort_values(["_priority", "source_file"], ascending=[False, True])
+
+    dedupe_keys = [col for col in ["season", "week", "game_id", "player_id", "player_name", "team"] if col in data.columns]
+    if dedupe_keys:
+        data = data.drop_duplicates(subset=dedupe_keys, keep="first")
+    data = data.drop(columns="_priority", errors="ignore")
+
     for col in ("season", "week"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-    for col in ("home_win_prob", "pred_home_margin"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce").astype("Int64")
+    for col in ("player_rank", "games_sampled"):
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+    return data
+
+
+def _parse_stats(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return {}
+
+
+def _clean_last_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z\s\-]", "", name or "")
+    parts = cleaned.strip().split()
+    return re.sub(r"[^A-Za-z]", "", parts[-1]).upper() if parts else ""
+
+
+def _first_initial(name: str) -> str:
+    cleaned = name.strip().replace("-", " ")
+    return cleaned[0].upper() if cleaned else ""
+
+
+def _tokenize_prediction_name(name: str) -> Tuple[str, str]:
+    if not isinstance(name, str):
+        return "", ""
+    if "." in name:
+        first, last = name.split(".", 1)
+    else:
+        parts = name.split()
+        first, last = (parts[0], parts[-1]) if parts else ("", "")
+    return _first_initial(first), re.sub(r"[^A-Za-z]", "", last.upper())
+
+
+def _tokenize_actual_name(name: str) -> Tuple[str, str]:
+    if not isinstance(name, str):
+        return "", ""
+    cleaned = name.replace("'", "").replace("-", " ").strip()
+    parts = cleaned.split()
+    if not parts:
+        return "", ""
+    first_initial = parts[0][0].upper()
+    last_name = re.sub(r"[^A-Za-z]", "", parts[-1]).upper()
+    return first_initial, last_name
+
+
+@st.cache_data(show_spinner=False)
+def load_player_actuals() -> Optional[pd.DataFrame]:
+    if PLAYER_ACTUALS_PATH.exists():
+        stats = _load_parquet(PLAYER_ACTUALS_PATH)
+        if stats is None or stats.empty:
+            return None
+        stats = stats.copy()
+        if "stats_dict" not in stats.columns:
+            stats["stats_dict"] = stats["stats"].apply(_parse_stats)
+        stats["team_alias"] = stats["team_alias"].astype(str).str.upper()
+        stats["first_initial"] = stats["player_name"].apply(_first_initial)
+        stats["last_name"] = stats["player_name"].apply(_clean_last_name)
+        return stats
 
-
-def _hist_counts(series: pd.Series, bins: int) -> pd.DataFrame:
-    series = pd.to_numeric(series, errors="coerce").dropna()
-    if series.empty:
-        return pd.DataFrame({"bin": [], "count": []})
-    counts, edges = np.histogram(series.to_numpy(dtype=float), bins=bins)
-    labels = [f"{edges[i]:.3f}-{edges[i+1]:.3f}" for i in range(len(edges) - 1)]
-    return pd.DataFrame({"bin": labels, "count": counts})
-
-
-def _safe_float(val: float | str | pd.Series | None) -> float | None:
-    try:
-        num = float(val)  # type: ignore[arg-type]
-        return num if math.isfinite(num) else None
-    except Exception:
+    stats_path = SPORTRADAR_DIR / "game_player_stats.parquet"
+    roster_path = SPORTRADAR_DIR / "roster_players.parquet"
+    if not stats_path.exists() or not roster_path.exists():
+        return None
+    stats = _load_parquet(stats_path)
+    roster = _load_parquet(roster_path)
+    if stats is None or roster is None or stats.empty or roster.empty:
         return None
 
+    alias_map = roster[["team_id", "team_alias"]].drop_duplicates()
+    stats = stats.merge(alias_map, on="team_id", how="left")
+    stats["stats_dict"] = stats["stats"].apply(_parse_stats)
+    stats["first_initial"] = stats["player_name"].apply(_first_initial)
+    stats["last_name"] = stats["player_name"].apply(_clean_last_name)
+    return stats
+
+
+def _aggregate_offense_actuals(stats: pd.DataFrame) -> pd.DataFrame:
+    rushing = stats[stats["stat_category"] == "rushing"].copy()
+    rushing["rush_yards"] = rushing["stats_dict"].apply(lambda d: float(d.get("yards", 0) or 0))
+
+    receiving = stats[stats["stat_category"] == "receiving"].copy()
+    receiving["rec_yards"] = receiving["stats_dict"].apply(lambda d: float(d.get("yards", 0) or 0))
+
+    defense = (
+        pd.concat(
+            [rushing[["game_id", "team_alias", "player_name", "first_initial", "last_name", "rush_yards"]],
+             receiving[["game_id", "team_alias", "player_name", "first_initial", "last_name", "rec_yards"]]],
+            axis=0,
+        )
+        .groupby(["game_id", "team_alias", "player_name", "first_initial", "last_name"], as_index=False)
+        .sum(min_count=1)
+    )
+    defense["actual_total_yards"] = defense.get("rush_yards", 0).fillna(0) + defense.get("rec_yards", 0).fillna(0)
+    return defense
+
+
+def _aggregate_passing_actuals(stats: pd.DataFrame) -> pd.DataFrame:
+    passing = stats[stats["stat_category"] == "passing"].copy()
+    passing["pass_yards"] = passing["stats_dict"].apply(lambda d: float(d.get("yards", 0) or 0))
+    return passing[
+        ["game_id", "team_alias", "player_name", "first_initial", "last_name", "pass_yards"]
+    ].rename(columns={"pass_yards": "actual_passing_yards"})
+
+
+def _aggregate_defense_actuals(stats: pd.DataFrame) -> pd.DataFrame:
+    defense = stats[stats["stat_category"] == "defense"].copy()
+    defense["sacks"] = defense["stats_dict"].apply(lambda d: float(d.get("sacks", 0) or 0))
+    defense["qb_hits"] = defense["stats_dict"].apply(lambda d: float(d.get("qb_hits", 0) or 0))
+    return defense[
+        ["game_id", "team_alias", "player_name", "first_initial", "last_name", "sacks", "qb_hits"]
+    ].rename(columns={"sacks": "actual_sacks", "qb_hits": "actual_qb_hits"})
+
+
+def _merge_prediction_actuals(
+    preds: pd.DataFrame,
+    actuals: pd.DataFrame,
+    team_col: str = "team",
+    value_map: Optional[Dict[str, str]] = None,
+) -> pd.DataFrame:
+    if preds.empty or actuals is None or actuals.empty:
+        return pd.DataFrame()
+
+    preds = preds.copy()
+    preds["team"] = preds[team_col].astype(str).str.upper()
+    preds["first_initial"], preds["last_name"] = zip(*preds["player_name"].map(_tokenize_prediction_name))
+
+    actuals = actuals.copy()
+    actuals = actuals.rename(columns={"team_alias": "team"})
+    merged = preds.merge(
+        actuals,
+        on=["game_id", "team", "first_initial", "last_name"],
+        how="left",
+        suffixes=("", "_actual"),
+    )
+    if value_map:
+        for pred_col, actual_col in value_map.items():
+            if pred_col in merged.columns and actual_col in merged.columns:
+                merged[f"{pred_col}_error"] = merged[actual_col] - merged[pred_col]
+    return merged
+
+
+@st.cache_data(show_spinner=False)
+def build_offense_evaluation() -> pd.DataFrame:
+    preds = load_player_predictions("offense")
+    stats = load_player_actuals()
+    if preds.empty or stats is None:
+        return pd.DataFrame()
+    offense_actual = _aggregate_offense_actuals(stats)
+    merged = _merge_prediction_actuals(
+        preds,
+        offense_actual,
+        value_map={"projected_total_yards": "actual_total_yards"},
+    )
+    return merged
+
+
+@st.cache_data(show_spinner=False)
+def build_qb_evaluation() -> pd.DataFrame:
+    preds = load_player_predictions("qb")
+    stats = load_player_actuals()
+    if preds.empty or stats is None:
+        return pd.DataFrame()
+    passing_actual = _aggregate_passing_actuals(stats)
+    merged = _merge_prediction_actuals(
+        preds,
+        passing_actual,
+        value_map={"projected_passing_yards": "actual_passing_yards"},
+    )
+    return merged
+
+
+@st.cache_data(show_spinner=False)
+def build_defense_evaluation() -> pd.DataFrame:
+    preds = load_player_predictions("defense")
+    stats = load_player_actuals()
+    if preds.empty or stats is None:
+        return pd.DataFrame()
+    defense_actual = _aggregate_defense_actuals(stats)
+    merged = _merge_prediction_actuals(
+        preds,
+        defense_actual,
+        value_map={"projected_sacks": "actual_sacks"},
+    )
+    return merged
+
+
+def _calculate_confidence(series: pd.Series) -> pd.Series:
+    if series is None or series.empty:
+        return series
+    max_val = series.max()
+    if not max_val or np.isnan(max_val):
+        return pd.Series(np.nan, index=series.index)
+    return np.round(np.clip(series / max_val, 0, 1), 3)
+
+
+def run_command(cmd: str) -> Tuple[int, str, str]:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=BASE_DIR,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return result.returncode, result.stdout, result.stderr
+    except Exception as exc:  # pragma: no cover - defensive
+        return 1, "", str(exc)
+
+
+def artifact_summary() -> pd.DataFrame:
+    rows = []
+    for path, description in ARTIFACTS.items():
+        if path.exists():
+            stat = path.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime)
+            rows.append(
+                {
+                    "artifact": path.name,
+                    "description": description,
+                    "location": str(path.relative_to(BASE_DIR)),
+                    "last_modified": modified.strftime("%Y-%m-%d %H:%M:%S"),
+                    "age_hours": round((datetime.now() - modified).total_seconds() / 3600, 1),
+                    "size_kb": round(stat.st_size / 1024, 1),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "artifact": path.name,
+                    "description": description,
+                    "location": str(path.relative_to(BASE_DIR)),
+                    "last_modified": "missing",
+                    "age_hours": None,
+                    "size_kb": None,
+                }
+            )
+    return pd.DataFrame(rows)
 
-def _safe_int(val: float | str | pd.Series | None) -> int | None:
-    num = _safe_float(val)
+
+def _coerce_metric(value: Any) -> Optional[float]:
+    """Convert assorted metric representations to float or None."""
+    if value is None:
+        return None
+    coerced = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return float(coerced) if pd.notna(coerced) else None
+
+
+def _format_metric(value: Any, places: int = 3) -> str:
+    num = _coerce_metric(value)
     if num is None:
+        return "–"
+    return f"{num:.{places}f}"
+
+
+METRIC_COLUMNS = ["accuracy", "auc", "brier", "log_loss", "mae_margin", "rmse_margin"]
+
+
+def _prepare_metrics_frame(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+    working["stage_norm"] = working.get("stage", "").fillna("").astype(str).str.lower()
+    working["run_timestamp"] = pd.to_datetime(working.get("run_timestamp"), errors="coerce")
+    working["timestamp"] = pd.to_datetime(working.get("timestamp"), errors="coerce")
+    sort_key = working["run_timestamp"].where(working["run_timestamp"].notna(), working["timestamp"])
+    working["_sort_key"] = sort_key.fillna(pd.Timestamp.utcnow())
+    return working
+
+
+def _pick_metric_row(
+    working: pd.DataFrame,
+    column: str,
+    prefer_stage: Optional[str] = "calibrated",
+) -> Optional[pd.Series]:
+    if column not in working.columns:
         return None
-    try:
-        return int(num)
-    except Exception:
+    subset = working[working[column].notna()]
+    if subset.empty:
         return None
+    if prefer_stage:
+        preferred = subset[subset["stage_norm"] == prefer_stage]
+        if not preferred.empty:
+            subset = preferred
+    subset = subset.sort_values("_sort_key", ascending=False)
+    return subset.iloc[0]
 
 
-OFFENSE_KEYWORDS = ["pass", "rush", "receiv", "yards", "scoring", "epa", "plays", "off_"]
-OFFENSE_EXCLUDE = ["def_", "news_", "inj_", "depth_", "roster_", "snap_", "weather", "margin", "win_prob"]
-DEFENSE_WEAK_KEYWORDS = ["def_", "allowed", "pass", "rush", "epa", "yards"]
-DEFENSE_EXCLUDE = ["news_", "inj_", "depth_", "roster_", "snap_", "weather"]
+def _latest_metrics_summary(
+    df: pd.DataFrame,
+    prefer_stage: Optional[str] = "calibrated",
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    if df is None or df.empty:
+        return summary
+    working = _prepare_metrics_frame(df)
 
-RUN_OFF_KEYWORDS = ["rush", "rushing", "rush_yards", "rush_yp", "carry"]
-RUN_DEF_KEYWORDS = ["def_", "rush", "ground", "yards_allowed", "tfl"]
+    def _value(col: str) -> Optional[Any]:
+        row = _pick_metric_row(working, col, prefer_stage)
+        return None if row is None else row.get(col)
 
-REC_OFF_KEYWORDS = ["pass", "receiv", "target", "air", "catch", "yards"]
-REC_DEF_KEYWORDS = ["def_", "pass", "receiv", "coverage", "yards_allowed"]
+    for field in ["samples", "n_games"] + METRIC_COLUMNS:
+        summary[field] = _value(field)
 
-DEPTH_KEYWORDS = ["depth_", "roster_", "snaps_"]
+    context_row = None
+    for key in ("brier", "accuracy", "log_loss", "mae_margin", "auc"):
+        row = _pick_metric_row(working, key, prefer_stage)
+        if row is not None:
+            context_row = row
+            break
+    if context_row is None:
+        context_row = working.sort_values("_sort_key", ascending=False).iloc[0]
 
-
-def _side_keyword_score(row: pd.Series, side: str, include: Iterable[str], exclude: Iterable[str]) -> float:
-    suffix = f"_{side}"
-    total = 0.0
-    hits = 0
-    for col, val in row.items():
-        if not isinstance(col, str) or not col.endswith(suffix):
-            continue
-        low = col.lower()
-        if any(excl in low for excl in exclude):
-            continue
-        if any(inc in low for inc in include):
-            num = _safe_float(val)
-            if num is None:
-                continue
-            total += num
-            hits += 1
-    return total / hits if hits else math.nan
+    summary["stage"] = context_row.get("stage")
+    summary["timestamp"] = context_row.get("timestamp") or context_row.get("run_timestamp")
+    return summary
 
 
-def _collect_feature(row: pd.Series, side: str, keywords: Iterable[str]) -> float | None:
-    suffix = f"_{side}"
-    best_val = None
-    best_score = -math.inf
-    for col, val in row.items():
-        if not isinstance(col, str):
-            continue
-        low = col.lower()
-        if suffix not in low:
-            continue
-        if not any(key in low for key in keywords):
-            continue
-        num = _safe_float(val)
-        if num is None:
-            continue
-        score = abs(num)
-        if score > best_score:
-            best_score = score
-            best_val = num
-    return best_val
-
-
-def _weather_penalty(row: pd.Series) -> float:
-    penalty = 0.0
-    for col, val in row.items():
-        if not isinstance(col, str):
-            continue
-        low = col.lower()
-        if not low.startswith("weather"):
-            continue
-        if "wind" in low:
-            wind = _safe_float(val)
-            if wind and wind > 15:
-                penalty += 0.5
-            if wind and wind > 25:
-                penalty += 0.5
-        if any(token in low for token in ("precip", "rain", "snow")):
-            if isinstance(val, str):
-                label = val.strip().lower()
-                if label and label not in {"0", "none", "clear", "no"}:
-                    penalty += 0.5
-            else:
-                amt = _safe_float(val)
-                if amt and amt > 0:
-                    penalty += 0.5
-        if "temp" in low:
-            temp = _safe_float(val)
-            if temp is not None and (temp < 32 or temp > 90):
-                penalty += 0.2
-    return penalty
-
-
-def _build_offense_mismatch_table(df: pd.DataFrame) -> pd.DataFrame:
-    records: List[dict] = []
-    for _, row in df.iterrows():
-        season = _safe_int(row.get("season"))
-        week = _safe_int(row.get("week"))
-        home = row.get("home_team", "HOME")
-        away = row.get("away_team", "AWAY")
-        matchup = f"{away} @ {home}"
-        for side, opp in (("home", "away"), ("away", "home")):
-            offense_score = _side_keyword_score(row, side, OFFENSE_KEYWORDS, OFFENSE_EXCLUDE)
-            defense_weak = _side_keyword_score(row, opp, DEFENSE_WEAK_KEYWORDS, DEFENSE_EXCLUDE)
-            if math.isnan(offense_score) and math.isnan(defense_weak):
-                continue
-            off_val = 0.0 if math.isnan(offense_score) else offense_score
-            def_val = 0.0 if math.isnan(defense_weak) else defense_weak
-            mismatch = off_val + def_val
-            if side == "home":
-                offence_team, defence_team = home, away
-                win_prob = _safe_float(row.get("home_win_prob"))
-                margin = _safe_float(row.get("pred_home_margin"))
-                news = _safe_float(row.get("news_count7_home"))
-                injuries = sum(
-                    max(_safe_float(row.get(col)) or 0.0, 0.0)
-                    for col in ("inj_out_home", "inj_doubtful_home", "inj_questionable_home")
-                )
-            else:
-                offence_team, defence_team = away, home
-                base_prob = _safe_float(row.get("home_win_prob"))
-                win_prob = 1 - base_prob if base_prob is not None else None
-                base_margin = _safe_float(row.get("pred_home_margin"))
-                margin = -base_margin if base_margin is not None else None
-                news = _safe_float(row.get("news_count7_away"))
-                injuries = sum(
-                    max(_safe_float(row.get(col)) or 0.0, 0.0)
-                    for col in ("inj_out_away", "inj_doubtful_away", "inj_questionable_away")
-                )
-            records.append(
-                {
-                    "season": season,
-                    "week": week,
-                    "matchup": matchup,
-                    "offense_team": offence_team,
-                    "defense_team": defence_team,
-                    "mismatch_score": mismatch,
-                    "offense_signal": off_val,
-                    "defense_vulnerability": def_val,
-                    "win_prob": win_prob,
-                    "predicted_margin": margin,
-                    "news_7d": news,
-                    "injury_count": injuries,
-                }
+def _format_count(value: Any) -> str:
+    num = _coerce_metric(value)
+    if num is None:
+        return "–"
+    return f"{int(round(num)):,}"
+
+
+def render_command_runner():
+    st.subheader("Command runner")
+    template = st.selectbox("Pick a template command", list(PIPELINE_TEMPLATES.keys()))
+    command = st.text_area(
+        "Command",
+        value=PIPELINE_TEMPLATES[template],
+        height=70,
+        help="Commands run from the repository root. Adjust arguments as needed before launching.",
+    )
+    if st.button("Execute", type="primary"):
+        with st.spinner("Running command..."):
+            code, stdout, stderr = run_command(command)
+        st.write(f"Exit code: {code}")
+        if stdout:
+            st.markdown("**stdout**")
+            st.code(stdout, language="bash")
+        if stderr:
+            st.markdown("**stderr**")
+            st.code(stderr, language="bash")
+        if code != 0:
+            st.error("Command reported a non-zero exit code. Check logs above.")
+
+
+def render_pipeline_tab():
+    col_status, col_controls = st.columns([1.4, 1.0], gap="large")
+    with col_status:
+        st.subheader("Operational snapshot")
+        df = artifact_summary()
+        st.dataframe(
+            df.sort_values("last_modified", ascending=False),
+            use_container_width=True,
+            height=350,
+        )
+        metrics_path = PREDICTIONS_DIR / "evaluation" / "overall_metrics.csv"
+        metrics = load_csv(metrics_path)
+        summary = _latest_metrics_summary(metrics)
+        if summary:
+            st.markdown("**Latest calibrated performance**")
+            cols = st.columns(4)
+            cols[0].metric("Accuracy", _format_metric(summary.get("accuracy")))
+            cols[1].metric("AUC", _format_metric(summary.get("auc")))
+            cols[2].metric("Brier", _format_metric(summary.get("brier")))
+            cols[3].metric("LogLoss", _format_metric(summary.get("log_loss")))
+    with col_controls:
+        render_command_runner()
+
+
+def render_transparency_tab():
+    st.subheader("Model diagnostics & documentation")
+    metrics = load_csv(PREDICTIONS_DIR / "evaluation" / "overall_metrics.csv")
+    summary = _latest_metrics_summary(metrics)
+    if summary:
+        st.markdown("**Latest calibrated run**")
+        cols = st.columns(6)
+        samples = summary.get("samples") or summary.get("n_games")
+        with cols[0]:
+            st.metric(
+                label="Samples",
+                value=_format_count(samples),
+                help="Number of games included in the calibrated evaluation window.",
             )
-    if not records:
-        return pd.DataFrame()
-    return pd.DataFrame(records).sort_values("mismatch_score", ascending=False)
-
-
-def _build_run_mismatch_table(df: pd.DataFrame) -> pd.DataFrame:
-    rows: List[dict] = []
-    for _, row in df.iterrows():
-        season = _safe_int(row.get("season"))
-        week = _safe_int(row.get("week"))
-        home = row.get("home_team", "HOME")
-        away = row.get("away_team", "AWAY")
-        matchup = f"{away} @ {home}"
-        for side, opp in (("home", "away"), ("away", "home")):
-            off_score = _side_keyword_score(row, side, RUN_OFF_KEYWORDS, OFFENSE_EXCLUDE)
-            def_score = _side_keyword_score(row, opp, RUN_DEF_KEYWORDS, DEFENSE_EXCLUDE)
-            if math.isnan(off_score) and math.isnan(def_score):
-                continue
-            off_val = 0.0 if math.isnan(off_score) else off_score
-            def_val = 0.0 if math.isnan(def_score) else def_score
-            mismatch = off_val + def_val
-            top_rush = _collect_feature(row, side, ["rush", "ground", "carry", "rushing"])
-            def_allowed = _collect_feature(row, opp, ["def_rush", "rush_allowed", "rushing"])
-            offence_team, defence_team = (home, away) if side == "home" else (away, home)
-            rows.append(
-                {
-                    "season": season,
-                    "week": week,
-                    "matchup": matchup,
-                    "offense_team": offence_team,
-                    "defense_team": defence_team,
-                    "run_mismatch": mismatch,
-                    "rush_signal": off_val,
-                    "defensive_rush_vulnerability": def_val,
-                    "top_rush_metric": top_rush,
-                    "rush_allowed_metric": def_allowed,
-                }
+        with cols[1]:
+            st.metric(
+                label="Accuracy",
+                value=_format_metric(summary.get("accuracy")),
+                help="Share of games where the predicted winner matched the actual winner.",
             )
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("run_mismatch", ascending=False)
-
-
-def _build_receiving_mismatch_table(df: pd.DataFrame) -> pd.DataFrame:
-    rows: List[dict] = []
-    for _, row in df.iterrows():
-        season = _safe_int(row.get("season"))
-        week = _safe_int(row.get("week"))
-        home = row.get("home_team", "HOME")
-        away = row.get("away_team", "AWAY")
-        matchup = f"{away} @ {home}"
-        for side, opp in (("home", "away"), ("away", "home")):
-            off_score = _side_keyword_score(row, side, REC_OFF_KEYWORDS, OFFENSE_EXCLUDE)
-            def_score = _side_keyword_score(row, opp, REC_DEF_KEYWORDS, DEFENSE_EXCLUDE)
-            if math.isnan(off_score) and math.isnan(def_score):
-                continue
-            off_val = 0.0 if math.isnan(off_score) else off_score
-            def_val = 0.0 if math.isnan(def_score) else def_score
-            mismatch = off_val + def_val
-            top_recv = _collect_feature(row, side, ["receiv", "target", "pass", "air"])
-            def_allowed = _collect_feature(row, opp, ["def_pass", "def_receiv", "coverage", "yards_allowed"])
-            offence_team, defence_team = (home, away) if side == "home" else (away, home)
-            rows.append(
-                {
-                    "season": season,
-                    "week": week,
-                    "matchup": matchup,
-                    "offense_team": offence_team,
-                    "defense_team": defence_team,
-                    "receiving_mismatch": mismatch,
-                    "receiving_signal": off_val,
-                    "def_pass_vulnerability": def_val,
-                    "top_receiving_metric": top_recv,
-                    "coverage_allowed_metric": def_allowed,
-                }
+        with cols[2]:
+            st.metric(
+                label="AUC",
+                value=_format_metric(summary.get("auc")),
+                help="Area under the ROC curve for win probability discrimination.",
             )
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("receiving_mismatch", ascending=False)
+        with cols[3]:
+            st.metric(
+                label="Brier",
+                value=_format_metric(summary.get("brier")),
+                help="Average squared error between predicted win probability and actual outcome.",
+            )
+        with cols[4]:
+            st.metric(
+                label="LogLoss",
+                value=_format_metric(summary.get("log_loss")),
+                help="Cross-entropy error for win probability calibration (lower is better).",
+            )
+        with cols[5]:
+            st.metric(
+                label="MAE margin",
+                value=_format_metric(summary.get("mae_margin")),
+                help="Mean absolute error for predicted home margin versus actual margin.",
+            )
+    else:
+        st.info("No calibrated evaluation rows with populated metrics were found.")
+
+    st.markdown("### Analysis folder reference")
+    st.caption(
+        "Hover the metric cards above for quick tooltips. In plain English: accuracy tells us how often we picked the "
+        "right winner; AUC shows how well the model separates favorites from underdogs; Brier measures average miss on "
+        "the win odds; LogLoss penalizes bad confidence; MAE margin is the typical spread miss in points."
+    )
+    analysis_files = sorted(ANALYSIS_DIR.glob("*.csv"))
+    if not analysis_files:
+        st.info("No analysis CSV files found.")
+    else:
+        for path in analysis_files:
+            name = path.name
+            explanation = TRANSPARENCY_DOCS.get(name, "Description pending.")
+            with st.expander(f"{name}"):
+                st.caption(explanation)
+                df = load_csv(path)
+                if df is None or df.empty:
+                    st.info("File is empty or could not be parsed.")
+                else:
+                    preview_rows = min(len(df), 200)
+                    st.dataframe(df.head(preview_rows), use_container_width=True, height=240)
+
+
+def render_predictions_tab():
+    st.subheader("Upcoming week outlook")
+    offense = load_player_predictions("offense")
+    qbs = load_player_predictions("qb")
+    defense = load_player_predictions("defense")
+    if offense.empty and qbs.empty and defense.empty:
+        st.info("Upcoming prediction files are not available. Generate them from the pipeline tab first.")
+        return
+
+    season = int(offense["season"].max()) if not offense.empty else int(qbs["season"].max())
+    week = int(offense["week"].max()) if not offense.empty else int(qbs["week"].max())
+    st.caption(f"Showing projections for season **{season}**, week **{week}**.")
+
+    min_games = st.slider(
+        "Minimum games sampled",
+        1,
+        100,
+        16,
+        help="Filter out projections backed by very small samples.",
+    )
+    max_rank = st.slider("Maximum player rank", 1, 50, 2)
+
+    st.divider()
 
+    st.markdown("### Player projection leaders")
 
-def _build_availability_watch(df: pd.DataFrame) -> pd.DataFrame:
-    rows: List[dict] = []
-    for _, row in df.iterrows():
-        season = _safe_int(row.get("season"))
-        week = _safe_int(row.get("week"))
-        home = row.get("home_team", "HOME")
-        away = row.get("away_team", "AWAY")
-        matchup = f"{away} @ {home}"
-        home_news = sum(
-            max(_safe_float(row.get(col)) or 0.0, 0.0)
-            for col in ("news_count7_home", "news_injury_kw7_home")
-        )
-        away_news = sum(
-            max(_safe_float(row.get(col)) or 0.0, 0.0)
-            for col in ("news_count7_away", "news_injury_kw7_away")
-        )
-        home_inj = sum(
-            max(_safe_float(row.get(col)) or 0.0, 0.0)
-            for col in ("inj_out_home", "inj_doubtful_home", "inj_questionable_home")
-        )
-        away_inj = sum(
-            max(_safe_float(row.get(col)) or 0.0, 0.0)
-            for col in ("inj_out_away", "inj_doubtful_away", "inj_questionable_away")
-        )
-        rows.append(
-            {
-                "season": season,
-                "week": week,
-                "matchup": matchup,
-                "home_team": home,
-                "away_team": away,
-                "home_news_hits": home_news,
-                "away_news_hits": away_news,
-                "home_injuries": home_inj,
-                "away_injuries": away_inj,
-                "combined_pressure": home_news + away_news + home_inj + away_inj,
-            }
-        )
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("combined_pressure", ascending=False)
+    if not offense.empty:
+        off = offense[
+            (offense["games_sampled"] >= min_games)
+            & (offense["player_rank"] <= max_rank)
+            & (offense["season"] == season)
+            & (offense["week"] == week)
+        ].copy()
+        if not off.empty:
+            off["confidence"] = _calculate_confidence(off["games_sampled"])
+            off_cols = [
+                "player_name",
+                "team",
+                "kickoff_mt",
+                "projected_total_yards",
+                "projected_rushing_yards",
+                "projected_receiving_yards",
+                "projected_total_tds",
+                "projected_rushing_tds",
+                "projected_receiving_tds",
+                "games_sampled",
+                "player_rank",
+                "confidence",
+            ]
+            available_off_cols = [c for c in off_cols if c in off.columns]
+            top = off.sort_values("projected_total_yards", ascending=False).head(15)[available_off_cols]
+            st.markdown("**Top total yards (rush + receive)**")
+            st.dataframe(top, use_container_width=True, height=520)
 
-
-def _build_upset_watch(df: pd.DataFrame) -> pd.DataFrame:
-    rows: List[dict] = []
-    for _, row in df.iterrows():
-        season = _safe_int(row.get("season"))
-        week = _safe_int(row.get("week"))
-        home = row.get("home_team", "HOME")
-        away = row.get("away_team", "AWAY")
-        matchup = f"{away} @ {home}"
-        home_prob = _safe_float(row.get("home_win_prob"))
-        margin = _safe_float(row.get("pred_home_margin"))
-        if home_prob is None and margin is None:
-            continue
-        if (home_prob is not None and home_prob >= 0.55) or (margin is not None and margin >= 2):
-            fav_side = "home"
-            fav_team = home
-            dog_team = away
-            fav_prob = home_prob
-            fav_margin = margin
-        elif (home_prob is not None and home_prob <= 0.45) or (margin is not None and margin <= -2):
-            fav_side = "away"
-            fav_team = away
-            dog_team = home
-            fav_prob = (1 - home_prob) if home_prob is not None else None
-            fav_margin = (-margin) if margin is not None else None
+            td_cols = [
+                "player_name",
+                "team",
+                "kickoff_mt",
+                "projected_total_tds",
+                "projected_rushing_tds",
+                "projected_receiving_tds",
+                "games_sampled",
+                "player_rank",
+                "confidence",
+            ]
+            available_td_cols = [c for c in td_cols if c in off.columns]
+            if available_td_cols:
+                td_table = off.sort_values("projected_total_tds", ascending=False).head(15)[available_td_cols]
+                st.markdown("**Top projected total touchdowns**")
+                st.dataframe(td_table, use_container_width=True, height=480)
         else:
-            continue
-        injuries = sum(
-            max(_safe_float(row.get(f"{col}_{fav_side}")) or 0.0, 0.0)
-            for col in ("inj_out", "inj_doubtful", "inj_questionable")
-        )
-        news = sum(
-            max(_safe_float(row.get(f"{col}_{fav_side}")) or 0.0, 0.0)
-            for col in ("news_count7", "news_injury_kw7")
-        )
-        depth_pressure = _side_keyword_score(row, fav_side, DEPTH_KEYWORDS, [])
-        if math.isnan(depth_pressure):
-            depth_pressure = 0.0
-        weather_penalty = _weather_penalty(row)
-        margin_lo = _safe_float(row.get("pred_home_margin_lo"))
-        margin_hi = _safe_float(row.get("pred_home_margin_hi"))
-        if fav_side == "away" and margin_lo is not None and margin_hi is not None:
-            margin_lo, margin_hi = -margin_hi, -margin_lo
-        interval_penalty = (
-            1.0 if margin_lo is not None and margin_hi is not None and margin_lo <= 0 <= margin_hi else 0.0
-        )
-        risk_score = injuries * 0.5 + news * 0.3 + max(depth_pressure, 0.0) * 0.2 + weather_penalty + interval_penalty
-        if risk_score <= 0:
-            continue
-        rows.append(
-            {
-                "season": season,
-                "week": week,
-                "matchup": matchup,
-                "favorite_team": fav_team,
-                "opponent": dog_team,
-                "favorite_win_prob": fav_prob,
-                "favorite_margin": fav_margin,
-                "injury_pressure": injuries,
-                "news_pressure": news,
-                "depth_pressure": depth_pressure,
-                "weather_penalty": weather_penalty,
-                "risk_score": risk_score,
-            }
-        )
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("risk_score", ascending=False)
+            st.info("No offensive projections after applying filters.")
+    else:
+        st.info("Upcoming offensive projections are unavailable.")
 
+    st.divider()
 
-def _build_weather_watch(df: pd.DataFrame) -> pd.DataFrame:
-    rows: List[dict] = []
-    for _, row in df.iterrows():
-        penalty = _weather_penalty(row)
-        if penalty <= 0:
-            continue
-        season = _safe_int(row.get("season"))
-        week = _safe_int(row.get("week"))
-        home = row.get("home_team", "HOME")
-        away = row.get("away_team", "AWAY")
-        matchup = f"{away} @ {home}"
-        rows.append(
-            {
-                "season": season,
-                "week": week,
-                "matchup": matchup,
-                "weather_penalty": penalty,
-                "weather_temp": _safe_float(row.get("weather_temp_kickoff_f")),
-                "weather_wind": _safe_float(
-                    next((row.get(col) for col in row.index if isinstance(col, str) and "weather" in col.lower() and "wind" in col.lower()), None)
-                ),
-                "weather_notes": " | ".join(
-                    str(row.get(col))
-                    for col in row.index
-                    if isinstance(col, str) and col.startswith("weather") and pd.notna(row.get(col))
-                ),
-            }
-        )
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("weather_penalty", ascending=False)
-
-
-def _build_column_config(df: pd.DataFrame) -> dict:
-    config = {}
-    for col in df.columns:
-        help_text = COLUMN_DOCS.get(col)
-        if not help_text:
-            continue
-        if pd.api.types.is_numeric_dtype(df[col]):
-            config[col] = st.column_config.NumberColumn(col, help=help_text)
+    if not qbs.empty:
+        qb = qbs[
+            (qbs["games_sampled"] >= min_games)
+            & (qbs["player_rank"] <= max_rank)
+            & (qbs["season"] == season)
+            & (qbs["week"] == week)
+        ].copy()
+        if not qb.empty:
+            qb["confidence"] = _calculate_confidence(qb["games_sampled"])
+            qb_cols = [
+                "player_name",
+                "team",
+                "kickoff_mt",
+                "projected_passing_yards",
+                "projected_rushing_yards",
+                "projected_passing_tds",
+                "projected_rushing_tds",
+                "projected_interceptions",
+                "projected_completions",
+                "games_sampled",
+                "player_rank",
+                "confidence",
+            ]
+            available_qb_cols = [c for c in qb_cols if c in qb.columns]
+            top = qb.sort_values("projected_passing_yards", ascending=False).head(15)[available_qb_cols]
+            st.markdown("**Top projected passing yards**")
+            st.dataframe(top, use_container_width=True, height=520)
         else:
-            config[col] = st.column_config.Column(col, help=help_text)
-    return config
+            st.info("No QB projections after applying filters.")
+    else:
+        st.info("Upcoming QB projections are unavailable.")
 
+    st.divider()
 
-st.sidebar.header("Predictions Source")
-source_col1, source_col2 = st.sidebar.columns([3, 1])
-with source_col1:
-    preds_path = st.text_input("CSV path", value="predictions.csv")
-with source_col2:
-    uploaded = st.file_uploader("Upload CSV", type=["csv"], accept_multiple_files=False)
+    if not defense.empty:
+        df_def = defense[
+            (defense["games_sampled"] >= min_games)
+            & (defense["player_rank"] <= max_rank)
+            & (defense["season"] == season)
+            & (defense["week"] == week)
+        ].copy()
+        if not df_def.empty:
+            df_def["confidence"] = _calculate_confidence(df_def["games_sampled"])
+            df_def_cols = [
+                "player_name",
+                "team",
+                "kickoff_mt",
+                "projected_sacks",
+                "projected_qb_hits",
+                "projected_tfl",
+                "games_sampled",
+                "player_rank",
+                "confidence",
+            ]
+            available_def_cols = [c for c in df_def_cols if c in df_def.columns]
+            top = df_def.sort_values("projected_sacks", ascending=False).head(15)[available_def_cols]
+            st.markdown("**Top projected sacks**")
+            st.dataframe(top, use_container_width=True, height=520)
+        else:
+            st.info("No defensive projections after applying filters.")
+    else:
+        st.info("Upcoming defensive projections are unavailable.")
+
+    st.divider()
+
+    team_preds = load_csv(PREDICTIONS_DIR / "predictions_full.csv")
+    if team_preds is None or team_preds.empty:
+        st.info("Team predictions file (`predictions_full.csv`) is unavailable.")
+        return
+
+    team = team_preds.copy()
+    team["season"] = pd.to_numeric(team.get("season"), errors="coerce")
+    team["week"] = pd.to_numeric(team.get("week"), errors="coerce")
+    latest_season = team["season"].dropna().max()
+    latest_week = team.loc[team["season"] == latest_season, "week"].dropna().max()
+    subset = team[(team["season"] == latest_season) & (team["week"] == latest_week)].copy()
+    if subset.empty:
+        st.info("No team predictions available for the latest week.")
+        return
 
-preds: pd.DataFrame | None = None
-if uploaded is not None:
-    preds = pd.read_csv(uploaded)
-elif Path(preds_path).exists():
-    preds = load_preds(preds_path)
+    # Prefer the most recently generated prediction per game.
+    sort_cols = []
+    for cand in ("prediction_generated_at", "generated_at", "created_at"):
+        if cand in subset.columns:
+            subset[cand] = pd.to_datetime(subset[cand], errors="coerce")
+            sort_cols.append(cand)
+    if sort_cols:
+        subset = subset.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+    subset = subset.drop_duplicates(subset=["game_id"], keep="first")
 
-if preds is None or preds.empty:
-    st.info("Run the pipeline to create `predictions.csv`, or upload a file in the sidebar.")
-    st.stop()
+    subset["home_win_prob"] = pd.to_numeric(subset.get("home_win_prob"), errors="coerce")
+    subset["away_win_prob"] = 1 - subset["home_win_prob"]
+    subset["favorite"] = np.where(
+        subset["home_win_prob"] >= 0.5, subset["home_team"], subset["away_team"]
+    )
+    subset["favorite_prob"] = subset[["home_win_prob", "away_win_prob"]].max(axis=1)
+    subset["favorite_margin"] = pd.to_numeric(subset.get("pred_home_margin"), errors="coerce")
+    subset.loc[subset["favorite"] == subset["away_team"], "favorite_margin"] *= -1
+
+    st.markdown(
+        f"### Team win probabilities (season {int(latest_season)} week {int(latest_week)})"
+    )
+    team_cols = [
+        "favorite",
+        "favorite_prob",
+        "favorite_margin",
+        "home_team",
+        "away_team",
+        "home_win_prob",
+        "pred_home_margin",
+        "volatility_prob",
+        "kickoff_mt",
+        "pick_expl",
+    ]
+    available_team_cols = [c for c in team_cols if c in subset.columns]
+    st.dataframe(
+        subset.sort_values("favorite_prob", ascending=False)[available_team_cols],
+        use_container_width=True,
+        height=420,
+    )
+
+
 
-
-st.sidebar.header("Model Artefacts")
-model_status = {}
-for name in ("winprob_gb.pkl", "spread_gb.pkl"):
-    path = Path("models") / name
-    ok = path.exists()
-    model_status[name] = ok
-    st.sidebar.write(f"{name}: {'✅ ready' if ok else '⚠️ missing'}")
-
-if model_status.get("winprob_gb.pkl"):
-    try:
-        artefact = joblib.load(Path("models/winprob_gb.pkl"))
-        calibrated = artefact.get("calibrated", False) if isinstance(artefact, dict) else False
-        st.sidebar.caption(f"Win probability calibrated: {'Yes' if calibrated else 'No'}")
-    except Exception:
-        st.sidebar.caption("Win probability calibrated: Unknown")
-
-if model_status.get("spread_gb.pkl"):
-    try:
-        artefact = joblib.load(Path("models/spread_gb.pkl"))
-        quantiles = artefact.get("quantile_models", {}) if isinstance(artefact, dict) else {}
-        st.sidebar.caption(f"Spread quantiles: {'Yes' if isinstance(quantiles, dict) and quantiles else 'No'}")
-    except Exception:
-        st.sidebar.caption("Spread quantiles: Unknown")
-
-analysis_top_n = st.sidebar.slider("Rows to display in insights", min_value=5, max_value=30, value=10, step=5)
-
-
-st.subheader("Filters")
-filter_col1, filter_col2 = st.columns(2)
-with filter_col1:
-    seasons = sorted([int(val) for val in preds.get("season", pd.Series(dtype="Int64")).dropna().unique().tolist()])
-    season_sel = st.selectbox("Season", seasons, index=len(seasons) - 1 if seasons else 0, disabled=not seasons)
-with filter_col2:
-    if {"season", "week"}.issubset(preds.columns):
-        week_options = (
-            preds.loc[preds["season"] == season_sel, "week"].dropna().astype(int).unique().tolist()
+def summarise_prediction_quality(df: pd.DataFrame, pred_col: str, actual_col: str) -> pd.DataFrame:
+    if df.empty or pred_col not in df.columns or actual_col not in df.columns:
+        return pd.DataFrame()
+    valid = df[pd.notna(df[actual_col])]
+    if valid.empty:
+        return pd.DataFrame()
+    valid = valid.copy()
+    valid["abs_error"] = (valid[pred_col] - valid[actual_col]).abs()
+    valid["squared_error"] = (valid[pred_col] - valid[actual_col]) ** 2
+    by_week = (
+        valid.groupby(["season", "week"], as_index=False)
+        .agg(
+            count=("player_name", "size"),
+            mae=("abs_error", "mean"),
+            rmse=("squared_error", lambda x: np.sqrt(np.mean(x))),
         )
-        week_options.sort()
-    else:
-        week_options = []
-    week_sel = st.selectbox("Week", week_options, index=len(week_options) - 1 if week_options else 0, disabled=not week_options)
-
-filtered = preds.copy()
-if "season" in filtered.columns:
-    filtered = filtered[filtered["season"].astype("Int64") == season_sel]
-if "week" in filtered.columns:
-    filtered = filtered[filtered["week"].astype("Int64") == week_sel]
-
-team_options = sorted(
-    set(filtered.get("home_team", pd.Series(dtype=str)).dropna())
-    | set(filtered.get("away_team", pd.Series(dtype=str)).dropna())
-)
-team_filter = st.multiselect("Optional team filter", team_options, default=[])
-if team_filter:
-    mask = filtered["home_team"].isin(team_filter) | filtered["away_team"].isin(team_filter)
-    filtered = filtered[mask]
-
-sort_opt = st.selectbox(
-    "Sort matchups by",
-    ["home_win_prob desc", "pred_home_margin desc", "home_team", "away_team"],
-)
-if sort_opt == "home_win_prob desc" and "home_win_prob" in filtered.columns:
-    filtered = filtered.sort_values("home_win_prob", ascending=False)
-elif sort_opt == "pred_home_margin desc" and "pred_home_margin" in filtered.columns:
-    filtered = filtered.sort_values("pred_home_margin", ascending=False)
-elif sort_opt == "home_team" and {"home_team", "away_team"}.issubset(filtered.columns):
-    filtered = filtered.sort_values(["home_team", "away_team"])
-elif sort_opt == "away_team" and {"home_team", "away_team"}.issubset(filtered.columns):
-    filtered = filtered.sort_values(["away_team", "home_team"])
-
-
-st.subheader("Summary")
-summary_cols = st.columns(5)
-summary_cols[0].metric("Games", len(filtered))
-if "home_win_prob" in filtered.columns and not filtered.empty:
-    avg_prob = float(np.nanmean(filtered["home_win_prob"]))
-    summary_cols[1].metric("Avg home win prob", f"{avg_prob:.1%}" if math.isfinite(avg_prob) else "-")
-if "pred_home_margin" in filtered.columns and not filtered.empty:
-    avg_margin = float(np.nanmean(filtered["pred_home_margin"]))
-    summary_cols[2].metric("Avg home margin", f"{avg_margin:+.2f}" if math.isfinite(avg_margin) else "-")
-if {"pred_home_margin_lo", "pred_home_margin_hi"}.issubset(filtered.columns):
-    band = filtered["pred_home_margin_hi"] - filtered["pred_home_margin_lo"]
-    avg_band = float(np.nanmean(pd.to_numeric(band, errors="coerce")))
-    summary_cols[3].metric("Avg margin band", f"{avg_band:.2f} pts" if math.isfinite(avg_band) else "-")
-news_cols = [col for col in filtered.columns if col.startswith("news_count7")]
-if news_cols:
-    total_news = float(filtered[news_cols].fillna(0).sum().sum())
-    summary_cols[4].metric("News hits (7d)", f"{int(total_news)}")
-
-
-st.subheader("Distributions")
-dist_cols = st.columns(3)
-with dist_cols[0]:
-    if "home_win_prob" in filtered.columns and filtered["home_win_prob"].dropna().any():
-        st.bar_chart(_hist_counts(filtered["home_win_prob"], bins=10).set_index("bin"))
-    else:
-        st.caption("No win probability values.")
-with dist_cols[1]:
-    if "pred_home_margin" in filtered.columns and filtered["pred_home_margin"].dropna().any():
-        st.bar_chart(_hist_counts(filtered["pred_home_margin"], bins=12).set_index("bin"))
-    else:
-        st.caption("No margin values.")
-with dist_cols[2]:
-    if news_cols and filtered[news_cols].any(axis=None):
-        st.bar_chart(_hist_counts(filtered[news_cols].sum(axis=1), bins=10).set_index("bin"))
-    else:
-        st.caption("No news volume detected.")
-
-
-scoreboard_columns = [
-    "season",
-    "week",
-    "home_team",
-    "away_team",
-    "home_win_prob",
-    "pred_home_margin",
-    "pred_home_margin_lo",
-    "pred_home_margin_hi",
-    "news_count7_home",
-    "news_count7_away",
-    "inj_out_home",
-    "inj_out_away",
-    "weather_temp_kickoff_f",
-    "weather_wind_speed_mph",
-]
-overview_df = filtered[[col for col in scoreboard_columns if col in filtered.columns]].copy()
-
-offense_table = _build_offense_mismatch_table(filtered)
-run_table = _build_run_mismatch_table(filtered)
-receiving_table = _build_receiving_mismatch_table(filtered)
-availability_table = _build_availability_watch(filtered)
-upset_table = _build_upset_watch(filtered)
-weather_table = _build_weather_watch(filtered)
-
-tabs = st.tabs(
-    [
-        "Overview",
-        "Offense vs Defense",
-        "Run Game Spotlight",
-        "Receiving Spotlight",
-        "Upset Watch",
-        "Availability & Weather",
-    ]
-)
-
-with tabs[0]:
-    st.markdown("### Matchup Overview")
-    if overview_df.empty:
-        st.info("No standard columns available for overview.")
-    else:
-        st.dataframe(
-            overview_df,
-            use_container_width=True,
-            column_config=_build_column_config(overview_df),
-        )
-
-with tabs[1]:
-    st.markdown("### Offensive mismatches vs vulnerable defenses")
-    if offense_table.empty:
-        st.info("Offensive mismatch signals are unavailable for this week.")
-    else:
-        display_cols = [
-            "season",
-            "week",
-            "matchup",
-            "offense_team",
-            "defense_team",
-            "mismatch_score",
-            "offense_signal",
-            "defense_vulnerability",
-            "win_prob",
-            "predicted_margin",
-            "news_7d",
-            "injury_count",
-        ]
-        subset = offense_table.head(analysis_top_n)[display_cols]
-        st.dataframe(
-            subset,
-            use_container_width=True,
-            column_config=_build_column_config(subset),
-        )
-
-with tabs[2]:
-    st.markdown("### Run game mismatches & league-leading rushers")
-    if run_table.empty:
-        st.info("Run game signals are unavailable for this week.")
-    else:
-        display_cols = [
-            "season",
-            "week",
-            "matchup",
-            "offense_team",
-            "defense_team",
-            "run_mismatch",
-            "rush_signal",
-            "defensive_rush_vulnerability",
-            "top_rush_metric",
-            "rush_allowed_metric",
-        ]
-        subset = run_table.head(analysis_top_n)[display_cols]
-        st.dataframe(
-            subset,
-            use_container_width=True,
-            column_config=_build_column_config(subset),
-        )
-
-with tabs[3]:
-    st.markdown("### Receiving mismatches vs thin defensive depth")
-    if receiving_table.empty:
-        st.info("Receiving mismatch signals are unavailable for this week.")
-    else:
-        display_cols = [
-            "season",
-            "week",
-            "matchup",
-            "offense_team",
-            "defense_team",
-            "receiving_mismatch",
-            "receiving_signal",
-            "def_pass_vulnerability",
-            "top_receiving_metric",
-            "coverage_allowed_metric",
-        ]
-        subset = receiving_table.head(analysis_top_n)[display_cols]
-        st.dataframe(
-            subset,
-            use_container_width=True,
-            column_config=_build_column_config(subset),
-        )
-
-with tabs[4]:
-    st.markdown("### Upset watch (external pressure on favourites)")
-    if upset_table.empty:
-        st.info("No high-risk favourites detected.")
-    else:
-        display_cols = [
-            "season",
-            "week",
-            "matchup",
-            "favorite_team",
-            "opponent",
-            "favorite_win_prob",
-            "favorite_margin",
-            "injury_pressure",
-            "news_pressure",
-            "depth_pressure",
-            "weather_penalty",
-            "risk_score",
-        ]
-        subset = upset_table.head(analysis_top_n)[display_cols]
-        st.dataframe(
-            subset,
-            use_container_width=True,
-            column_config=_build_column_config(subset),
-        )
-
-with tabs[5]:
-    st.markdown("### Availability radar")
-    sub_cols = [
-        "season",
-        "week",
-        "matchup",
-        "home_team",
-        "away_team",
-        "home_news_hits",
-        "home_injuries",
-        "away_news_hits",
-        "away_injuries",
-        "combined_pressure",
-    ]
-    if availability_table.empty:
-        st.info("No availability signals detected.")
-    else:
-        subset = availability_table.head(analysis_top_n)[sub_cols]
-        st.dataframe(
-            subset,
-            use_container_width=True,
-            column_config=_build_column_config(subset),
-        )
-    st.markdown("### Weather watch")
-    if weather_table.empty:
-        st.caption("No weather risks flagged.")
-    else:
-        display_cols = [
-            "season",
-            "week",
-            "matchup",
-            "weather_penalty",
-            "weather_temp",
-            "weather_wind",
-            "weather_notes",
-        ]
-        subset = weather_table.head(analysis_top_n)[display_cols]
-        st.dataframe(
-            subset,
-            use_container_width=True,
-            column_config=_column_config(subset.columns),
-        )
-
-
-st.subheader("Download")
-st.download_button(
-    "Download filtered predictions",
-    data=filtered.to_csv(index=False),
-    file_name="predictions_filtered.csv",
-    mime="text/csv",
-)
+    )
+    return by_week
+def render_history_tab():
+    team_history = load_team_history()
+    offense_eval = build_offense_evaluation()
+    qb_eval = build_qb_evaluation()
+    defense_eval = build_defense_evaluation()
+
+    team_tab, offense_tab, qb_tab, defense_tab = st.tabs(["Team", "Offense", "QB", "Defense"])
+
+    with team_tab:
+        if team_history.empty:
+            st.info("Team history files are unavailable.")
+        else:
+            df = team_history.copy()
+            df["home_win"] = (pd.to_numeric(df["home_margin"], errors="coerce") > 0).astype(int)
+            df["pred_win"] = (pd.to_numeric(df["home_win_prob"], errors="coerce") >= 0.5).astype(int)
+            df["brier_component"] = (pd.to_numeric(df["home_win_prob"], errors="coerce") - df["home_win"]) ** 2
+            df["correct"] = (df["home_win"] == df["pred_win"]).astype(int)
+            df["margin_error"] = (pd.to_numeric(df["pred_home_margin"], errors="coerce") - pd.to_numeric(df["home_margin"], errors="coerce")).abs()
+            summary = (
+                df.groupby(["season", "week"])
+                .agg(
+                    games=("game_id", "count"),
+                    accuracy=("correct", "mean"),
+                    brier=("brier_component", "mean"),
+                    mae_margin=("margin_error", "mean"),
+                )
+                .reset_index()
+            )
+            st.markdown("**Weekly performance (team predictions)**")
+            sort_cols = [c for c in ["season", "week"] if c in summary.columns]
+            summary_sorted = summary.sort_values(sort_cols, ascending=[False] * len(sort_cols)) if sort_cols else summary
+            st.dataframe(summary_sorted, use_container_width=True, height=420)
+            st.markdown("**Trend – Accuracy**")
+            trend_df = summary.sort_values(["season", "week"]).copy()
+            trend_df["season_week"] = trend_df["season"].astype(str) + "-W" + trend_df["week"].astype(str)
+            trend_df = trend_df.set_index("season_week")
+            st.line_chart(trend_df[["accuracy"]])
+            st.markdown("**Trend – MAE Margin**")
+            st.line_chart(trend_df[["mae_margin"]])
+
+    with offense_tab:
+        if offense_eval.empty:
+            st.info("Need actual data or offensive projections to compute evaluation.")
+        else:
+            summary = summarise_prediction_quality(offense_eval, "projected_total_yards", "actual_total_yards")
+            coverage = offense_eval["actual_total_yards"].notna().mean()
+            st.metric("Coverage (matched players)", f"{coverage * 100:.1f}%")
+            if summary.empty:
+                st.info("No matched offensive players with actual stats yet.")
+            else:
+                sort_cols = [c for c in ("season", "week") if c in summary.columns]
+                summary_view = summary.sort_values(sort_cols, ascending=[False] * len(sort_cols)) if sort_cols else summary
+                st.dataframe(summary_view, use_container_width=True, height=420)
+            seasons = (
+                [int(x) for x in sorted(offense_eval["season"].dropna().unique())]
+                if "season" in offense_eval.columns and not offense_eval.empty
+                else []
+            )
+            if seasons:
+                st.markdown("**Detailed comparison**")
+                sel_season = st.selectbox("Season", seasons, index=len(seasons) - 1, key="off_season_select")
+                weeks_raw = offense_eval.loc[offense_eval["season"] == sel_season, "week"].dropna().unique()
+                weeks = [int(w) for w in sorted(weeks_raw)]
+                sel_week = st.selectbox("Week", weeks, index=len(weeks) - 1, key="off_week_select")
+                detail = offense_eval[
+                    (offense_eval["season"] == sel_season) & (offense_eval["week"] == sel_week)
+                ].copy()
+                if detail.empty:
+                    st.info("No offensive projections matched for the selected season/week.")
+                else:
+                    detail = detail[pd.notna(detail["actual_total_yards"])].copy()
+                    if detail.empty:
+                        st.info("Actual stats not yet available for the selected week.")
+                    else:
+                        if "projected_total_yards_error" in detail.columns:
+                            detail["total_yards_error"] = detail["projected_total_yards_error"]
+                            detail["abs_error"] = detail["total_yards_error"].abs()
+                        cols = [
+                            "player_name",
+                            "team",
+                            "kickoff_mt",
+                            "projected_total_yards",
+                            "actual_total_yards",
+                            "total_yards_error",
+                            "abs_error",
+                            "projected_total_tds",
+                            "games_sampled",
+                            "player_rank",
+                        ]
+                        available_cols = [c for c in cols if c in detail.columns]
+                        st.dataframe(
+                            detail[available_cols].sort_values("abs_error"),
+                            use_container_width=True,
+                            height=360,
+                        )
+
+    with qb_tab:
+        if qb_eval.empty:
+            st.info("Need actual data or QB projections to compute evaluation.")
+        else:
+            summary = summarise_prediction_quality(qb_eval, "projected_passing_yards", "actual_passing_yards")
+            coverage = qb_eval["actual_passing_yards"].notna().mean()
+            st.metric("Coverage (matched players)", f"{coverage * 100:.1f}%")
+            if summary.empty:
+                st.info("No matched QB stats available for evaluation yet.")
+            else:
+                sort_cols = [c for c in ("season", "week") if c in summary.columns]
+                summary_view = summary.sort_values(sort_cols, ascending=[False] * len(sort_cols)) if sort_cols else summary
+                st.dataframe(summary_view, use_container_width=True, height=420)
+            seasons = (
+                [int(x) for x in sorted(qb_eval["season"].dropna().unique())]
+                if "season" in qb_eval.columns and not qb_eval.empty
+                else []
+            )
+            if seasons:
+                st.markdown("**Detailed comparison**")
+                sel_season = st.selectbox("Season ", seasons, index=len(seasons) - 1, key="qb_season_select")
+                weeks_raw = qb_eval.loc[qb_eval["season"] == sel_season, "week"].dropna().unique()
+                weeks = [int(w) for w in sorted(weeks_raw)]
+                sel_week = st.selectbox("Week ", weeks, index=len(weeks) - 1, key="qb_week_select")
+                detail = qb_eval[
+                    (qb_eval["season"] == sel_season) & (qb_eval["week"] == sel_week)
+                ].copy()
+                if detail.empty or detail["actual_passing_yards"].isna().all():
+                    st.info("Actual stats not yet available for the selected week.")
+                else:
+                    detail = detail[pd.notna(detail["actual_passing_yards"])].copy()
+                    if "projected_passing_yards_error" in detail.columns:
+                        detail["passing_yards_error"] = detail["projected_passing_yards_error"]
+                        detail["abs_error"] = detail["passing_yards_error"].abs()
+                    cols = [
+                        "player_name",
+                        "team",
+                        "kickoff_mt",
+                        "projected_passing_yards",
+                        "actual_passing_yards",
+                        "passing_yards_error",
+                        "abs_error",
+                        "projected_passing_tds",
+                        "projected_interceptions",
+                        "games_sampled",
+                        "player_rank",
+                    ]
+                    available_cols = [c for c in cols if c in detail.columns]
+                    st.dataframe(
+                        detail[available_cols].sort_values("abs_error"),
+                        use_container_width=True,
+                        height=360,
+                    )
+
+    with defense_tab:
+        if defense_eval.empty:
+            st.info("Need actual data or defensive projections to compute evaluation.")
+        else:
+            summary = summarise_prediction_quality(defense_eval, "projected_sacks", "actual_sacks")
+            coverage = defense_eval["actual_sacks"].notna().mean()
+            st.metric("Coverage (matched players)", f"{coverage * 100:.1f}%")
+            if summary.empty:
+                st.info("No matched defensive stats available for evaluation yet.")
+            else:
+                sort_cols = [c for c in ("season", "week") if c in summary.columns]
+                summary_view = summary.sort_values(sort_cols, ascending=[False] * len(sort_cols)) if sort_cols else summary
+                st.dataframe(summary_view, use_container_width=True, height=420)
+            seasons = (
+                [int(x) for x in sorted(defense_eval["season"].dropna().unique())]
+                if "season" in defense_eval.columns and not defense_eval.empty
+                else []
+            )
+            if seasons:
+                st.markdown("**Detailed comparison**")
+                sel_season = st.selectbox("Season  ", seasons, index=len(seasons) - 1, key="def_season_select")
+                weeks_raw = defense_eval.loc[defense_eval["season"] == sel_season, "week"].dropna().unique()
+                weeks = [int(w) for w in sorted(weeks_raw)]
+                sel_week = st.selectbox("Week  ", weeks, index=len(weeks) - 1, key="def_week_select")
+                detail = defense_eval[
+                    (defense_eval["season"] == sel_season) & (defense_eval["week"] == sel_week)
+                ].copy()
+                if detail.empty or detail["actual_sacks"].isna().all():
+                    st.info("Actual stats not yet available for the selected week.")
+                else:
+                    detail = detail[pd.notna(detail["actual_sacks"])].copy()
+                    if "projected_sacks_error" in detail.columns:
+                        detail["sacks_error"] = detail["projected_sacks_error"]
+                        detail["abs_error"] = detail["sacks_error"].abs()
+                    cols = [
+                        "player_name",
+                        "team",
+                        "kickoff_mt",
+                        "projected_sacks",
+                        "actual_sacks",
+                        "sacks_error",
+                        "abs_error",
+                        "projected_qb_hits",
+                        "games_sampled",
+                        "player_rank",
+                    ]
+                    available_cols = [c for c in cols if c in detail.columns]
+                    st.dataframe(
+                        detail[available_cols].sort_values("abs_error"),
+                        use_container_width=True,
+                        height=360,
+                    )
+
+
+tab_labels = ["Pipeline Ops", "Transparency", "Upcoming Predictions", "Performance Retro"]
+tab_pipeline, tab_transparency, tab_predictions, tab_history = st.tabs(tab_labels)
+
+with tab_pipeline:
+    render_pipeline_tab()
+
+with tab_transparency:
+    render_transparency_tab()
+
+with tab_predictions:
+    render_predictions_tab()
+
+with tab_history:
+    render_history_tab()

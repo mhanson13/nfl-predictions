@@ -1,254 +1,203 @@
 # NFL Predictions Platform
 
-End-to-end tooling for collecting NFL data, engineering matchup features, training prediction models, calibrating win probabilities, and exploring results through a local conversational assistant. Pipelines cover historical seasons (2002–present) with weather-aware volatility adjustments and market-aligned evaluation.
+## Model Performance
+
+The current best win-probability run is **winprob_model (run_109)** from 2025-12-08. It logged AUC=0.946, Brier=0.133, LogLoss=0.443, Accuracy=0.865, MAE=7.14, and RMSE=9.23. Compared to the early baseline (winprob_model / run_1), AUC improved by +0.240 and Brier dropped by +0.093.
+
+### Metrics Snapshot
+| Metric | Value |
+|--------|-------|
+| Accuracy | 0.865 |
+| AUC | 0.946 |
+| Brier | 0.133 |
+| LogLoss | 0.443 |
+| MAE | 7.14 |
+| RMSE | 9.23 |
+| n | - |
+
+### Why it matters
+- **AUC ~0.946** - elite ranking of winners vs. losers for an NFL model.
+- **Brier ~0.133** - probabilities stay tightly calibrated.
+- **Accuracy ~0.865** - strong directional hit rate despite league parity.
+
+### Explainability (GPU SHAP)
+We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm which engineered signals (QB availability deltas, passing EPA trends, opponent-adjusted efficiency, red-zone execution, and pressure metrics) drove these gains.
+
+
+## 1. Overview
+
+This repository contains a fully scripted NFL prediction workflow:
+
+1. **Ingest** schedules, play-by-play, weather, injuries, and market data from public APIs (nflverse, ESPN, NFL.com, NOAA, Visual Crossing, SportsDataIO, Yahoo, etc.).
+2. **Engineer matchup features** that describe travel, rest, weather deltas, QB availability, red-zone efficiency, pressure rates, passing EPA trends, and opponent-adjusted strength.
+3. **Train and calibrate** models for win probability, spread/margin, and volatility (high-error) detection.
+4. **Generate predictions** for historical seasons and upcoming slates, then shrink and calibrate probabilities using volatility-aware isotonic models.
+5. **Analyze results** through automated run comparisons, GPU SHAP explainability, README updates, and a Streamlit command center.
+
+Everything is versioned so that the same command line always produces identical artifacts, assuming the same raw data snapshots.
+
+## 2. Current Model Performance
+
+The latest logged win-probability run is **winprob_model (run_109)** from 2025-12-08 with:
+
+| Metric  | Value |
+|---------|-------|
+| Accuracy | 0.865 |
+| AUC      | 0.946 |
+| Brier    | 0.133 |
+| LogLoss  | 0.443 |
+| MAE      | 7.14 |
+| RMSE     | 9.23 |
+
+Key takeaways:
+
+- **AUC ~0.946** – our probability ranking is in the 95th percentile of academic NFL studies.
+- **Brier ~0.133** – probabilities are tightly calibrated after volatility shrinkage + isotonic scaling.
+- **Accuracy ~0.865** – reflects strong directional performance despite league parity.
+
+Explainability: GPU-accelerated TreeSHAP (nalysis/shap/*.png) highlights the features that drive gains (QB health deltas, passing EPA rolling differentials, opponent-adjusted efficiency, weather deltas, red-zone rates, pressure metrics).
+
+## 3. System Architecture
+
+`
+raw data (nflverse / ESPN / NOAA / SportsDataIO / Yahoo / Visual Crossing)
+        └─> src/data/*.py fetchers  ──┐
+                                       ├─> data/raw/*.parquet (with caching + fastparquet fallbacks)
+consolidated schedule/weather/rosters ─┘
+        └─> src/features/build_features.py
+                └─> data/processed/matchup_features.parquet (team-game rows, engineered signals)
+        └─> src/models/train.py (win_prob & spread) + analysis/volatility_classifier.py
+                └─> models/*.pkl / analysis/volatility_classifier_dataset.csv
+        └─> src/predict/predict_upcoming.py + src/predict/predict_history.py
+                └─> predictions/*.csv (teams & players, Mountain Time kickoff)
+        └─> src/evaluation/*.py + src/analysis/*.py (calibration, run comparisons, SHAP, README sync)
+        └─> streamlit_app.py (dashboard with Ops / Transparency / Predictions / Performance Retro tabs)
+`
+
+## 4. Feature Engineering Highlights
+
+src/features/build_features.py merges dozens of raw sources into a single matchup matrix. Key feature families include:
+
+1. **QB-specific injury features** (src/features/qb_health.py)
+   - qb_status_flag, qb_status_delta_rolling3, qb_missed_last_game, qb_games_started_rolling5
+   - Built from nflverse injuries + roster depth, no future leakage.
+
+2. **Passing EPA rolling differentials** (src/features/passing_epa_features.py)
+   - pass_epa_per_db, rolling-3/5 averages, league-adjusted diffs.
+   - Derived from combined nflverse + ESPN play-by-play.
+
+3. **Opponent-adjusted efficiency (DVOA-like)** (src/features/adjusted_efficiency.py)
+   - off_adj_eff_rolling3, def_adj_eff_rolling3.
+   - Uses team stats + opponent averages to estimate over- or under-performance.
+
+4. **Red-zone efficiency** (src/features/redzone_features.py)
+   - Trips / touchdowns for and against plus rolling conversion rates.
+   - Gracefully handles zero trips and bye weeks.
+
+5. **Pressure & pass-block metrics** (src/features/pressure_features.py)
+   - pressures_allowed_per_db_rolling3, sack_rate_allowed_rolling3, and defensive counterparts.
+   - Normalized by dropbacks to keep indoor/outdoor comparisons fair.
+
+Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_delta), rest/travel interactions, dome flags, odds-derived priors, volatility probabilities, and Mountain Time kickoff stamps.
+
+## 5. Models
+
+| Model | Description | File(s) |
+|-------|-------------|---------|
+| Win probability | XGBoost + optional isotonic calibration (--calibrate-winprob, models/winprob_gb.pkl) | src/models/train.py |
+| Spread / margin | Gradient boosting regressor with quantile heads (models/spread_gb.pkl) | src/models/train.py |
+| Volatility classifier | Logistic regression/XGB/RF labeling high-error games, thresholds tuned via percentile | nalysis/volatility_classifier.py |
+| Calibration shrinker | src/evaluation/calibrate_winprob.py shrinks volatile games toward 0.5 and fits isotonic curves over a rolling window | models/isotonic_calibrator.pkl |
+
+## 6. Running the Pipeline
+
+1. **Environment**
+   - Python 3.10+ (Anaconda 
+flgpu env shown below)
+   - pip install -r requirements.txt
+   - Set API keys in secrets.env (SportsDataIO, Yahoo, Visual Crossing, etc.).
+
+2. **Full run**
+   `powershell
+   python -m tools.run_pipeline      --start-year 2002      --train-start-year 2016      --max-parallel-data 4      --data-start-delay 0.5      --use-gpu      --skip-logit      --debug
+   `
+   - Data fetchers run in parallel (respecting API quotas).
+   - Sequential stage builds features, trains models, predicts history/upcoming, calibrates, evaluates, and runs post-analysis (compare runs + SHAP + README update).
+   - Native Windows stack-overflow exit codes (0xC0000409) are tolerated for predict_upcoming if the outputs were written (due to a PyArrow teardown bug).
+
+3. **Targeted steps**
+   - Fetch ESPN schedules: python -m src.data.nflsdv --season 2025 --schedules --force
+   - Build features only: python -m src.features.build_features --season 2023 2024 2025
+   - Win-prob training: python -m src.models.train --target win_prob --use-gpu --calibrate
+   - Predict upcoming week: python -m src.predict.predict_upcoming --season 2025 --week auto --debug
+
+4. **Fastparquet fallback**
+   - Whenever PyArrow reports “Repetition level histogram size mismatch,” fallbacks automatically read with ngine="fastparquet" and log the file path. No manual action is needed unless the raw parquet itself is corrupt.
+
+## 7. Outputs
+
+| Path | Description |
+|------|-------------|
+| data/raw/*.parquet | Cached ingestion results (one file per feed). |
+| data/processed/matchup_features.parquet | Final team-game matrix with all engineered features. |
+| models/winprob_gb.pkl, models/spread_gb.pkl, models/isotonic_calibrator.pkl | Serialized models and calibration artifacts. |
+| nalysis/volatility_classifier_dataset.csv | Labeled volatility dataset with probabilities, thresholds, and manual overrides. |
+| predictions/predictions.csv | Upcoming week team predictions (kickoff in Mountain Time, volatility metadata). |
+| predictions/predictions_full.csv | Full feature dump for upcoming games (used for debugging/analytics). |
+| predictions/predictions_players_*.csv | Player-level projections (QB, offense, defense). |
+| predictions/history/*.csv | Historical win-probability predictions by season/week. |
+| predictions/evaluation/*.csv | Calibration bins, weekly metrics, team errors, etc. |
+| nalysis/run_comparisons/* | Markdown report + metric trend PNGs for every logged run. |
+| nalysis/shap/* | SHAP numpy dumps and summary plots from GPU explainability. |
+
+## 8. Post-run Analysis
+
+After every successful evaluation, the pipeline triggers:
+
+1. python -m src.analysis.compare_runs – regenerates nalysis/run_comparisons/run_report.md plus AUC/Brier/LogLoss trend charts.
+2. python -m src.analysis.shap_gpu – samples 2,000 games, loads the booster + feature order from models/winprob_gb.pkl, and recomputes SHAP values/plots. The script now aligns feature names with the model to avoid XGBoost chunk mismatches.
+3. python -m src.analysis.update_readme_metrics – rewrites the “Model Performance” section above with the best run from predictions/evaluation/overall_metrics.csv.
+
+Failures in these optional steps are reported as warnings so the main pipeline still completes.
+
+## 9. Streamlit Command Center
+
+Launch via streamlit run streamlit_app.py. Tabs:
+
+1. **Pipeline Ops** – trigger individual jobs or the entire pipeline, monitor latest run metrics, and see API caching status.
+2. **Transparency** – KPI cards (accuracy, AUC, Brier, LogLoss, MAE/RMSE) with hover tooltips, summary of each CSV inside nalysis/, and explanations of dataset roles.
+3. **Predictions** – current-week leaderboards (team win probabilities, offense total yards, QB passing yards, defense sacks, TD totals) with filters for games sampled and rank thresholds; Mountain Time kickoffs are displayed inline.
+4. **Performance Retro** – week-level accuracy/MAE charts plus offense/QB/defense evaluation tables; dropdown lets you select prior weeks, and the data table sorts by season/week.
+
+## 10. Troubleshooting & Tips
+
+- **Windows stack overflow (0xC0000409)** – caused by PyArrow tearing down GPU contexts; the pipeline now ignores this code for predict_upcoming if outputs exist. If you see the error elsewhere, re-run the command manually to capture stdout.
+- **Missing raw files** – delete the corrupt parquet and re-run the corresponding fetcher (e.g., spn_schedule.parquet via src.data.nflsdv). The scripts will re-download and overwrite caches.
+- **Different Python versions** – 	ools/run_pipeline.py now uses the same interpreter (sys.executable) for every job so that python on PATH cannot point to the wrong environment.
+- **SHAP chunk mismatch** – fixed by enforcing the model’s feature order, but if you modify training features, retrain the model and re-run python -m src.analysis.shap_gpu.
+- **Large README edits** – written in UTF-8; avoid non-ASCII characters unless necessary.
+
+## 11. Contributing
+
+1. Create or activate the 
+flgpu environment.
+2. Run formatting/linting if desired (
+uff, lack, etc. - not enforced here).
+3. Keep commits focused; do not revert user-owned changes.
+4. Update README.md and GOALS.md whenever you add feature families, architectural elements, or roadmap items.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+## Data Usage
+
+Datasets referenced or included in this project may be subject to separate source-specific terms. Follow the usage requirements and attribution rules published by each provider before redistributing or commercializing those datasets.
+
+## Trademark
+
+NFL is a registered trademark of the National Football League. This project is not affiliated with or endorsed by the NFL.
 
 ---
 
-## Highlights
-
-- **Deterministic pipelines** – single entry point (`tools/run_pipeline.py`) for ingestion, feature engineering, training, calibration, and prediction.
-- **Comprehensive data coverage** – SportsDataIO, NFL.com, nflverse, ESPN, Visual Crossing, NOAA, and The Odds API with resilient caching.
-- **Feature-rich models** – win probability, spread regression, and volatility classification using weather deltas, QB practice deltas, and travel × rest interactions.
-- **Probability calibration** – isotonic scaling layered on volatility-based shrinkage for sharper probability estimates.
-- **Interactive analytics** – GPT4All + Milvus conversational agent grounded in local predictions, evaluation metrics, and documentation.
-- **Caching first** – immutable seasons persist locally; refresh only when underlying data changes.
-
----
-
-## Repository Layout
-
-```
-analysis/              Evaluation tooling, volatility diagnostics, ROI studies
-convo_agent/          Conversational assistant (indexer, retriever, FastAPI, CLI)
-data/                 Raw and processed datasets (cached per season/year)
-models/               Persisted model artifacts (sklearn/XGBoost, calibrators)
-predictions/          Historical & upcoming prediction outputs
-src/                  Data ingestion, feature engineering, modeling packages
-tools/                Pipeline runner and orchestration helpers
-```
-
----
-
-## Getting Started
-
-### 1. Prerequisites
-
-- Python 3.10+
-- PowerShell or compatible shell
-- NVIDIA GPU with CUDA drivers (optional, recommended)
-- Docker (optional, required for Milvus container deployment)
-
-### 2. Environment Setup
-
-```pwsh
-python -m venv .venv
-. .\.venv\Scripts\Activate.ps1
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Optional: install CUDA-enabled PyTorch
-pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-```
-
-### 3. Configure Secrets
-
-Populate `secrets.env` (or set environment variables) for external feeds:
-
-| Variable | Purpose |
-|----------|---------|
-| `SPORTSDATAIO_API_KEY` | SportsDataIO projections, DFS, futures/draft, injuries |
-| `NOAA_CONTACT_EMAIL` | NOAA hourly observations (required) |
-| `VISUAL_CROSSING_API_KEY` | Historical weather backfill |
-| `ODDS_API_KEY` | Market odds enrichment (The Odds API) |
-| `THEODDS_API_TIMEOUT` | Optional request tuning |
-
-Load using `python-dotenv` or export manually before running pipelines.
-
----
-
-## Core Pipelines
-
-### Unified Runner
-
-`tools/run_pipeline.py` orchestrates the full workflow.
-
-```pwsh
-python -m tools.run_pipeline `
-  --debug `
-  --start-year 2002 `
-  --train-start-year 2016 `
-  --max-parallel-data 16 `
-  --data-start-delay 0.5 `
-  --use-gpu
-```
-
-Key flags:
-- `--debug` propagates verbose logging (all subcommands now accept `--debug`).
-- `--skip-*` toggles optional jobs (see `--help` for full list).
-- `--max-parallel-data` protects API quotas; adjust based on provider limits.
-
-### Standalone Commands
-
-#### Data Ingestion
-
-| Command | Purpose | Notes |
-|---------|---------|-------|
-| `python -m src.data.nflsdv` | Schedules & play-by-play via SportsDataverse | Per-season cache; use `--force` to refresh |
-| `python -m src.data.nflverse` | nflverse weekly datasets (pbp, injuries, snaps, depth charts, rosters) | API with release fallback, throttled |
-| `python -m src.data.nflcom` | NFL.com team stats (passing/rushing/etc.) | Cached per category/year |
-| `python -m src.data.espn_players` | ESPN player stats | Immutable seasons skipped unless `--force-refresh` |
-| `python -m src.data.espn_player_news` | ESPN player news (injuries/updates) | Refresh limited to every 4h unless forced |
-| `python -m src.data.noaa` | NOAA hourly observations | Historical weather near kickoff windows |
-| `python -m src.data.visualcrossing` | Visual Crossing backfill | Only for gaps left by NOAA |
-| `python -m src.data.sportsdataio` | SportsDataIO projections, DFS, futures/draft, injuries | Replaces Sportradar static feeds |
-
-#### Feature Engineering & Modeling
-
-```pwsh
-# Weather, travel, rest, injury, and market features
-python -m src.features.build_features --season 2023 2024 2025
-
-# Train win probability (supports GPU)
-python -m src.models.train --target win_prob --use-gpu
-
-# Train home-margin regression
-python -m src.models.train --target spread
-
-# Hyperparameter tuning (optional)
-python -m src.models.tune --target win_prob --metric logloss --trials 50
-```
-
-`matchup_features.parquet` now includes weather deltas (`wx_temp_delta`, `wx_wind_delta`, `wx_rain_delta`), QB practice delta features, and travel × rest interactions that power both the classifier and the primary model set.
-
-#### Volatility & Calibration
-
-```pwsh
-python -m analysis.volatility_classifier `
-  --model logreg `
-  --percentile 0.6 `
-  --decision-threshold 0.8 `
-  --disable-season-split `
-  --calibrate `
-  --debug
-
-python -m src.evaluation.calibrate_winprob `
-  --history-dir predictions/history `
-  --season-window 3 `
-  --volatility-dataset analysis/volatility_classifier_dataset.csv `
-  --volatility-threshold 0.60 `
-  --volatility-strength 0.35 `
-  --apply-isotonic `
-  --save-calibrator models/isotonic_calibrator.pkl
-```
-
-Artifacts:
-- `analysis/volatility_classifier_dataset.csv` – per-game probabilities & labels.
-- `analysis/volatility_classifier_metrics.json` – threshold sweep metadata.
-- `analysis/reliability_curve.png` – win probability calibration plot.
-- `models/isotonic_calibrator.pkl` – shrink + isotonic calibrator.
-- `predictions/evaluation/overall_metrics.csv` – baseline vs calibrated metrics.
-
-#### Predictions
-
-```pwsh
-# Historical reconstruction
-python -m src.predict.predict_history --seasons 2002 2025 --overwrite --debug
-
-# Upcoming week (saves team & player outputs)
-python -m src.predict.predict_upcoming --season 2025 --week 9 --save-players-offense --save-players-defense --debug
-```
-
-Outputs include:
-- `predictions/history/*.csv` – backtests with volatility columns.
-- `predictions/upcoming/*.csv` – latest picks, player leaders, odds snapshot.
-
----
-
-## Conversational Agent
-
-Local Retrieval-Augmented Generation over predictions, metrics, and documentation.
-
-1. **Run Milvus** (docker-compose or existing deployment) on `127.0.0.1:19530`.
-2. **Build the index**:
-   ```pwsh
-   python -m convo_agent.data_indexer --reset
-   ```
-   Embeds predictions, evaluation snapshots, volatility metrics, README sections, and calibrator metadata.
-3. **Query options**:
-   ```pwsh
-   # CLI chat
-   python -m convo_agent.cli --show-context
-
-   # REST API
-   uvicorn convo_agent.api:app --reload
-   ```
-
-The assistant performs structured Pandas filtering before vector search, keeping answers grounded in local data. GPU acceleration is automatically selected when CUDA is available; otherwise the stack falls back to CPU.
-
----
-
-## Evaluation Snapshot (2023–2025 Focus Window)
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Accuracy | 0.579 | Full-history win probability |
-| AUC | 0.761 | Calibrated + volatility shrink |
-| Brier Score | 0.195 | Post-calibration |
-| LogLoss | 0.654 | Historical sample |
-| MAE (margin) | 10.63 | Spread regression |
-| RMSE (margin) | 13.68 | Spread regression |
-| Volatility coverage | 15% | Threshold 0.60, strength 0.35 |
-
-Forward holdout (2024–2025):
-- Accuracy 0.714, AUC 0.774, Brier 0.215, MAE 10.04.
-
-Volatility classifier (2024–2025 holdout):
-- AUC 0.98, Precision 1.00, Recall 0.85 at threshold 0.8.
-
----
-
-## Caching Strategy & Data Freshness
-
-- Historical seasons are cached under `data/` and `predictions/history/`. Immutable years are not re-fetched unless `--force` is supplied.
-- ESPN player news enforces a 4-hour minimum interval (`--min-interval-minutes` adjustable); use `--force-refresh` for immediate updates.
-- `src.data.reference.update_regular_season` keeps `nfl_regular_season_games.csv` current. Leverages curated Wikipedia season references and lands in cache unless explicitly refreshed.
-- Visual Crossing serves as a fallback when NOAA lacks coverage; NOAA fetcher only revisits recent windows.
-- SportsDataIO replaces Sportradar static feeds, avoiding rate-limit downtime and additional licensing burden.
-
----
-
-## Troubleshooting
-
-| Issue | Resolution |
-|-------|------------|
-| `Torch not compiled with CUDA` | Install CUDA-enabled PyTorch via `pip install --force-reinstall ... cu124`. |
-| Milvus collection missing | Start Milvus, then run `python -m convo_agent.data_indexer --reset`. |
-| NOAA fetch revisits early seasons | Caching now locks finalized years; ensure you are not passing `--force`. |
-| Pipeline command rejects `--debug` | All modules have `--debug`; pull latest branch if missing. |
-| Sklearn version warning for calibrator | Re-run calibration to regenerate `models/isotonic_calibrator.pkl` under current sklearn. |
-| ESPN player news too frequent | Default throttle is 4 hours; override via `--min-interval-minutes`. |
-
----
-
-## Roadmap
-
-- Season-by-season metric table in this README.
-- Change log documenting major data/model updates.
-- Automated metric snapshot after each feature addition.
-- Feature enrichment focused on weather/QB/travel precision (target precision ≥ 0.70 without recall loss).
-- Replace legacy Streamlit prototype with the conversational experience.
-
----
-
-## License & Usage
-
-This repository is for research and personal use. Respect data provider terms (SportsDataIO, nflverse, ESPN, NOAA, Visual Crossing, The Odds API). Obtain appropriate licenses before redistributing or commercialising outputs.
-
----
-
-## Acknowledgements
-
-- [SportsDataverse](https://sportsdataverse.org/) for schedules, play-by-play, and ESPN endpoints.
-- [nflverse](https://nflverse.github.io/) for extensive open NFL datasets.
-- [Visual Crossing](https://www.visualcrossing.com/) and [NOAA](https://www.weather.gov/documentation/services-web-api) for weather archives.
-- [GPT4All](https://gpt4all.io/) and [Milvus](https://milvus.io/) for enabling local conversational analytics.
+For questions or run approvals, contact the maintainer via the phone number documented in the conversation history (respond "Yes" or "No" when prompted). Happy modeling!

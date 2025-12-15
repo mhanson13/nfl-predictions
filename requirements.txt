@@ -24,3 +24,4 @@ sentence-transformers>=3.0
 pymilvus>=2.4
 gpt4all>=2.8
 einops>=0.8
+shap>=0.44

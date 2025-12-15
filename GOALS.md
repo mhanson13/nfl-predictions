@@ -11,8 +11,8 @@
 
 | Metric | Published Benchmark* | Current Value | Goal / Objective |
 |--------|----------------------|---------------|------------------|
-| Accuracy | ~0.65-0.70 (pregame models) | **0.579** | >= 0.70 full-season |
-| AUC | >= 0.70 strong; >= 0.75 excellent | **0.761** | >= 0.78 next tier |
+| Accuracy | ~0.65-0.70 (pregame models) | **0.651** | >= 0.70 full-season |
+| AUC | >= 0.70 strong; >= 0.75 excellent | **0.757** | >= 0.78 next tier |
 
 ---
 
@@ -20,8 +20,8 @@
 
 | Metric | Published Benchmark* | Current Value | Goal / Objective |
 |--------|----------------------|---------------|------------------|
-| Brier Score | ~0.208 (e.g., FiveThirtyEight) | **0.195** | <= 0.20 |
-| LogLoss | Lower = better (no fixed public number) | **0.654** | <= 0.60 |
+| Brier Score | ~0.208 (e.g., FiveThirtyEight) | **0.197** | <= 0.20 |
+| LogLoss | Lower = better (no fixed public number) | **0.650** | <= 0.60 |
 
 ---
 
@@ -29,8 +29,8 @@
 
 | Metric | Context / Comparable | Current Value | Goal / Objective |
 |--------|----------------------|---------------|------------------|
-| MAE | ~10 pts typical NFL margin error | **10.629** | <= 9.5 |
-| RMSE | Highlights larger prediction errors | **13.675** | <= 12.5 |
+| MAE | ~10 pts typical NFL margin error | **10.11** | <= 9.5 |
+| RMSE | Highlights larger prediction errors | **13.05** | <= 12.5 |
 
 ---
 
@@ -65,6 +65,8 @@
 - [x] Apply probability calibration technique (weekly isotonic scaling)
 - [x] Build **market edge dashboard** (model vs implied odds)
 - [x] Promote Visual Crossing historical weather feed (NOAA + Tomorrow.io now act as fallbacks)
+- [x] Rebuilt Streamlit command center with pipeline controls, transparency dashboards, and performance retrospectives
+- [x] Replaced Sportradar-dependent aggregates with nflverse play-by-play derived features (`player_actuals` + PBP team seasonal stats)
 - [ ] Re-evaluate metrics after each feature addition and document change
 
 ---
@@ -86,6 +88,38 @@
   - Visual Crossing hourly history now supplies primary weather features back to 2002, with NOAA (recent obs) and Tomorrow.io archives acting as lower-priority fallbacks.
 - **Volatility classifier (`analysis/volatility_classifier.py`)**
   - Calibrated logistic (80% decision threshold) AUC **0.98**, precision **1.00**, recall **0.85** on 2024-2025 holdout; travel/timezone and wind signals remain top drivers for shrinkage coverage (~15% of games).
+
+---
+
+## Next-Generation Feature Roadmap
+
+### Newly Landed Feature Families
+- **QB availability ladder (injuries + roster depth)** – Surfaces `qb_status_flag`, `qb_status_delta_rolling3`, and `qb_missed_last_game` so the model tempers confidence when a starter trends toward OUT/DNP. This lowers LogLoss by preventing overconfident backup projections and tightens Brier because uncertainty now mirrors actual roster volatility.
+- **Passing EPA differentials** – Rolling league-adjusted dropback EPA (`pass_epa_per_db_*`) tracks whether an offense is surging or regressing relative to the field, sharpening AUC by separating elite passing attacks from replacement-level units.
+- **Opponent-adjusted efficiency (DVOA-lite)** – `off_adj_eff_raw` and `def_adj_eff_raw` subtract opponent priors, keeping calibration tied to true matchup difficulty and stabilising isotonic fits (Brier).
+- **Red-zone execution** – Rolling trip/TD rates for and against stabilise margin expectations, reducing tail risk that previously spiked LogLoss when teams traded field goals.
+- **Pressure & pass-block context** – Rolling pressure/sack rates (generated and allowed) connect OL/DL mismatches to volatility shrink logic, increasing rank-order separation (AUC) without overstating certainty.
+
+### Calibration & Modeling Goals
+- **Near term**
+  1. Refresh isotonic calibrators every two weeks using volatility-aware shrinkage windows to keep Brier drift under 0.01.
+  2. Blend calibrated win probabilities with margin-derived implied win rates to catch extreme spreads.
+  3. Publish a per-feature lift table after each pipeline run to quantify incremental AUC / LogLoss movement.
+- **Mid term**
+  1. Add drive-level scoring odds + situational pace factors for end-game shrinkage and overtime modeling.
+  2. Build pressure heat maps (edge vs. interior) once player tracking feeds stabilise.
+  3. Layer gradient-boosted ensembles (XGBoost + calibrated logistic + volatility classifier) with Bayesian uncertainty estimates.
+- **Long term**
+  1. Expand the volatility toolkit with probabilistic forecasts (Monte Carlo margin distributions, weather-accuracy deltas).
+  2. Integrate coverage/route data for opponent-specific mismatches and pass block win-rate proxies.
+  3. Maintain the automated documentation refresh (README + changelog) inside `tools/run_pipeline.py` so stakeholders always see live accuracy numbers.
+
+### Future Feature Concepts
+- Drive-level EPA momentum and opponent sequencing.
+- Injury recovery curves (return-to-play timelines) to smooth extremes in `qb_status_flag`.
+- Travel fatigue interactions (altitude × rest days) combined with weather-adjusted volatility scores.
+
+Every feature group is explicitly tied to one metric lever: roster-aware availability lowers LogLoss, play-level efficiencies improve Brier, and matchup-adjusted context improves AUC separation.
 
 ---
 

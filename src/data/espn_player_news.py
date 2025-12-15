@@ -1,8 +1,23 @@
+# Copyright (c) 2025 Matt Hanson
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import argparse
 import json
 import time
+import concurrent.futures
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -66,6 +81,12 @@ def _fetch_player_news(player_id: int, limit: int) -> List[Dict[str, Any]]:
         )
     return rows
 
+def _fetch_player_news_with_delay(player_id: int, limit: int, delay: float) -> List[Dict[str, Any]]:
+    rows = _fetch_player_news(player_id, limit)
+    if delay > 0:
+        time.sleep(delay)
+    return rows
+
 
 def _load_roster_player_ids(seasons: Iterable[int]) -> pd.DataFrame:
     roster_path = RAW_DIR / "nfl_rosters.parquet"
@@ -122,6 +143,7 @@ def main() -> None:
     ap.add_argument("--season", type=int, nargs="+", required=True, help="Season year(s) to collect news for.")
     ap.add_argument("--limit", type=int, default=10, help="Max news items to request per player (default: 10).")
     ap.add_argument("--sleep", type=float, default=0.15, help="Seconds to sleep between requests (default: 0.15).")
+    ap.add_argument("--max-workers", type=int, default=1, help="Concurrent request workers (default: 1).")
     ap.add_argument("--min-interval-minutes", type=float, default=240.0,
                     help="Minimum interval between fetches (default: 240 minutes / 4 hours).")
     ap.add_argument("--grace-minutes", type=float, default=15.0,
@@ -162,7 +184,7 @@ def main() -> None:
         return
 
     news_frames: List[pd.DataFrame] = []
-    total_players = len(roster_ids)
+    total_players = 0
     processed = 0
 
     for season in seasons:
@@ -172,15 +194,28 @@ def main() -> None:
             print(f"[espn_player_news] No players with ESPN ids found for season {season}.")
             continue
 
+        total_players += len(player_ids)
         season_rows: List[Dict[str, Any]] = []
-        for pid in player_ids:
-            processed += 1
-            rows = _fetch_player_news(pid, args.limit)
-            if rows:
-                season_rows.extend(rows)
-            if processed % 100 == 0:
-                print(f"[espn_player_news] processed {processed}/{total_players} player ids...")
-            time.sleep(max(args.sleep, 0.0))
+        throttle_delay = max(args.sleep, 0.0)
+        max_workers = max(1, args.max_workers)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_fetch_player_news_with_delay, pid, args.limit, throttle_delay): pid
+                for pid in player_ids
+            }
+            for future in concurrent.futures.as_completed(futures):
+                pid = futures[future]
+                processed += 1
+                try:
+                    rows = future.result()
+                except Exception as exc:
+                    if args.debug:
+                        print(f"[espn_player_news] player {pid} request failed: {exc}")
+                    rows = []
+                if rows:
+                    season_rows.extend(rows)
+                if processed % 100 == 0:
+                    print(f"[espn_player_news] processed {processed}/{total_players} player ids...")
 
         df_season = pd.DataFrame(season_rows)
         if not df_season.empty:
