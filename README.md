@@ -186,6 +186,13 @@ uff, lack, etc. - not enforced here).
 3. Keep commits focused; do not revert user-owned changes.
 4. Update README.md and GOALS.md whenever you add feature families, architectural elements, or roadmap items.
 
+## Documentation hygiene
+
+PRs that change code should update README usage/architecture or add docstrings. CI will warn if it detects drift.
+
+Run locally:
+`python scripts/doc_agent.py --base origin/main --head HEAD`
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
