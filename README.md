@@ -36,6 +36,10 @@ This repository contains a fully scripted NFL prediction workflow:
 
 Everything is versioned so that the same command line always produces identical artifacts, assuming the same raw data snapshots.
 
+## Installation
+
+Step-by-step environment, data, and pipeline instructions live in [INSTALL.md](INSTALL.md).
+
 ## 2. Current Model Performance
 
 The latest logged win-probability run is **winprob_model (run_109)** from 2025-12-08 with:
