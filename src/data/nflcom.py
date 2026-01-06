@@ -13,15 +13,17 @@
 # limitations under the License.
 
 from __future__ import annotations
+
+import argparse
 import re
 import time
-import argparse
-from dataclasses import dataclass
-from typing import List, Dict
+from typing import Dict, List
+
 import pandas as pd
 from urllib.parse import urlencode
 from tqdm import tqdm
-from src.utils.io import RAW_DIR, write_df, read_df
+
+from src.utils.io import RAW_DIR, read_df, write_df
 from src.utils.logging import configure as configure_logging
 
 CATEGORIES = {
@@ -32,6 +34,8 @@ CATEGORIES = {
     "downs": "offense/downs",
 }
 BASE = "https://www.nfl.com/stats/team-stats/{path}/{year}/reg/all"
+MAX_RETRIES = 3
+RETRY_BACKOFF = 1.5
 
 def _page_url(path: str, year: int, page: int | None = None) -> str:
     base = BASE.format(path=path, year=year)
@@ -40,19 +44,41 @@ def _page_url(path: str, year: int, page: int | None = None) -> str:
     # NFL uses query parameter 'page' for pagination when present
     return base + f"?{urlencode({'page': page})}"
 
-def fetch_team_stats(year: int, category: str, max_pages: int = 10, pause: float = 0.8) -> pd.DataFrame:
+def _read_html_with_retries(url: str, attempts: int = MAX_RETRIES, base_delay: float = RETRY_BACKOFF) -> list[pd.DataFrame]:
+    """Fetch HTML tables with bounded retries to survive transient HTTP errors."""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return pd.read_html(url, flavor=None, displayed_only=False)
+        except Exception as exc:  # noqa: BLE001  (network/parsing errors vary)
+            last_error = exc
+            wait = base_delay * attempt
+            print(f"[nflcom] read_html attempt {attempt}/{attempts} failed for {url}: {exc}. Retrying in {wait:.1f}s")
+            time.sleep(wait)
+    assert last_error is not None  # for mypy
+    raise last_error
+
+
+def fetch_team_stats(
+    year: int,
+    category: str,
+    max_pages: int = 10,
+    pause: float = 0.8,
+    retry_attempts: int = MAX_RETRIES,
+    retry_backoff: float = RETRY_BACKOFF,
+) -> pd.DataFrame:
     assert category in CATEGORIES, f"Unknown category: {category}"
     path = CATEGORIES[category]
     frames: List[pd.DataFrame] = []
     for page in range(1, max_pages + 1):
         url = _page_url(path, year, page=None if page == 1 else page)
         try:
-            tables = pd.read_html(url, flavor=None, displayed_only=False)
-        except Exception as e:
+            tables = _read_html_with_retries(url, attempts=retry_attempts, base_delay=retry_backoff)
+        except Exception as exc:
             if page == 1 and not frames:
-                raise
-            else:
-                break
+                raise RuntimeError(f"NFL.com tables unavailable for {category} {year}: {exc}") from exc
+            print(f"[nflcom] stopping pagination for {category} {year} after page {page}: {exc}")
+            break
         # Heuristic: pick the largest table on the page
         if not tables:
             break

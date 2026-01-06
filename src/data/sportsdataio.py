@@ -54,6 +54,21 @@ class TimeframeSnapshot:
     season_type: int
 
 
+class SportsDataIOError(RuntimeError):
+    """Raised when a SportsDataIO HTTP request fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        body: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
 FEEDS: dict[str, FeedConfig] = {
     "teams": FeedConfig(
         path="/scores/json/Teams",
@@ -197,13 +212,19 @@ def _request_with_retry(
             response.raise_for_status()
         except requests.HTTPError as exc:
             snippet = ""
+            body_text: Optional[str] = None
             try:
-                snippet = f" body={response.text[:160]!r}"
+                body_text = response.text
+                snippet = f" body={body_text[:160]!r}"
             except Exception:
                 snippet = ""
-            raise RuntimeError(f"SportsDataIO request failed for {url} ({exc}){snippet}") from exc
+            raise SportsDataIOError(
+                f"SportsDataIO request failed for {url} ({exc}){snippet}",
+                status_code=response.status_code,
+                body=body_text,
+            ) from exc
         return response.json()
-    raise RuntimeError(f"SportsDataIO request exhausted retries for {url}")
+    raise SportsDataIOError(f"SportsDataIO request exhausted retries for {url}")
 
 
 def _get_current_timeframe(session: requests.Session, timeout: float) -> TimeframeSnapshot:
@@ -282,13 +303,27 @@ def _fetch_feed(
         logging.info("[dry-run] Would write response to %s", output_path)
         return None
 
-    payload = _request_with_retry(
-        session,
-        url,
-        retries=retries,
-        sleep=sleep,
-        timeout=timeout,
-    )
+    try:
+        payload = _request_with_retry(
+            session,
+            url,
+            retries=retries,
+            sleep=sleep,
+            timeout=timeout,
+        )
+    except SportsDataIOError as exc:
+        if exc.status_code in {401, 402, 403} or (
+            exc.body and "Unauthorized Season" in exc.body
+        ):
+            logging.warning(
+                "SportsDataIO feed %s (season=%s, week=%s) is not authorized for this API subscription (status=%s); skipping.",
+                feed_name,
+                season,
+                week,
+                exc.status_code,
+            )
+            return None
+        raise
     frame = _to_dataframe(payload)
     if frame.empty:
         logging.warning("Feed %s returned no rows (season=%s)", feed_name, season)
