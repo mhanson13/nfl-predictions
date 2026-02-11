@@ -20,6 +20,7 @@ import time
 from typing import Dict, List
 
 import pandas as pd
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from tqdm import tqdm
 
@@ -36,6 +37,26 @@ CATEGORIES = {
 BASE = "https://www.nfl.com/stats/team-stats/{path}/{year}/reg/all"
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
+HTML_PARSER = "lxml"
+
+
+class NoTablesError(RuntimeError):
+    """Raised when NFL.com responds without any stat tables."""
+
+
+class SeasonUnavailableError(RuntimeError):
+    """Raised when a specific season/category combination is unavailable."""
+
+    def __init__(self, year: int, category: str, message: str):
+        super().__init__(message)
+        self.year = year
+        self.category = category
+        self.details = message
+
+
+def _warn(message: str) -> None:
+    """Emit warnings even when standard print is silenced."""
+    tqdm.write(f"[nflcom] {message}")
 
 def _page_url(path: str, year: int, page: int | None = None) -> str:
     base = BASE.format(path=path, year=year)
@@ -49,11 +70,31 @@ def _read_html_with_retries(url: str, attempts: int = MAX_RETRIES, base_delay: f
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return pd.read_html(url, flavor=None, displayed_only=False)
+            return pd.read_html(url, flavor=HTML_PARSER, displayed_only=False)
+        except HTTPError as exc:
+            if exc.code == 404:
+                raise NoTablesError(f"HTTP 404 for {url}") from exc
+            last_error = exc
+            wait = base_delay * attempt
+            _warn(f"read_html attempt {attempt}/{attempts} failed for {url}: {exc}. Retrying in {wait:.1f}s")
+            time.sleep(wait)
+            continue
+        except ValueError as exc:
+            if "No tables found" in str(exc):
+                raise NoTablesError(str(exc)) from exc
+            last_error = exc
+            wait = base_delay * attempt
+            _warn(f"read_html attempt {attempt}/{attempts} failed for {url}: {exc}. Retrying in {wait:.1f}s")
+            time.sleep(wait)
+            continue
+        except ImportError as exc:
+            raise RuntimeError(
+                f"Missing required HTML parser '{HTML_PARSER}'. Install it via `pip install {HTML_PARSER}`."
+            ) from exc
         except Exception as exc:  # noqa: BLE001  (network/parsing errors vary)
             last_error = exc
             wait = base_delay * attempt
-            print(f"[nflcom] read_html attempt {attempt}/{attempts} failed for {url}: {exc}. Retrying in {wait:.1f}s")
+            _warn(f"read_html attempt {attempt}/{attempts} failed for {url}: {exc}. Retrying in {wait:.1f}s")
             time.sleep(wait)
     assert last_error is not None  # for mypy
     raise last_error
@@ -74,10 +115,15 @@ def fetch_team_stats(
         url = _page_url(path, year, page=None if page == 1 else page)
         try:
             tables = _read_html_with_retries(url, attempts=retry_attempts, base_delay=retry_backoff)
+        except NoTablesError as exc:
+            if page == 1 and not frames:
+                raise SeasonUnavailableError(year, category, str(exc)) from exc
+            _warn(f"Stopping pagination for {category} {year}: {exc}")
+            break
         except Exception as exc:
             if page == 1 and not frames:
                 raise RuntimeError(f"NFL.com tables unavailable for {category} {year}: {exc}") from exc
-            print(f"[nflcom] stopping pagination for {category} {year} after page {page}: {exc}")
+            _warn(f"Stopping pagination for {category} {year} after page {page}: {exc}")
             break
         # Heuristic: pick the largest table on the page
         if not tables:
@@ -109,6 +155,7 @@ def fetch_multi(years: List[int], categories: List[str], force: bool = False) ->
     results: Dict[str, pd.DataFrame] = {}
     for cat in categories:
         frames = []
+        skipped_years: List[int] = []
         for y in tqdm(years, desc=f"Category={cat}"):
             per_year_path = RAW_DIR / f"nflcom_teamstats_{cat}_{y}.parquet"
             df = None
@@ -118,10 +165,25 @@ def fetch_multi(years: List[int], categories: List[str], force: bool = False) ->
                 except Exception:
                     df = None
             if df is None or df.empty:
-                df = fetch_team_stats(y, cat)
+                try:
+                    df = fetch_team_stats(y, cat)
+                except SeasonUnavailableError as exc:
+                    skipped_years.append(y)
+                    _warn(f"Skipping NFL.com {cat} stats for {y}: {exc.details}")
+                    continue
                 # Save per-year cache
                 write_df(df, per_year_path)
             frames.append(df)
+        if not frames:
+            message = (
+                f"NFL.com returned no data for category '{cat}' and requested seasons {years}. "
+                f"Skipped seasons: {skipped_years or 'all'}"
+            )
+            _warn(message)
+            raise RuntimeError(message)
+        if skipped_years:
+            skipped_str = ", ".join(map(str, skipped_years))
+            _warn(f"Category '{cat}': missing seasons due to unavailable tables -> {skipped_str}")
         results[cat] = pd.concat(frames, ignore_index=True)
     return results
 
