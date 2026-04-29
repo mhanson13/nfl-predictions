@@ -26,36 +26,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dateutil import tz
-from src.utils.io import RAW_DIR, PROC_DIR
-
-
-def _read_parquet_with_fallback(path: Path | str, *, debug_label: str = "", **kwargs) -> pd.DataFrame:
-    """
-    Read a parquet file, retrying with fastparquet if the default engine fails.
-
-    Args:
-        path: File path to load.
-        debug_label: Optional label included in fallback log messages.
-        **kwargs: Additional arguments forwarded to pandas.read_parquet.
-    Returns:
-        Pandas DataFrame loaded from ``path``.
-    Raises:
-        Any exception raised by the primary read when both engines fail.
-    """
-    try:
-        return pd.read_parquet(path, **kwargs)
-    except Exception as primary_exc:
-        fallback_kwargs = dict(kwargs)
-        fallback_kwargs["engine"] = fallback_kwargs.get("engine", "fastparquet")
-        try:
-            df = pd.read_parquet(path, **fallback_kwargs)
-        except Exception:
-            raise primary_exc
-        prefix = f"[predict][{debug_label}]" if debug_label else "[predict]"
-        print(f"{prefix} fastparquet fallback for {path} ({primary_exc})")
-        return df
+from src.utils.io import RAW_DIR, PROC_DIR, read_df
 from src.utils.logging import configure as configure_logging
 from src.utils.odds import fetch_odds
+from src.utils.teams import get_team_abbr_from_name
 from src.predict.utils import apply_probability_caps, moneyline_to_prob
 from src.predict.volatility import (
     DEFAULT_VOLATILITY_ARTIFACT,
@@ -63,151 +37,6 @@ from src.predict.volatility import (
     load_volatility_artifact,
     score_volatility,
 )
-
-
-TEAM_NAME_TO_ABBR: Dict[str, str] = {
-
-    "Arizona Cardinals": "ARI",
-
-    "Atlanta Falcons": "ATL",
-
-    "Baltimore Ravens": "BAL",
-
-    "Buffalo Bills": "BUF",
-
-    "Carolina Panthers": "CAR",
-
-    "Chicago Bears": "CHI",
-
-    "Cincinnati Bengals": "CIN",
-
-    "Cleveland Browns": "CLE",
-
-    "Dallas Cowboys": "DAL",
-
-    "Denver Broncos": "DEN",
-
-    "Detroit Lions": "DET",
-
-    "Green Bay Packers": "GB",
-
-    "Houston Texans": "HOU",
-
-    "Indianapolis Colts": "IND",
-
-    "Jacksonville Jaguars": "JAX",
-
-    "Kansas City Chiefs": "KC",
-
-    "Las Vegas Raiders": "LV",
-
-    "Los Angeles Chargers": "LAC",
-
-    "Los Angeles Rams": "LAR",
-
-    "Miami Dolphins": "MIA",
-
-    "Minnesota Vikings": "MIN",
-
-    "New England Patriots": "NE",
-
-    "New Orleans Saints": "NO",
-
-    "New York Giants": "NYG",
-
-    "New York Jets": "NYJ",
-
-    "Philadelphia Eagles": "PHI",
-
-    "Pittsburgh Steelers": "PIT",
-
-    "San Francisco 49ers": "SF",
-
-    "Seattle Seahawks": "SEA",
-
-    "Tampa Bay Buccaneers": "TB",
-
-    "Tennessee Titans": "TEN",
-
-    "Washington Commanders": "WAS",
-
-    "Washington Redskins": "WAS",
-
-    "Washington Football Team": "WAS",
-
-    "Arizona": "ARI",
-
-    "Atlanta": "ATL",
-
-    "Baltimore": "BAL",
-
-    "Buffalo": "BUF",
-
-    "Carolina": "CAR",
-
-    "Chicago": "CHI",
-
-    "Cincinnati": "CIN",
-
-    "Cleveland": "CLE",
-
-    "Dallas": "DAL",
-
-    "Denver": "DEN",
-
-    "Detroit": "DET",
-
-    "Green Bay": "GB",
-
-    "Houston": "HOU",
-
-    "Indianapolis": "IND",
-
-    "Jacksonville": "JAX",
-
-    "Kansas City": "KC",
-
-    "Las Vegas": "LV",
-
-    "LA Chargers": "LAC",
-
-    "Los Angeles Chargers": "LAC",
-
-    "LA Rams": "LAR",
-
-    "Los Angeles Rams": "LAR",
-
-    "Miami": "MIA",
-
-    "Minnesota": "MIN",
-
-    "New England": "NE",
-
-    "New Orleans": "NO",
-
-    "NY Giants": "NYG",
-
-    "New York Giants": "NYG",
-
-    "NY Jets": "NYJ",
-
-    "New York Jets": "NYJ",
-
-    "Philadelphia": "PHI",
-
-    "Pittsburgh": "PIT",
-
-    "San Francisco": "SF",
-
-    "Seattle": "SEA",
-
-    "Tampa Bay": "TB",
-
-    "Tennessee": "TEN",
-
-    "Washington": "WAS",
-
-}
 
 
 
@@ -379,7 +208,7 @@ def _load_penalty_frame() -> pd.DataFrame:
 
     ]
 
-    df = _read_parquet_with_fallback(path, columns=columns, debug_label="penalties")
+    df = read_df(path, columns=columns)
     df = df.copy()
 
     df["season"] = pd.to_numeric(_column_or_default(df, "season"), errors="coerce")
@@ -708,40 +537,18 @@ def _cleanup_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalize_team_name(name: Optional[str]) -> Optional[str]:
-
-    if not isinstance(name, str):
-
-        return None
-
-    candidate = name.strip()
-
-    if not candidate:
-
-        return None
-
-    abbr = TEAM_NAME_TO_ABBR.get(candidate)
-
-    if abbr:
-
-        return abbr
-
-    lowered = candidate.lower()
-
-    if lowered.startswith("the "):
-
-        abbr = TEAM_NAME_TO_ABBR.get(candidate[4:])
-
-        if abbr:
-
-            return abbr
-
-    for full, code in TEAM_NAME_TO_ABBR.items():
-
-        if candidate.lower() == full.lower():
-
-            return code
-
-    return None
+    """
+    Normalize team name to standard abbreviation.
+    
+    Uses centralized team mapping from src.utils.teams module.
+    
+    Args:
+        name: Team name to normalize
+        
+    Returns:
+        Team abbreviation or None if not found
+    """
+    return get_team_abbr_from_name(name)
 
 
 
@@ -937,7 +744,7 @@ def _load_player_stats_frame() -> pd.DataFrame:
 
         return pd.DataFrame()
 
-    df = _read_parquet_with_fallback(path, debug_label="player_stats")
+    df = read_df(path)
     df = df.copy()
 
     df["season"] = pd.to_numeric(_column_or_default(df, "season"), errors="coerce")
@@ -990,7 +797,7 @@ def _load_roster_frame() -> pd.DataFrame:
 
         return pd.DataFrame()
 
-    df = _read_parquet_with_fallback(path, debug_label="roster")
+    df = read_df(path)
     df = df.copy()
 
     df["season"] = pd.to_numeric(_column_or_default(df, "season"), errors="coerce")
@@ -2146,7 +1953,7 @@ def _player_defense_predictions(
 
 
 
-    pbp = _read_parquet_with_fallback(pbp_path, debug_label="pbp")
+    pbp = read_df(pbp_path)
     if pbp.empty:
 
         return None
@@ -2736,8 +2543,8 @@ def main():
 
 
 
-    sched = _read_parquet_with_fallback(RAW_DIR / "espn_schedule.parquet", debug_label="schedule")
-    feats = _read_parquet_with_fallback(PROC_DIR / "matchup_features.parquet", debug_label="matchup_features")
+    sched = read_df(RAW_DIR / "espn_schedule.parquet")
+    feats = read_df(PROC_DIR / "matchup_features.parquet")
 
     def _available_seasons(df: pd.DataFrame) -> list[int]:
 

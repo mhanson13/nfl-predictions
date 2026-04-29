@@ -22,8 +22,8 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.features.build_features import _norm_abbr
 from src.utils.io import PROC_DIR, RAW_DIR, write_df
+from src.utils.teams import normalize_team_abbr
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -63,7 +63,7 @@ def _clean_team(series: pd.Series) -> pd.Series:
         series.astype(str)
         .str.strip()
         .str.upper()
-        .apply(lambda v: _norm_abbr(v) if v and v != "NONE" else pd.NA)
+        .apply(lambda v: normalize_team_abbr(v) if v and v != "NONE" else pd.NA)
     )
 
 

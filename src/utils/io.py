@@ -147,18 +147,38 @@ def write_df(df: pd.DataFrame, path: Path) -> None:
         clean.to_csv(path.with_suffix(".csv"), index=False, encoding="utf-8")
 
 
-def read_df(path: Path) -> pd.DataFrame:
+def read_df(path: Path, **kwargs) -> pd.DataFrame:
+    """
+    Read a DataFrame from parquet or CSV with automatic fallback handling.
+    
+    For parquet files, automatically retries with fastparquet engine if the
+    default PyArrow engine fails (e.g., due to schema mismatches).
+    
+    Args:
+        path: File path to read.
+        **kwargs: Additional arguments forwarded to pd.read_parquet or pd.read_csv.
+        
+    Returns:
+        DataFrame loaded from the file.
+        
+    Raises:
+        Exception: If both primary and fallback engines fail for parquet,
+                   or if CSV reading fails.
+    """
     if path.suffix == ".parquet":
         try:
-            return pd.read_parquet(path)
+            return pd.read_parquet(path, **kwargs)
         except Exception as primary_exc:
+            # Try fastparquet as fallback
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs["engine"] = "fastparquet"
             try:
-                df_fallback = pd.read_parquet(path, engine="fastparquet")
+                df_fallback = pd.read_parquet(path, **fallback_kwargs)
             except Exception:
                 raise primary_exc
             print(f"[io] Warning: fell back to fastparquet for {path} ({primary_exc})")
             return df_fallback
-    return pd.read_csv(path)
+    return pd.read_csv(path, **kwargs)
 
 
 def write_json(obj: Dict[str, Any], path: Path) -> None:

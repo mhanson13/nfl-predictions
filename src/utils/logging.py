@@ -12,26 +12,67 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+DEPRECATED: This module is deprecated. Use src.utils.logging_config instead.
+
+This module now re-exports from logging_config for backward compatibility.
+All new code should import directly from src.utils.logging_config.
+"""
+
 from __future__ import annotations
 
-import builtins
-import os
-from typing import Callable
+import warnings
+from pathlib import Path
+from typing import Optional
 
-_ORIGINAL_PRINT: Callable[..., None] = builtins.print
+# Re-export everything from the new logging_config module
+from src.utils.logging_config import (
+    setup_logging,
+    get_logger,
+    log_execution_time,
+    log_progress,
+    LoggerAdapter,
+    configure_root_logger,
+    ColoredFormatter,
+    LOG_FORMAT,
+    DATE_FORMAT,
+)
 
-
-def configure(debug: bool) -> None:
+# Backward-compatible configure function
+def configure(debug: bool = False, log_file: Optional[str] = None) -> None:
     """
-    Configure lightweight stdout logging for pipeline scripts.
-    When debug is False, suppresses print statements for quieter runs.
+    DEPRECATED: Use setup_logging() or configure_root_logger() instead.
+    
+    Configure logging for pipeline scripts.
+    
+    Args:
+        debug: If True, sets log level to DEBUG, otherwise INFO
+        log_file: Optional path to log file
     """
-    os.environ["PIPELINE_DEBUG"] = "1" if debug else "0"
-    if debug:
-        builtins.print = _ORIGINAL_PRINT
-        return
+    warnings.warn(
+        "src.utils.logging.configure() is deprecated. "
+        "Use src.utils.logging_config.setup_logging() instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
+    level = "DEBUG" if debug else "INFO"
+    
+    if log_file:
+        setup_logging("nfl_predictions", level=level, log_file=Path(log_file))
+    else:
+        setup_logging("nfl_predictions", level=level)
 
-    def _noop(*_args, **_kwargs) -> None:
-        pass
 
-    builtins.print = _noop
+__all__ = [
+    "configure",
+    "setup_logging",
+    "get_logger",
+    "log_execution_time",
+    "log_progress",
+    "LoggerAdapter",
+    "configure_root_logger",
+    "ColoredFormatter",
+    "LOG_FORMAT",
+    "DATE_FORMAT",
+]
