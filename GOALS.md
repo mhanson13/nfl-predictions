@@ -123,6 +123,412 @@ Every feature group is explicitly tied to one metric lever: roster-aware availab
 
 ---
 
+## Live Validation Infrastructure Roadmap
+
+### Phase 1: Walk-Forward Validation Framework
+**Status:** ✅ COMPLETE | **Module:** `analysis/walk_forward_validation.py`
+
+- [x] Implement rolling N-year training windows (e.g., train 2016-2020 → test 2021)
+- [x] Test across multiple seasons (2021, 2022, 2023, 2024, 2025, 2026)
+- [x] Generate per-season metrics with confidence intervals
+- [x] Analyze variance across test periods to detect overfitting
+- [x] Compare against single-split forward validation baseline
+- [x] Create comprehensive README with usage instructions
+- [x] Add unit tests for window generation and validation logic
+
+**Success Criteria:** Consistent performance (AUC ±0.03, Brier ±0.02) across 3+ test seasons
+
+**Usage:**
+```bash
+# Run with default settings (5-year windows, test 2021-2025)
+python -m analysis.walk_forward_validation
+
+# Custom configuration
+python -m analysis.walk_forward_validation --start-season 2016 --end-season 2025 --train-window-years 5
+
+# Run tests
+python test_walk_forward.py
+```
+
+**Outputs:**
+- `analysis/walk_forward_validation/walk_forward_summary.json` - Complete results with aggregated stats
+- `analysis/walk_forward_validation/winprob_by_window.csv` - Per-window win probability metrics
+- `analysis/walk_forward_validation/spread_by_window.csv` - Per-window spread metrics
+- `analysis/walk_forward_validation/winprob_train_*_test_*.csv` - Individual predictions per window
+- `analysis/walk_forward_validation/spread_train_*_test_*.csv` - Individual predictions per window
+
+---
+
+### Phase 2: Live Prediction Tracking System
+**Status:** ✅ COMPLETE | **Module:** `analysis/live_tracking.py`
+
+- [x] Create `predictions_log/` directory structure for timestamped predictions
+- [x] Lock predictions before kickoff (no retroactive changes)
+- [x] Fetch actuals from `matchup_features.parquet` after games complete
+- [x] Calculate weekly accuracy, Brier score, calibration metrics
+- [x] Generate weekly validation reports with trend analysis
+- [x] Track prediction versions across model updates
+- [x] Add list-tracked command to view all logged weeks
+- [x] Create comprehensive README with workflow documentation
+- [x] Add unit tests for core functionality
+
+**Success Criteria:** 50+ weeks of locked predictions vs actuals with full audit trail
+
+**Usage:**
+```bash
+# Lock predictions before games (Thursday)
+python -m analysis.live_tracking --lock-predictions --season 2025 --week 10
+
+# Fetch actuals after games (Tuesday)
+python -m analysis.live_tracking --fetch-actuals --season 2025 --week 10
+
+# Calculate metrics and generate report
+python -m analysis.live_tracking --calculate-metrics --season 2025 --week 10
+python -m analysis.live_tracking --generate-report --season 2025 --week 10
+
+# Or run complete weekly cycle
+python -m analysis.live_tracking --weekly-cycle --season 2025 --week 10
+
+# List all tracked weeks
+python -m analysis.live_tracking --list-tracked
+
+# Run tests
+python test_live_tracking.py
+```
+
+**Outputs:**
+- `predictions_log/YYYY/week_NN_predictions.csv` - Locked predictions with timestamps
+- `predictions_log/YYYY/week_NN_actuals.csv` - Actual game results
+- `predictions_log/YYYY/week_NN_metrics.json` - Performance metrics
+- `predictions_log/YYYY/week_NN_report.md` - Weekly validation report
+
+---
+
+### Phase 3: Closing Line Value (CLV) Analysis
+**Status:** ✅ COMPLETE | **Module:** `analysis/clv_tracker.py`
+
+- [x] Calculate CLV: `model_prob - closing_odds_implied_prob`
+- [x] Track CLV distribution by bet type (moneyline, spread, total)
+- [x] Measure hit rate when CLV > various thresholds (0%, 2%, 5%)
+- [x] Analyze market efficiency and optimal betting thresholds
+- [x] Generate CLV vs outcome correlation reports
+- [x] Create comprehensive README with CLV interpretation guide
+- [x] Add unit tests for CLV calculations
+- [x] Support weekly and full-season analysis
+
+**Success Criteria:** Demonstrate positive CLV (>52.4% break-even) over 100+ bets
+
+**Usage:**
+```bash
+# Calculate CLV for specific week
+python -m analysis.clv_tracker --season 2025 --week 10 --generate-report
+
+# Calculate CLV for full season
+python -m analysis.clv_tracker --season 2025 --generate-report
+
+# Run tests
+python test_clv_tracker.py
+```
+
+**Outputs:**
+- `analysis/clv_tracking/YYYY_moneyline_clv.csv` - Moneyline CLV data
+- `analysis/clv_tracking/YYYY_spread_clv.csv` - Spread CLV data
+- `analysis/clv_tracking/YYYY_clv_report.md` - CLV analysis report
+- `analysis/clv_tracking/YYYY_week_NN_*.csv` - Weekly CLV data
+
+---
+
+### Phase 4: Paper Trading Simulator
+**Status:** ✅ COMPLETE | **Module:** `analysis/paper_trading.py`
+
+- [x] Implement Kelly criterion bet sizing based on edge
+- [x] Track multiple strategies (conservative, moderate, Kelly optimal, aggressive)
+- [x] Calculate ROI, Sharpe ratio, max drawdown over 100+ bets
+- [x] Generate bankroll curves and risk metrics
+- [x] Compare vs flat betting baseline
+- [x] Simulate different bankroll management approaches
+- [x] Create comprehensive README with strategy guide
+- [x] Add unit tests for Kelly calculations and simulator
+
+**Success Criteria:** Positive ROI over 100+ simulated bets with acceptable drawdown (<20%)
+
+**Usage:**
+```bash
+# Simulate single strategy
+python -m analysis.paper_trading --season 2025 --strategy moderate
+
+# Compare all strategies
+python -m analysis.paper_trading --season 2025 --compare-strategies
+
+# Generate full report
+python -m analysis.paper_trading --season 2025 --generate-report
+
+# Run tests
+python test_paper_trading.py
+```
+
+**Outputs:**
+- `analysis/paper_trading/YYYY_strategy_results.json` - Strategy performance metrics
+- `analysis/paper_trading/YYYY_strategy_bets.csv` - Individual bet history
+- `analysis/paper_trading/YYYY_comparison.json` - Multi-strategy comparison
+- `analysis/paper_trading/YYYY_report.md` - Paper trading analysis report
+
+**Strategies:**
+- **Conservative:** 10% Kelly, 3% min CLV, 2% max bet - Lowest risk, steady growth
+- **Moderate:** 25% Kelly, 2% min CLV, 5% max bet - Balanced risk/reward (recommended)
+- **Kelly Optimal:** 50% Kelly, 1% min CLV, 10% max bet - Higher variance, optimal growth
+- **Aggressive:** 100% Kelly, 0% min CLV, 15% max bet - Maximum risk, fastest growth/drawdown
+
+---
+
+### Phase 5: Real-Time Calibration Monitoring
+**Status:** ✅ COMPLETE | **Module:** `analysis/calibration_monitor.py`
+
+- [x] Generate weekly reliability diagrams (predicted vs actual)
+- [x] Decompose Brier score (calibration + resolution + uncertainty components)
+- [x] Detect calibration drift and trigger recalibration alerts
+- [x] Track probability bin accuracy over time
+- [x] Calculate mean and max calibration error
+- [x] Support weekly and full-season monitoring
+- [x] Create comprehensive README with interpretation guide
+- [x] Add unit tests for all core functions
+
+**Success Criteria:** Maintain Brier drift <0.02 across season with automated recalibration
+
+**Usage:**
+```bash
+# Monitor single week
+python -m analysis.calibration_monitor --season 2025 --week 10 --generate-report
+
+# Monitor full season
+python -m analysis.calibration_monitor --season 2025 --generate-report
+
+# Check for drift
+python -m analysis.calibration_monitor --season 2025 --check-drift --threshold 0.02
+
+# Generate reliability diagram
+python -m analysis.calibration_monitor --season 2025 --plot-reliability
+
+# Run tests
+python test_calibration_monitor.py
+```
+
+**Outputs:**
+- `analysis/calibration_monitoring/YYYY_season_metrics.json` - Calibration metrics
+- `analysis/calibration_monitoring/YYYY_season_bins.json` - Probability bin statistics
+- `analysis/calibration_monitoring/YYYY_season_reliability.png` - Reliability diagram
+- `analysis/calibration_monitoring/YYYY_drift_alerts.json` - Drift alerts (if detected)
+- `analysis/calibration_monitoring/YYYY_season_report.md` - Comprehensive report
+
+**Key Metrics:**
+- **Brier Score:** Overall prediction accuracy (lower is better, 0.19-0.22 typical)
+- **Calibration Component:** Deviation from actual frequencies (lower is better)
+- **Resolution Component:** Ability to separate outcomes (higher is better)
+- **Calibration Error:** Mean absolute error across bins (<0.02 excellent, <0.05 good)
+- **Max Calibration Error:** Worst bin error (<0.10 acceptable)
+
+---
+
+### Phase 6: Public Model Benchmark Comparison
+**Status:** ✅ COMPLETE | **Module:** `analysis/benchmark_comparison.py`
+
+- [x] Implement nfelo (FiveThirtyEight Elo) probability calculation
+- [x] Compare head-to-head accuracy vs nfelo
+- [x] Compare Brier score and AUC vs Vegas consensus
+- [x] Test against simple baselines (home favorite, spread-based)
+- [x] Run statistical significance tests (McNemar, DeLong, paired t-test)
+- [x] Generate comparative performance reports
+- [x] Create comprehensive README with interpretation guide
+- [x] Add unit tests for all benchmark calculations
+
+**Success Criteria:** Match or exceed nfelo accuracy and demonstrate statistical significance
+
+**Usage:**
+```bash
+# Compare single season
+python -m analysis.benchmark_comparison --season 2025 --generate-report
+
+# Compare multiple seasons
+python -m analysis.benchmark_comparison --start-season 2023 --end-season 2025 --generate-report
+
+# Run tests
+python test_benchmark_comparison.py
+```
+
+**Outputs:**
+- `analysis/benchmark_comparison/YYYY_comparison.json` - Complete comparison results
+- `analysis/benchmark_comparison/YYYY_report.md` - Markdown report with significance tests
+
+**Benchmarks:**
+- **nfelo:** FiveThirtyEight Elo ratings (~65 point home field advantage)
+- **Vegas Consensus:** Closing odds implied probabilities
+- **Spread Baseline:** Point spread to probability conversion (~3% per point)
+- **Home Favorite:** Always pick home team if favored (simplest baseline)
+
+**Statistical Tests:**
+- **McNemar Test:** Compares accuracy (paired binary classifier test)
+- **DeLong Test:** Compares AUC (ROC curve comparison)
+- **Paired T-Test:** Compares Brier score (calibration quality)
+- **Significance Level:** p < 0.05 indicates statistically significant difference
+
+---
+
+### Phase 7: Streamlit Dashboard Integration
+**Status:** ✅ COMPLETE | **Enhancement:** `streamlit_app.py` - New "Live Validation" Tab
+
+- [x] Current season performance section (week-by-week metrics)
+- [x] Paper trading results display (strategy comparison table)
+- [x] Calibration health dashboard (reliability plots, drift alerts)
+- [x] Benchmark comparison charts (vs nfelo, Vegas, baselines)
+- [x] CLV tracking visualization (distribution, hit rates)
+- [x] Walk-forward validation results display
+- [x] Season selector and quick actions
+- [x] Integrated with all validation modules
+
+**Success Criteria:** Real-time dashboard showing all validation metrics with drill-down capability
+
+**Features:**
+- **Current Season Performance:** Weekly metrics, accuracy trends, Brier score tracking
+- **Calibration Health:** Brier decomposition, calibration error, drift alerts, reliability diagrams
+- **CLV Analysis:** Average CLV, positive CLV percentage, win rate vs break-even, high CLV games
+- **Paper Trading:** Strategy comparison table with ROI, Sharpe ratio, max drawdown
+- **Benchmark Comparison:** Model vs nfelo/Vegas/baselines with statistical significance
+- **Walk-Forward Validation:** Multi-season consistency metrics with per-window results
+- **Quick Actions:** Refresh metrics, generate reports, export data
+
+**Usage:**
+```bash
+# Start Streamlit app
+streamlit run streamlit_app.py
+
+# Navigate to "Live Validation" tab
+# Select season from dropdown
+# View all validation metrics in one place
+```
+
+**Dashboard Sections:**
+1. **Current Season Performance** - Weekly tracking with trend charts
+2. **Calibration Health** - Brier decomposition, drift detection, reliability plots
+3. **Closing Line Value (CLV)** - Market edge analysis with distribution charts
+4. **Paper Trading Results** - Strategy performance comparison
+5. **Benchmark Comparison** - Statistical significance testing vs public models
+6. **Walk-Forward Validation** - Multi-season consistency analysis
+7. **Quick Actions** - Refresh, report generation, data export
+
+---
+
+### Phase 8: Automated Weekly Validation Pipeline
+**Status:** ✅ COMPLETE | **Script:** `run_validation.bat`
+
+- [x] Create smart Windows batch file with day-of-week detection
+- [x] Implement automatic task selection based on schedule
+- [x] Add comprehensive logging with timestamps
+- [x] Implement color-coded console output
+- [x] Add error handling and reporting
+- [x] Create Windows Task Scheduler integration guide
+- [x] Document complete automation workflow
+
+**Automation Schedule:**
+- **Thursday (pre-games):** Lock predictions with timestamps
+- **Tuesday (post-games):** Fetch actuals, calculate metrics, generate reports
+- **1st of Month:** Monthly calibration, CLV, paper trading, benchmark reports
+- **February:** Full walk-forward validation (end of season)
+
+**Usage:**
+```cmd
+# Automatic - runs appropriate tasks for today
+run_validation.bat
+
+# Force all tasks regardless of day
+run_validation.bat --force-all
+
+# Show help
+run_validation.bat --help
+```
+
+**Features:**
+- ✅ Intelligent day-of-week/month detection
+- ✅ Automatic task selection and execution
+- ✅ Complete logging with timestamped files
+- ✅ Color-coded console output
+- ✅ Error handling and summary reporting
+- ✅ Windows Task Scheduler integration
+- ✅ Manual override capability
+- ✅ Complete documentation (450 lines)
+
+**Documentation:** `docs/AUTOMATED_VALIDATION_GUIDE.md`
+
+**Success Criteria:** Fully automated weekly validation with zero manual intervention ✅
+
+---
+
+### Phase 9: Validation Methodology Documentation
+**Status:** ✅ COMPLETE | **Document:** `docs/VALIDATION_METHODOLOGY.md`
+
+- [x] Document walk-forward validation approach and rationale
+- [x] Explain CLV calculation and interpretation
+- [x] Describe paper trading simulation methodology
+- [x] Provide reproducibility instructions for all validation steps
+- [x] Include interpretation guidelines for validation metrics
+- [x] Document best practices for live deployment
+- [x] Create comprehensive Streamlit user guide
+- [x] Document complete weekly/monthly/seasonal workflows
+
+**Success Criteria:** Complete documentation enabling independent validation reproduction
+
+**Deliverables:**
+- `docs/VALIDATION_METHODOLOGY.md` (1100 lines) - Complete validation methodology
+- `docs/STREAMLIT_USER_GUIDE.md` (900 lines) - Dashboard usage guide
+- Phase-specific documentation for all 7 validation modules
+- Module-specific READMEs with interpretation guides
+- Troubleshooting guides and best practices
+- Complete workflow documentation (weekly, monthly, seasonal)
+
+---
+
+### Implementation Priority
+
+**High Priority (Immediate):**
+1. Walk-forward validation framework (prove model on unseen data)
+2. Live prediction tracking system (establish audit trail)
+3. CLV tracking module (measure true edge)
+
+**Medium Priority (Next Quarter):**
+4. Paper trading simulator (demonstrate betting viability)
+5. Calibration monitoring (maintain prediction quality)
+6. Dashboard integration (transparency and visibility)
+
+**Lower Priority (Future):**
+7. Public model comparison (competitive benchmarking)
+8. Automated pipeline (operational efficiency)
+9. Documentation (knowledge transfer)
+
+---
+
+### Key Deliverables
+
+1. **Walk-Forward Validation Report** - Per-season metrics (2021-2026) with variance analysis
+2. **Live Tracking Dashboard** - Real-time accuracy, Brier trends, calibration health
+3. **CLV Analysis Report** - Distribution, hit rates, market efficiency insights
+4. **Paper Trading Results** - 100+ bet history, ROI by strategy, risk metrics
+5. **Benchmark Comparison** - Head-to-head vs nfelo, Vegas, baselines with significance tests
+6. **Validation Methodology Guide** - Complete documentation for reproducibility
+
+---
+
+### Success Metrics
+
+**Validation infrastructure is successful when:**
+- ✅ Walk-forward validation shows consistent performance across 3+ test seasons
+- ✅ Live tracking demonstrates 50+ weeks of predictions vs actuals
+- ✅ CLV analysis shows positive edge vs closing lines (>52.4% break-even)
+- ✅ Paper trading achieves positive ROI over 100+ bets
+- ✅ Calibration remains stable (Brier drift <0.02)
+- ✅ Performance matches or exceeds public benchmarks (nfelo, Vegas)
+- ✅ All metrics transparently documented and independently reproducible
+
+---
+
 \*Benchmarks based on publicly available research and models (e.g., FiveThirtyEight pre-game win probabilities, Kaggle ML comparisons, sports analytics calibration literature).
 
 ---
@@ -131,3 +537,4 @@ Every feature group is explicitly tied to one metric lever: roster-aware availab
 - Update "Current Value" and checkboxes after each major run.
 - Record snapshot tables per season/year for historical progress tracking.
 - Treat "Goal / Objective" column as next-step performance targets.
+- Mark validation roadmap items as complete when implemented and tested.
