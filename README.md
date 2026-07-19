@@ -154,6 +154,44 @@ flgpu env shown below)
 | nalysis/run_comparisons/* | Markdown report + metric trend PNGs for every logged run. |
 | nalysis/shap/* | SHAP numpy dumps and summary plots from GPU explainability. |
 
+## 8. Validation Infrastructure
+
+The platform includes comprehensive validation infrastructure for rigorous model testing:
+
+### Live Validation Phases
+
+1. **Walk-Forward Validation** ([Phase 1](docs/PHASE_1_WALK_FORWARD_VALIDATION.md))
+   - Rolling 5-year training windows with future season testing
+   - Tests across 5+ independent seasons (2021-2025)
+   - Prevents data leakage with strict temporal splits
+   - Module: `analysis/walk_forward_validation.py`
+
+2. **Live Prediction Tracking** ([Phase 2](docs/PHASE_2_LIVE_TRACKING.md))
+   - Locks predictions with timestamps before games
+   - Fetches actual results after games complete
+   - Full audit trail prevents retroactive changes
+   - Module: `analysis/live_tracking.py`
+
+3. **Benchmark Comparison** ([Phase 3](docs/PHASE_3_BENCHMARK_COMPARISON.md))
+   - Statistical tests vs nfelo, Vegas, baselines
+   - McNemar, DeLong, and paired t-tests
+   - Identifies model strengths and weaknesses
+   - Module: `analysis/benchmark_comparison.py`
+
+4. **Paper Trading** ([Phase 4](docs/PHASE_4_PAPER_TRADING.md))
+   - Kelly criterion bet sizing (10%, 25%, 50%, 100%)
+   - Risk-free strategy testing on historical data
+   - ROI, Sharpe ratio, max drawdown tracking
+   - Module: `analysis/paper_trading.py`
+
+5. **Calibration Monitoring** ([Phase 5](docs/PHASE_5_CALIBRATION_MONITORING.md))
+   - Real-time calibration drift detection
+   - Brier score decomposition
+   - Automated recalibration triggers
+   - Module: `analysis/calibration_monitor.py`
+
+See [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) for comprehensive methodology documentation.
+
 ## 8. Post-run Analysis
 
 After every successful evaluation, the pipeline triggers:

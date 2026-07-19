@@ -130,6 +130,74 @@ Every feature group is explicitly tied to one metric lever: roster-aware availab
 
 - [x] Implement rolling N-year training windows (e.g., train 2016-2020 → test 2021)
 - [x] Test across multiple seasons (2021, 2022, 2023, 2024, 2025, 2026)
+
+---
+
+## Phase 2A Goals (Foundation - 4 Weeks)
+
+### Infrastructure
+- [ ] Pipeline runtime: 2-3hr → <30min (6x faster)
+- [ ] Memory usage: 8GB → 4GB (50% reduction)
+- [ ] Async pipeline operational with concurrent data fetching
+- [ ] Connection pooling integrated for HTTP requests
+- [ ] Checkpoint/resume functionality for failed runs
+
+### Data Quality
+- [ ] Schema validation: 0% → 100% coverage
+- [ ] Pydantic models for all 16 data sources (NFLverse, ESPN, Sportradar, Weather, Yahoo)
+- [ ] Automated data quality checks with field-level error reporting
+- [ ] Validation metrics tracked (pass/fail rates, common errors)
+- [ ] Schema versioning and registry implemented
+
+### Production Readiness
+- [ ] Monitoring dashboards live (4 Grafana dashboards)
+- [ ] Metrics collection operational (Prometheus)
+- [ ] Health check endpoints active (`/health`, `/health/ready`, `/health/detailed`)
+- [ ] Alerting rules configured for critical metrics
+- [ ] System observability: <5min incident detection
+
+### Testing & Quality
+- [ ] Code coverage: 55% → 70%+ (+15% increase)
+- [ ] Feature module tests complete (>85% coverage)
+- [ ] Data fetcher tests complete (>80% coverage)
+- [ ] Integration tests for async pipeline
+- [ ] All tests passing in <5 minutes
+
+### Week-by-Week Milestones
+
+**Week 1: Async Pipeline Architecture**
+- [ ] `AsyncBaseDataFetcher` abstract class created
+- [ ] Async pipeline orchestrator implemented
+- [ ] 4-6x speedup achieved on data fetching
+- [ ] Backward compatibility maintained
+
+**Week 2: Schema Validation Framework**
+- [ ] 16 Pydantic schema models created
+- [ ] Schema validator and registry operational
+- [ ] Validation hooks added to all fetchers
+- [ ] 100% validation coverage achieved
+
+**Week 3: Monitoring & Observability**
+- [ ] Prometheus metrics collection live
+- [ ] 4 Grafana dashboards deployed
+- [ ] Health check endpoints operational
+- [ ] Real-time system visibility achieved
+
+**Week 4: Expand Test Coverage**
+- [ ] Feature engineering tests complete
+- [ ] Data fetcher tests complete
+- [ ] Async pipeline integration tests complete
+- [ ] 70%+ code coverage achieved
+
+### Success Criteria
+- ✅ All 10 Phase 2A GitHub issues completed
+- ✅ Pipeline runs in <30 minutes
+- ✅ 100% schema validation coverage
+- ✅ Monitoring dashboards operational
+- ✅ Code coverage >70%
+- ✅ Zero critical bugs in production
+- ✅ Documentation updated for all new features
+
 - [x] Generate per-season metrics with confidence intervals
 - [x] Analyze variance across test periods to detect overfitting
 - [x] Compare against single-split forward validation baseline
