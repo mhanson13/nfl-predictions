@@ -36,6 +36,9 @@ services:
       timeout: 20s
       retries: 3
 
+  # NOTE: The milvus service (and its etcd/minio dependencies) is optional and currently
+  # unused — pymilvus has been removed from the project dependencies. This service block
+  # is retained here for reference in case vector-search functionality is added in future.
   standalone:
     container_name: milvus-standalone
     image: milvusdb/milvus:v2.4.8

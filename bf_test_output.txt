@@ -1,3 +1,0 @@
-feats_shape (6486, 904)
-inj_count 0
-[]

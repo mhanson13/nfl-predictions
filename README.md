@@ -235,6 +235,28 @@ PRs that change code should update README usage/architecture or add docstrings. 
 Run locally:
 `python scripts/doc_agent.py --base origin/main --head HEAD`
 
+## Documentation
+
+Key reference documents in [`docs/`](docs/):
+
+| Document | Description |
+|----------|-------------|
+| [DEVELOPER_ONBOARDING.md](docs/DEVELOPER_ONBOARDING.md) | Getting started guide for new contributors |
+| [ASYNC_FETCHER_GUIDE.md](docs/ASYNC_FETCHER_GUIDE.md) | How the async data-fetching layer works |
+| [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) | End-to-end validation methodology |
+| [AUTOMATED_VALIDATION_GUIDE.md](docs/AUTOMATED_VALIDATION_GUIDE.md) | Running the automated validation suite |
+| [STREAMLIT_USER_GUIDE.md](docs/STREAMLIT_USER_GUIDE.md) | Using the Streamlit command-center dashboard |
+| [PHASE_1_WALK_FORWARD_VALIDATION.md](docs/PHASE_1_WALK_FORWARD_VALIDATION.md) | Walk-forward validation design |
+| [PHASE_2_LIVE_TRACKING.md](docs/PHASE_2_LIVE_TRACKING.md) | Live prediction tracking |
+| [PHASE_3_BENCHMARK_COMPARISON.md](docs/PHASE_3_BENCHMARK_COMPARISON.md) | Benchmark comparison (nfelo, Vegas, baselines) |
+| [PHASE_4_PAPER_TRADING.md](docs/PHASE_4_PAPER_TRADING.md) | Paper trading / Kelly criterion simulation |
+| [PHASE_5_CALIBRATION_MONITORING.md](docs/PHASE_5_CALIBRATION_MONITORING.md) | Calibration drift monitoring |
+| [PROJECT_STATUS_REVIEW.md](docs/PROJECT_STATUS_REVIEW.md) | Current project status and roadmap |
+| [ENHANCEMENT_PHASE_2_ROADMAP.md](docs/ENHANCEMENT_PHASE_2_ROADMAP.md) | Phase 2 enhancement roadmap |
+| [IMMEDIATE_ACTION_PLAN.md](docs/IMMEDIATE_ACTION_PLAN.md) | Near-term action plan |
+
+Architecture decision records live in [`docs/adr/`](docs/adr/).
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

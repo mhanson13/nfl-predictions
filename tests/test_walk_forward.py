@@ -1,12 +1,6 @@
 #!/usr/bin/env python
 """Quick test of walk-forward validation module."""
 
-from pathlib import Path
-import sys
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
-
 from analysis.walk_forward_validation import (
     generate_windows,
     ValidationWindow,
@@ -15,7 +9,7 @@ from analysis.walk_forward_validation import (
 def test_window_generation():
     """Test that windows are generated correctly."""
     print("Testing window generation...")
-    
+
     # Test basic 5-year windows
     windows = generate_windows(
         start_season=2016,
@@ -23,13 +17,13 @@ def test_window_generation():
         train_window_years=5,
         min_test_season=2021,
     )
-    
+
     print(f"\nGenerated {len(windows)} windows:")
     for w in windows:
         print(f"  {w.name}")
         print(f"    Train: {w.train_start}-{w.train_end} ({w.train_years} years)")
         print(f"    Test: {w.test_season}")
-    
+
     # Verify expected windows
     expected = [
         (2016, 2020, 2021),
@@ -38,51 +32,25 @@ def test_window_generation():
         (2019, 2023, 2024),
         (2020, 2024, 2025),
     ]
-    
+
     assert len(windows) == len(expected), f"Expected {len(expected)} windows, got {len(windows)}"
-    
+
     for i, (w, (start, end, test)) in enumerate(zip(windows, expected)):
         assert w.train_start == start, f"Window {i}: expected train_start={start}, got {w.train_start}"
         assert w.train_end == end, f"Window {i}: expected train_end={end}, got {w.train_end}"
         assert w.test_season == test, f"Window {i}: expected test_season={test}, got {w.test_season}"
-    
+
     print("\n[PASS] All window generation tests passed!")
 
 def test_window_properties():
     """Test ValidationWindow properties."""
     print("\nTesting ValidationWindow properties...")
-    
+
     w = ValidationWindow(train_start=2016, train_end=2020, test_season=2021)
-    
+
     assert w.name == "train_2016_2020_test_2021"
     assert w.train_years == 5
-    
+
     print(f"  Window name: {w.name}")
     print(f"  Train years: {w.train_years}")
     print("\n[PASS] All property tests passed!")
-
-if __name__ == "__main__":
-    print("=" * 80)
-    print("Walk-Forward Validation Module Tests")
-    print("=" * 80)
-    
-    try:
-        test_window_generation()
-        test_window_properties()
-        
-        print("\n" + "=" * 80)
-        print("[SUCCESS] ALL TESTS PASSED")
-        print("=" * 80)
-        print("\nThe walk-forward validation module is ready to use.")
-        print("\nTo run full validation:")
-        print("  python -m analysis.walk_forward_validation")
-        print("\nNote: Full validation requires matchup_features.parquet")
-        print("      Run build_features first if needed.")
-        
-    except Exception as e:
-        print(f"\n[FAIL] TEST FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-# Made with Bob

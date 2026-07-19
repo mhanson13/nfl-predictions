@@ -62,3 +62,23 @@ yahoo_temp.py
 .DS_Store
 Thumbs.db
 secrets.json
+
+# Backup & migration artifacts
+predictions/*.backup_*
+predictions/*.migration_*
+
+# Logs
+*.log
+
+# Temp files
+temp_*.txt
+tmp_*.txt
+
+# Backup files
+*.bak
+
+# Docker volumes
+volumes/
+
+# IDE / workspace files
+nfl-predictions.code-workspace
