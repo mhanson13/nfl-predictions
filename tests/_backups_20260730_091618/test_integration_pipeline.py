@@ -27,28 +27,19 @@ class TestPipelineIntegration:
         assert config.pipeline.enable_cache in [True, False]
     
     def test_team_normalization_pipeline(self):
-        """Test team normalization works across different formats.
-
-        get_team_abbr_from_name() looks up full team names; for bare abbreviations
-        use normalize_team_abbr() instead.
-        """
-        # Full team names that TEAM_NAME_TO_ABBR covers
-        full_name_cases = [
+        """Test team normalization works across different formats."""
+        test_cases = [
             ("Kansas City Chiefs", "KC"),
-            ("Los Angeles Rams", "LAR"),
-        ]
-        for input_name, expected in full_name_cases:
-            result = get_team_abbr_from_name(input_name)
-            assert result == expected, f"Failed for {input_name}"
-
-        # Abbreviations that normalize_team_abbr() handles
-        abbr_cases = [
+            ("Kansas City", "KC"),
             ("KC", "KC"),
+            ("Los Angeles Rams", "LAR"),
+            ("LA Rams", "LAR"),
             ("LAR", "LAR"),
         ]
-        for input_abbr, expected in abbr_cases:
-            result = normalize_team_abbr(input_abbr)
-            assert result == expected, f"Failed for {input_abbr}"
+        
+        for input_name, expected in test_cases:
+            result = get_team_abbr_from_name(input_name)
+            assert result == expected, f"Failed for {input_name}"
     
     def test_data_loading_with_fallback(self):
         """Test that data loading with fallback works."""
@@ -81,28 +72,18 @@ class TestPipelineIntegration:
         ("SF", True),
         ("BUF", True),
         ("INVALID", False),
+        ("", False),
         (None, False),
     ])
     def test_team_validation(self, team_abbr, expected_valid):
-        """Test team abbreviation validation.
-
-        normalize_team_abbr() returns None for None input, and returns the
-        input unchanged for unknown abbreviations (no whitelist enforcement).
-        The parametrize cases below reflect actual source behaviour.
-        """
+        """Test team abbreviation validation."""
         result = normalize_team_abbr(team_abbr)
-
+        
         if expected_valid:
             assert result is not None
-            assert len(result) in [2, 3]
+            assert len(result) in [2, 3]  # Valid abbreviations are 2-3 chars
         else:
-            # None input → None; unknown abbr → source returns it unchanged,
-            # so we just verify it's not a known valid team
-            if team_abbr is None:
-                assert result is None
-            else:
-                # Unknown abbreviations are passed through; not our contract to enforce here
-                assert result is None or result not in ("KC", "SF", "BUF", "DEN", "DAL")
+            assert result is None
 
 
 class TestFeatureEngineeringIntegration:
@@ -166,10 +147,6 @@ class TestCachingIntegration:
 class TestSchemaValidationIntegration:
     """Integration tests for schema validation."""
     
-    @pytest.mark.skipif(
-        True,
-        reason="Requires 'pandera' optional dependency — not installed in this environment"
-    )
     def test_schedule_schema_validation(self):
         """Test schedule DataFrame validation."""
         from src.utils.schemas import ScheduleSchema
@@ -193,10 +170,6 @@ class TestSchemaValidationIntegration:
         
         assert validated, "Valid schedule should pass validation"
     
-    @pytest.mark.skipif(
-        True,
-        reason="Requires 'pandera' optional dependency — not installed in this environment"
-    )
     def test_prediction_schema_validation(self):
         """Test prediction DataFrame validation."""
         from src.utils.schemas import PredictionSchema
@@ -262,8 +235,7 @@ class TestEndToEndPipeline:
         assert config.paths.processed_dir.exists()
         
         # Verify configuration is valid
-        # n_jobs lives on ModelConfig, not PipelineConfig
-        assert config.model.n_jobs != 0
+        assert config.pipeline.n_jobs > 0
         assert config.pipeline.cache_ttl_hours > 0
 
 

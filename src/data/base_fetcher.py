@@ -242,6 +242,10 @@ class APIDataFetcher(BaseDataFetcher):
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
     
+    def _fetch_raw(self, **kwargs) -> "FetchResult":
+        """Default implementation — subclasses should override for real fetches."""
+        return FetchResult(success=False, error=f"{self.__class__.__name__}._fetch_raw not implemented")
+
     def _build_url(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> str:
         """
         Build full API URL.
@@ -287,6 +291,10 @@ class WebScraperFetcher(BaseDataFetcher):
         )
         self.headers = {"User-Agent": self.user_agent}
 
+    def _fetch_raw(self, **kwargs) -> "FetchResult":
+        """Default implementation — subclasses should override for real fetches."""
+        return FetchResult(success=False, error=f"{self.__class__.__name__}._fetch_raw not implemented")
+
 
 class FileDataFetcher(BaseDataFetcher):
     """Base class for file-based data fetchers."""
@@ -311,6 +319,10 @@ class FileDataFetcher(BaseDataFetcher):
         self.source_dir = Path(source_dir)
         self.file_pattern = file_pattern
     
+    def _fetch_raw(self, **kwargs) -> "FetchResult":
+        """Default implementation — subclasses should override for real fetches."""
+        return FetchResult(success=False, error=f"{self.__class__.__name__}._fetch_raw not implemented")
+
     def _list_files(self) -> List[Path]:
         """
         List matching files in source directory.

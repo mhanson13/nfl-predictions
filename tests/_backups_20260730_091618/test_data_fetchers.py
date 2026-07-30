@@ -54,11 +54,10 @@ class TestFetchResult:
 
 class ConcreteFetcher(BaseDataFetcher):
     """Concrete implementation for testing."""
-
+    
     def __init__(self, return_data=None, should_fail=False, **kwargs):
         super().__init__("test_fetcher", **kwargs)
-        # Use explicit None check — 'or' is ambiguous for DataFrames
-        self.return_data = return_data if return_data is not None else pd.DataFrame({"col": [1, 2, 3]})
+        self.return_data = return_data or pd.DataFrame({"col": [1, 2, 3]})
         self.should_fail = should_fail
         self.fetch_called = False
     

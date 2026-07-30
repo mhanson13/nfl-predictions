@@ -6,8 +6,6 @@ maintain invariants and handle edge cases correctly.
 """
 
 import pytest  # type: ignore
-pytest.importorskip("hypothesis", reason="hypothesis not installed — skipping property-based tests")
-
 import pandas as pd
 import numpy as np
 from hypothesis import given, strategies as st, assume, settings

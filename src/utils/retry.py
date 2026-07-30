@@ -149,18 +149,17 @@ def retry(
                     
                     if attempt == config.max_attempts - 1:
                         # Last attempt failed
+                        func_name = getattr(func, '__name__', repr(func))
                         logger.error(
-                            f"{func.__name__} failed after {config.max_attempts} attempts: {e}"
+                            f"{func_name} failed after {config.max_attempts} attempts: {e}"
                         )
-                        raise RetryError(
-                            f"Failed after {config.max_attempts} attempts",
-                            last_exception=e
-                        ) from e
+                        raise e
                     
                     # Calculate delay and retry
                     delay = config.calculate_delay(attempt)
+                    func_name = getattr(func, '__name__', repr(func))
                     logger.warning(
-                        f"{func.__name__} attempt {attempt + 1}/{config.max_attempts} "
+                        f"{func_name} attempt {attempt + 1}/{config.max_attempts} "
                         f"failed: {e}. Retrying in {delay:.2f}s..."
                     )
                     

@@ -17,9 +17,6 @@ import shutil
 import unittest
 from pathlib import Path
 
-import pytest
-pytest.importorskip("httpx", reason="httpx not installed — skipping sportradar tests")
-
 from src.data.sportradar import (
     FeedRequest,
     build_output_path,

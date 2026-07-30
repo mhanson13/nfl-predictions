@@ -91,18 +91,9 @@ def test_report_functions_produce_expected_summaries():
         _write_parquet(schedule, sr_dir / "schedule.parquet")
         _write_parquet(team_stats, sr_dir / "game_team_stats.parquet")
 
-        # Build the expected snapshot that load_sportradar_team_features would return
-        expected_snapshot = pd.DataFrame([
-            {"season": 2025, "abbr": "PHI"},
-            {"season": 2025, "abbr": "DAL"},
-        ])
-
-        with mock.patch("tools.sportradar_report.PROC_SPORTRADAR", sr_dir), \
-             mock.patch("src.features.build_features.PROC_DIR", proc_dir), \
-             mock.patch(
-                 "tools.sportradar_report.load_sportradar_team_features",
-                 return_value=expected_snapshot,
-             ):
+        with mock.patch("tools.sportradar_report.PROC_SPORTRADAR", sr_dir), mock.patch(
+            "src.features.build_features.PROC_DIR", proc_dir
+        ):
             change_summary = report.summarize_change_log(sr_dir)
             txn_summary = report.summarize_transactions(sr_dir)
             snapshot = report.generate_team_feature_snapshot()
@@ -117,5 +108,4 @@ def test_report_functions_produce_expected_summaries():
         ]["count"].iloc[0] == 2
 
         assert not snapshot.empty
-        # The snapshot contains exactly the mocked abbrs
         assert set(snapshot["abbr"]) == {"PHI", "DAL"}

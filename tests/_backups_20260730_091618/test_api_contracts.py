@@ -392,16 +392,18 @@ class TestConfigContract:
     
     def test_config_has_required_sections(self):
         """Test that config has all required sections."""
-        from src.config import get_config
-        config = get_config()
-
-        # Top-level config exposes nested sections; check the nested attributes
-        assert hasattr(config, 'paths')
-        assert hasattr(config, 'pipeline')
-        assert hasattr(config, 'api')
-        assert hasattr(config.paths, 'data_dir')
-        assert hasattr(config.paths, 'processed_dir')
-        assert hasattr(config.pipeline, 'log_level')
+        from src.config import config
+        
+        required_sections = [
+            'data_dir',
+            'cache_dir',
+            'model_dir',
+            'log_level'
+        ]
+        
+        # Validate config has required attributes
+        for section in required_sections:
+            assert hasattr(config, section)
 
 
 @pytest.fixture

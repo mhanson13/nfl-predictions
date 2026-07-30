@@ -5,9 +5,6 @@ Tests async base fetcher classes with mocking, error handling,
 retry logic, and connection pooling.
 """
 
-import pytest
-pytest.importorskip("httpx", reason="httpx not installed — skipping async fetcher tests")
-
 import asyncio
 from datetime import datetime
 from pathlib import Path

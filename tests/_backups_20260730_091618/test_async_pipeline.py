@@ -5,9 +5,6 @@ Tests pipeline orchestration, dependency resolution, progress tracking,
 checkpoint/resume, and error handling.
 """
 
-import pytest
-pytest.importorskip("aiofiles", reason="aiofiles not installed — skipping async pipeline tests")
-
 import asyncio
 import json
 from pathlib import Path

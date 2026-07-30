@@ -212,6 +212,31 @@ class CircuitBreaker:
             self._record_failure()
             raise
     
+    def can_execute(self) -> bool:
+        """
+        Check whether a call can currently be executed.
+
+        Transitions OPEN → HALF_OPEN if the recovery timeout has elapsed.
+
+        Returns
+        -------
+        bool
+            True if the circuit is CLOSED or has just transitioned to HALF_OPEN;
+            False if the circuit is still OPEN.
+        """
+        with self._lock:
+            if self._state == CircuitState.CLOSED:
+                return True
+            if self._state == CircuitState.HALF_OPEN:
+                return True
+            # OPEN: check whether timeout has elapsed
+            if self._should_attempt_reset():
+                self._state = CircuitState.HALF_OPEN
+                self._success_count = 0
+                self.logger.info("Circuit half-open - attempting recovery")
+                return True
+            return False
+
     def reset(self):
         """Manually reset circuit breaker to closed state."""
         with self._lock:

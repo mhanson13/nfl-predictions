@@ -5,8 +5,6 @@ Tests the data loader factory pattern and implementations.
 """
 
 import pytest  # type: ignore
-pytest.importorskip("pandera", reason="pandera not installed — skipping data loader schema tests")
-
 from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
