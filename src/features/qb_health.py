@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
+import numpy as np
 import pandas as pd
 
 
@@ -225,6 +226,43 @@ def build_qb_health_features(
         .transform(lambda s: s.apply(lambda v: 1 if pd.notna(v) else 0).rolling(window=5, min_periods=1).sum())
     )
 
+    # Exponentially weighted recovery score: captures trajectory of QB health over recent games.
+    # Uses shift(1) before the EWM to prevent leakage (same pattern as qb_status_delta_rolling3).
+    # span=3 gives approximate weights: week N-1 ≈ 0.5, N-2 ≈ 0.25, N-3 ≈ 0.125.
+    merged["qb_recovery_score_rolling3"] = (
+        group["qb_status_flag"]
+        .transform(lambda s: s.shift(1).ewm(span=3, adjust=False).mean())
+        .fillna(0.0)
+    )
+
+    # Weeks since last serious injury (severity >= 1.5 = OUT, IR, or DOUBT).
+    # A QB returning from injury has a low value; long-healthy QBs are capped at 8.
+    serious_flag = (merged["qb_status_flag"] >= 1.5).astype(int)
+    merged["_serious_flag"] = serious_flag
+
+    def _weeks_since_flag(series: "pd.Series[int]") -> "pd.Series[int]":
+        """Count weeks elapsed since last value was 1; cap at 8. Apply shift before calling."""
+        shifted = series.shift(1)
+        out = []
+        count = 8
+        for val in shifted:
+            if pd.isna(val):
+                out.append(8)
+                continue
+            if val == 1:
+                count = 0
+            else:
+                count = min(count + 1, 8)
+            out.append(count)
+        return pd.Series(out, index=series.index, dtype=float)
+
+    merged["qb_weeks_since_injury"] = (
+        group["_serious_flag"]
+        .transform(_weeks_since_flag)
+        .fillna(8.0)
+    )
+    merged.drop(columns=["_serious_flag"], inplace=True)
+
     feature_cols = [
         "season",
         "week",
@@ -233,6 +271,8 @@ def build_qb_health_features(
         "qb_status_delta_rolling3",
         "qb_missed_last_game",
         "qb_games_started_rolling5",
+        "qb_recovery_score_rolling3",
+        "qb_weeks_since_injury",
     ]
     features = merged[feature_cols].copy()
     features["season"] = features["season"].astype("Int64")
@@ -241,4 +281,6 @@ def build_qb_health_features(
     features["qb_status_delta_rolling3"] = features["qb_status_delta_rolling3"].astype(float)
     features["qb_games_started_rolling5"] = features["qb_games_started_rolling5"].astype(float)
     features["qb_missed_last_game"] = features["qb_missed_last_game"].fillna(0).astype("Int64")
+    features["qb_recovery_score_rolling3"] = features["qb_recovery_score_rolling3"].astype(float)
+    features["qb_weeks_since_injury"] = features["qb_weeks_since_injury"].astype(float)
     return features

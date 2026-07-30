@@ -6,6 +6,7 @@ retry logic, and connection pooling. Can be used alongside synchronous code.
 """
 
 import asyncio
+import random
 import aiohttp
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -213,10 +214,11 @@ class AsyncFetcher(ABC, Generic[T]):
                 retry_count += 1
                 self.logger.error(f"Unexpected error fetching {url}: {e}")
             
-            # Wait before retry
+            # Wait before retry (exponential backoff + jitter)
             if attempt < retry_config.max_attempts - 1:
                 delay = retry_config.initial_delay * (2 ** attempt)
-                await asyncio.sleep(delay)
+                jitter = random.uniform(-0.5, 0.5)
+                await asyncio.sleep(max(0.0, delay + jitter))
         
         # All retries failed
         fetch_time = time.time() - start_time

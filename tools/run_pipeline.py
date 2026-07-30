@@ -219,6 +219,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional season value for Yahoo scoreboard feed.",
     )
     parser.add_argument(
+        "--cv-folds",
+        type=int,
+        default=3,
+        help="Number of CV folds passed to tune and train stages (1=single split, 3=default, 5=full retrain quality).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Log the planned commands without executing them.",
@@ -396,23 +402,24 @@ def build_data_jobs(
 
 
 def build_sequential_jobs(
-    years: list[int],
-    current_year: int,
-    pred_dir: Path,
-    debug_flag: list[str],
-    skip_evaluation: bool,
-    include_visualcrossing: bool,
-    train_start_year: int,
-    calibration_season_window: int,
-    use_gpu: bool,
-    calibrate_winprob: bool,
-    *,
-    enable_tuning: bool,
-    tuning_dir: Path,
-    tuning_options: dict[str, object],
-    skip_logit: bool,
-    skip_market_roi: bool,
-    volatility_options: dict[str, object] | None = None,
+    years: list[int],
+    current_year: int,
+    pred_dir: Path,
+    debug_flag: list[str],
+    skip_evaluation: bool,
+    include_visualcrossing: bool,
+    train_start_year: int,
+    calibration_season_window: int,
+    use_gpu: bool,
+    calibrate_winprob: bool,
+    *,
+    enable_tuning: bool,
+    tuning_dir: Path,
+    tuning_options: dict[str, object],
+    skip_logit: bool,
+    skip_market_roi: bool,
+    volatility_options: dict[str, object] | None = None,
+    cv_folds: int = 3,
 ) -> list[Job]:
     """Build the ordered list of feature/model/evaluation jobs that must run serially."""
     season_args = [str(y) for y in years]
@@ -473,9 +480,10 @@ def build_sequential_jobs(
         if load_existing:
             tune_win_cmd.append("--load-if-exists")
         timeout_win = tuning_options.get("timeout_winprob")
-        if timeout_win is not None:
-            tune_win_cmd.extend(["--timeout", str(timeout_win)])
-        jobs.append(Job("tune_win_prob", tune_win_cmd))
+        if timeout_win is not None:
+            tune_win_cmd.extend(["--timeout", str(timeout_win)])
+        tune_win_cmd.extend(["--cv-folds", str(cv_folds)])
+        jobs.append(Job("tune_win_prob", tune_win_cmd))
 
         tune_spread_cmd = [
             "python",
@@ -502,31 +510,34 @@ def build_sequential_jobs(
         if load_existing:
             tune_spread_cmd.append("--load-if-exists")
         timeout_spread = tuning_options.get("timeout_spread")
-        if timeout_spread is not None:
-            tune_spread_cmd.extend(["--timeout", str(timeout_spread)])
-        jobs.append(Job("tune_spread", tune_spread_cmd))
+        if timeout_spread is not None:
+            tune_spread_cmd.extend(["--timeout", str(timeout_spread)])
+        tune_spread_cmd.extend(["--cv-folds", str(cv_folds)])
+        jobs.append(Job("tune_spread", tune_spread_cmd))
 
-    train_win_cmd = ["python", "-m", "src.models.train", "--target", "win_prob", *debug]
-    if train_start_year is not None:
-        train_win_cmd.extend(["--train-start-year", str(train_start_year)])
-    if use_gpu:
-        train_win_cmd.append("--use-gpu")
-    if skip_logit:
-        train_win_cmd.append("--skip-logit")
-    if calibrate_winprob:
-        train_win_cmd.append("--calibrate")
-    if apply_winprob_config:
-        train_win_cmd.extend(["--param-config", str(winprob_config_path)])
-    jobs.append(Job("train_win_prob", train_win_cmd))
-
-    train_spread_cmd = ["python", "-m", "src.models.train", "--target", "spread", "--calibrate", *debug]
-    if train_start_year is not None:
-        train_spread_cmd.extend(["--train-start-year", str(train_start_year)])
-    if use_gpu:
-        train_spread_cmd.append("--use-gpu")
-    if apply_spread_config:
-        train_spread_cmd.extend(["--param-config", str(spread_config_path)])
-    jobs.append(Job("train_spread", train_spread_cmd))
+    train_win_cmd = ["python", "-m", "src.models.train", "--target", "win_prob", *debug]
+    if train_start_year is not None:
+        train_win_cmd.extend(["--train-start-year", str(train_start_year)])
+    if use_gpu:
+        train_win_cmd.append("--use-gpu")
+    if skip_logit:
+        train_win_cmd.append("--skip-logit")
+    if calibrate_winprob:
+        train_win_cmd.append("--calibrate")
+    if apply_winprob_config:
+        train_win_cmd.extend(["--param-config", str(winprob_config_path)])
+    train_win_cmd.extend(["--cv-folds", str(cv_folds)])
+    jobs.append(Job("train_win_prob", train_win_cmd))
+
+    train_spread_cmd = ["python", "-m", "src.models.train", "--target", "spread", "--calibrate", *debug]
+    if train_start_year is not None:
+        train_spread_cmd.extend(["--train-start-year", str(train_start_year)])
+    if use_gpu:
+        train_spread_cmd.append("--use-gpu")
+    if apply_spread_config:
+        train_spread_cmd.extend(["--param-config", str(spread_config_path)])
+    train_spread_cmd.extend(["--cv-folds", str(cv_folds)])
+    jobs.append(Job("train_spread", train_spread_cmd))
 
     pred_save = str(pred_dir / "predictions.csv")
     pred_full = str(pred_dir / "predictions_full.csv")
@@ -758,19 +769,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         current_year,
         pred_dir,
         debug_flag,
-        args.skip_evaluation,
-        include_visualcrossing,
-        args.train_start_year,
-        args.calibration_season_window,
-        args.use_gpu,
-        args.calibrate_winprob,
-        enable_tuning=args.enable_tuning,
-        tuning_dir=tuning_dir,
-        tuning_options=tuning_options,
-        skip_logit=args.skip_logit,
-        skip_market_roi=args.skip_market_roi,
-        volatility_options=volatility_options,
-    )
+        args.skip_evaluation,
+        include_visualcrossing,
+        args.train_start_year,
+        args.calibration_season_window,
+        args.use_gpu,
+        args.calibrate_winprob,
+        enable_tuning=args.enable_tuning,
+        tuning_dir=tuning_dir,
+        tuning_options=tuning_options,
+        skip_logit=args.skip_logit,
+        skip_market_roi=args.skip_market_roi,
+        volatility_options=volatility_options,
+        cv_folds=args.cv_folds,
+    )
     print(f"[pipeline] Running {len(sequential_jobs)} sequential jobs")
     run_jobs_sequential(sequential_jobs, env=env, dry_run=args.dry_run)
 

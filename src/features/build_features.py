@@ -44,10 +44,12 @@ import pandas as pd
 
 from src.features.adjusted_efficiency import build_adjusted_efficiency_features
 from src.features.passing_epa_features import build_passing_epa_features
+from src.features.drive_epa_features import build_drive_epa_features
 from src.features.pressure_features import build_pressure_features
 from src.features.qb_health import build_qb_health_features
 from src.features.redzone_features import build_redzone_features
 from src.features.volatility import engineer_volatility_inputs
+from src.data.weather_fallback import get_fallback_weather
 from src.utils.io import RAW_DIR, PROC_DIR, write_df, read_df
 from src.utils.logging import configure as configure_logging
 from src.utils.teams import normalize_team_abbr, TEAM_NAME_TO_ABBR
@@ -2963,6 +2965,47 @@ def main():
 
 
 
+    # Static weather fallback: fill NaN weather rows using climatological normals.
+    # Applies only when all three live sources (Visual Crossing, NOAA, Tomorrow.io)
+    # failed to provide data for a game. Does not overwrite valid live data.
+
+    try:
+
+        wx_cols = ["weather_temp_f", "weather_wind_mph", "weather_precip_prob"]
+
+        # Only fill rows that are missing ALL three primary weather columns
+        if "home_team" in feats.columns:
+
+            missing_wx = feats[wx_cols].isna().all(axis=1) if all(c in feats.columns for c in wx_cols) else pd.Series(True, index=feats.index)
+
+            if missing_wx.any():
+
+                game_dates = pd.to_datetime(feats.get("game_date", feats.get("gameday")), errors="coerce") if ("game_date" in feats.columns or "gameday" in feats.columns) else pd.Series([None] * len(feats), index=feats.index)
+
+                for idx in feats.index[missing_wx]:
+
+                    team = str(feats.at[idx, "home_team"]).strip().upper()
+
+                    gdate = game_dates.get(idx)
+
+                    fb = get_fallback_weather(team, game_date=gdate.date() if pd.notna(gdate) else None)
+
+                    for col, val in fb.items():
+
+                        if col not in feats.columns or pd.isna(feats.at[idx, col]):
+
+                            feats.at[idx, col] = val
+
+                n_filled = int(missing_wx.sum())
+
+                print(f"[weather][fallback] filled {n_filled} games with climatological normals")
+
+    except Exception as e:
+
+        print(f"[weather][fallback] skipped: {e}")
+
+
+
     # Weather deltas for modeling (reuse volatility engineering for consistency)
 
     try:
@@ -3040,6 +3083,29 @@ def main():
     except Exception as e:
 
         print(f"[context] stadium context merge skipped: {e}")
+
+
+
+    # Altitude × rest interaction: penalise away teams travelling to high-altitude venues on short rest.
+    # altitude_ft_diff = home_altitude_ft - away_altitude_ft (already computed above).
+    # A sea-level team flying into Denver (altitude_diff ≈ +5280 ft) on 3 days rest scores highest.
+    # Clipped to 0 — visiting a lower-altitude venue carries no equivalent penalty.
+
+    try:
+
+        if "altitude_ft_diff" in feats.columns and "sched_rest_days_away" in feats.columns:
+
+            alt_delta = pd.to_numeric(feats["altitude_ft_diff"], errors="coerce").fillna(0.0)
+
+            rest_away = pd.to_numeric(feats["sched_rest_days_away"], errors="coerce").fillna(7.0)
+
+            feats["altitude_rest_interaction"] = (
+                alt_delta / (np.log1p(rest_away) + 1e-6)
+            ).clip(lower=0.0)
+
+    except Exception as e:
+
+        print(f"[context] altitude_rest_interaction skipped: {e}")
 
 
 
@@ -4987,6 +5053,10 @@ def _augment_team_week_features(
 
                     "qb_games_started_rolling5",
 
+                    "qb_recovery_score_rolling3",
+
+                    "qb_weeks_since_injury",
+
                 ],
 
             )
@@ -5030,6 +5100,48 @@ def _augment_team_week_features(
         except Exception as exc:
 
             print(f"[features] passing EPA merge skipped: {exc}")
+
+
+
+        try:
+
+            drive_epa_feats = build_drive_epa_features(pbp_df, seasons, _norm_abbr)
+
+            if not drive_epa_feats.empty:
+
+                out = _merge_home_away(drive_epa_feats)
+
+                out = _add_feature_diffs(
+
+                    out,
+
+                    [
+
+                        "drive_epa_mean",
+
+                        "drive_epa_mean_rolling3",
+
+                        "drive_epa_first_drive_rolling3",
+
+                        "drive_epa_q4_rolling3",
+
+                        "drive_epa_red_zone_rolling3",
+
+                        "drive_completion_rate_rolling3",
+
+                        "drives_per_game_rolling3",
+
+                        "drive_epa_mean_rolling3_diff_lg",
+
+                    ],
+
+                )
+
+        except Exception as exc:
+
+            print(f"[features] drive EPA merge skipped: {exc}")
+
+
 
 
 
