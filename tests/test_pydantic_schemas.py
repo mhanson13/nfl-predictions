@@ -20,6 +20,8 @@ from typing import Any, Dict
 import pytest
 from pydantic import ValidationError
 
+import pandas as pd
+
 from src.utils.pydantic_schemas import (
     # NFLverse
     NFLverseScheduleRecord,
@@ -42,11 +44,16 @@ from src.utils.pydantic_schemas import (
     GameWeatherRecord,
     # Yahoo
     YahooPlayerRecord,
+    # New models
+    PlayerActualsRecord,
+    SportsDataIORecord,
     # Versioning / helpers
     SCHEMA_VERSIONS,
     SCHEMA_MODELS,
     get_schema_version,
     validate_record,
+    ValidationReport,
+    validate_dataframe,
     _NFL_ABBRS,
 )
 
@@ -817,6 +824,8 @@ class TestSchemaVersioning:
         "noaa_weather", "visualcrossing_weather", "game_weather",
         # Yahoo
         "yahoo_player",
+        # Player actuals / SportsDataIO
+        "player_actuals", "sportsdataio",
     }
 
     def test_all_expected_keys_present(self):
@@ -880,6 +889,10 @@ class TestSchemaVersioning:
             "visualcrossing_weather": {"game_id": VALID_GAME_ID},
             "game_weather":      {"game_id": VALID_GAME_ID},
             "yahoo_player":      {},
+            "player_actuals":    {"game_id": VALID_GAME_ID, "season": 2024,
+                                   "week": 1, "team_alias": "KC",
+                                   "stat_category": "rushing"},
+            "sportsdataio":      {"feed_name": "teams"},
         }
         for key, model_cls in SCHEMA_MODELS.items():
             data = safe_minimal.get(key, {})
@@ -919,3 +932,239 @@ class TestNFLAbbreviations:
         })
         assert rec.home_team == "GB"
         assert rec.away_team == "CHI"
+
+
+# ===========================================================================
+# PlayerActualsRecord
+# ===========================================================================
+
+VALID_GAME_ID_PA = "2024_01_KC_BUF"
+
+
+class TestPlayerActualsRecord:
+
+    def test_minimal_happy_path(self):
+        rec = PlayerActualsRecord.model_validate({
+            "game_id": VALID_GAME_ID_PA, "season": 2024, "week": 1,
+            "team_alias": "KC", "stat_category": "rushing",
+        })
+        assert rec.season == 2024
+        assert rec.stat_category == "rushing"
+
+    def test_full_record(self):
+        rec = PlayerActualsRecord.model_validate({
+            "game_id": VALID_GAME_ID_PA, "season": 2023, "week": 10,
+            "team_alias": "SF", "player_id": "00-0034796",
+            "player_name": "Christian McCaffrey",
+            "stat_category": "rushing",
+            "stats": '{"yards": 120.0}',
+            "value": 120.0,
+        })
+        assert rec.player_name == "Christian McCaffrey"
+        assert rec.value == 120.0
+
+    def test_stat_category_normalised_lowercase(self):
+        rec = PlayerActualsRecord.model_validate({
+            "game_id": VALID_GAME_ID_PA, "season": 2024, "week": 1,
+            "team_alias": "KC", "stat_category": "PASSING",
+        })
+        assert rec.stat_category == "passing"
+
+    def test_invalid_stat_category_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PlayerActualsRecord.model_validate({
+                "game_id": VALID_GAME_ID_PA, "season": 2024, "week": 1,
+                "team_alias": "KC", "stat_category": "special_teams_nonsense",
+            })
+
+    def test_bad_game_id_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PlayerActualsRecord.model_validate({
+                "game_id": "NOTVALID", "season": 2024, "week": 1,
+                "team_alias": "KC", "stat_category": "rushing",
+            })
+
+    def test_team_alias_uppercased(self):
+        rec = PlayerActualsRecord.model_validate({
+            "game_id": VALID_GAME_ID_PA, "season": 2024, "week": 1,
+            "team_alias": "kc", "stat_category": "rushing",
+        })
+        assert rec.team_alias == "KC"
+
+    def test_missing_required_fields_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PlayerActualsRecord.model_validate({})
+
+
+# ===========================================================================
+# SportsDataIORecord
+# ===========================================================================
+
+
+class TestSportsDataIORecord:
+
+    def test_minimal_happy_path(self):
+        rec = SportsDataIORecord.model_validate({"feed_name": "teams"})
+        assert rec.feed_name == "teams"
+        assert rec.season is None
+
+    def test_full_envelope(self):
+        rec = SportsDataIORecord.model_validate({
+            "feed_name": "schedules",
+            "season": 2024,
+            "week": 5,
+            "team": "KC",
+            "game_id": "2024_05_KC_LV",
+            "name": "Patrick Mahomes",
+            "data": {"stat_a": 1, "stat_b": 2},
+        })
+        assert rec.season == 2024
+        assert rec.team == "KC"
+        assert rec.data == {"stat_a": 1, "stat_b": 2}
+
+    def test_missing_feed_name_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            SportsDataIORecord.model_validate({"season": 2024})
+
+    def test_season_none_allowed(self):
+        rec = SportsDataIORecord.model_validate({"feed_name": "free_agents", "season": None})
+        assert rec.season is None
+
+    def test_bad_season_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            SportsDataIORecord.model_validate({"feed_name": "teams", "season": 1899})
+
+    def test_bad_week_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            SportsDataIORecord.model_validate({"feed_name": "teams", "week": 30})
+
+    def test_extra_fields_ignored(self):
+        rec = SportsDataIORecord.model_validate({"feed_name": "standings", "extra_col": "ignored"})
+        assert not hasattr(rec, "extra_col")
+
+
+# ===========================================================================
+# ValidationReport + validate_dataframe
+# ===========================================================================
+
+
+class TestValidationReport:
+
+    def _make_report(self, **kwargs):
+        defaults = dict(
+            schema_key="nflverse_schedule",
+            total_rows=10,
+            valid_rows=9,
+            invalid_rows=1,
+            pass_rate=0.9,
+        )
+        defaults.update(kwargs)
+        return ValidationReport(**defaults)
+
+    def test_passed_property_true_when_no_errors(self):
+        r = self._make_report(valid_rows=10, invalid_rows=0, pass_rate=1.0)
+        assert r.passed is True
+
+    def test_passed_property_false_when_errors(self):
+        r = self._make_report()
+        assert r.passed is False
+
+    def test_str_representation(self):
+        r = self._make_report()
+        s = str(r)
+        assert "nflverse_schedule" in s
+        assert "9/10" in s
+
+    def test_field_error_counts_default_empty(self):
+        r = self._make_report()
+        assert r.field_error_counts == {}
+
+    def test_errors_list_default_empty(self):
+        r = self._make_report()
+        assert r.errors == []
+
+
+class TestValidateDataframe:
+
+    VALID_GAME_ID_VDF = "2024_01_KC_BUF"
+
+    def _make_schedule_df(self, rows):
+        return pd.DataFrame(rows)
+
+    def test_all_valid_rows(self):
+        df = self._make_schedule_df([
+            {"game_id": self.VALID_GAME_ID_VDF, "season": 2024, "week": 1,
+             "home_team": "KC", "away_team": "BUF"},
+            {"game_id": "2024_02_SF_DAL", "season": 2024, "week": 2,
+             "home_team": "SF", "away_team": "DAL"},
+        ])
+        report = validate_dataframe(df, "nflverse_schedule")
+        assert report.total_rows == 2
+        assert report.valid_rows == 2
+        assert report.pass_rate == 1.0
+        assert report.passed is True
+        assert report.errors == []
+
+    def test_partial_failures_captured(self):
+        df = self._make_schedule_df([
+            {"game_id": self.VALID_GAME_ID_VDF, "season": 2024, "week": 1,
+             "home_team": "KC", "away_team": "BUF"},
+            # bad row: invalid season + bad game_id
+            {"game_id": "INVALID", "season": 1800, "week": 1,
+             "home_team": "KC", "away_team": "BUF"},
+        ])
+        report = validate_dataframe(df, "nflverse_schedule")
+        assert report.total_rows == 2
+        assert report.valid_rows == 1
+        assert report.invalid_rows == 1
+        assert report.pass_rate == 0.5
+        assert len(report.errors) > 0
+
+    def test_field_error_counts_populated(self):
+        df = self._make_schedule_df([
+            {"game_id": "BAD1", "season": 1800, "week": 1,
+             "home_team": "KC", "away_team": "BUF"},
+            {"game_id": "BAD2", "season": 1801, "week": 1,
+             "home_team": "SF", "away_team": "DAL"},
+        ])
+        report = validate_dataframe(df, "nflverse_schedule")
+        assert "season" in report.field_error_counts
+        assert report.field_error_counts["season"] == 2
+
+    def test_empty_dataframe_passes(self):
+        df = pd.DataFrame(columns=["game_id", "season", "week", "home_team", "away_team"])
+        report = validate_dataframe(df, "nflverse_schedule")
+        assert report.total_rows == 0
+        assert report.pass_rate == 1.0
+        assert report.passed is True
+
+    def test_unknown_schema_key_raises(self):
+        df = pd.DataFrame([{"x": 1}])
+        with pytest.raises(KeyError):
+            validate_dataframe(df, "no_such_schema")
+
+    def test_player_actuals_schema(self):
+        df = pd.DataFrame([
+            {"game_id": self.VALID_GAME_ID_VDF, "season": 2024, "week": 1,
+             "team_alias": "KC", "stat_category": "rushing"},
+            {"game_id": self.VALID_GAME_ID_VDF, "season": 2024, "week": 1,
+             "team_alias": "BUF", "stat_category": "passing"},
+        ])
+        report = validate_dataframe(df, "player_actuals")
+        assert report.valid_rows == 2
+        assert report.passed is True
+
+    def test_sportsdataio_schema(self):
+        df = pd.DataFrame([
+            {"feed_name": "teams", "season": 2024},
+            {"feed_name": "standings", "season": 2025, "week": None},
+        ])
+        report = validate_dataframe(df, "sportsdataio")
+        assert report.valid_rows == 2
+        assert report.passed is True

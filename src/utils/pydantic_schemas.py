@@ -19,11 +19,16 @@ Provider groupings
 
 from __future__ import annotations
 
+import logging
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, ClassVar, Dict, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +62,17 @@ _VALID_POSITIONS: frozenset[str] = frozenset(
 )
 
 _NFLVERSE_GAME_ID_RE = re.compile(r"^\d{4}_\d{2}_[A-Z]{2,4}_[A-Z]{2,4}$")
+
+
+def _is_na(v: Any) -> bool:
+    """Return True for None or any NaN-like value (float nan, pd.NA, pd.NaT, np.nan)."""
+    if v is None:
+        return True
+    try:
+        import math
+        return isinstance(v, float) and math.isnan(v)
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_nfl_team(value: Optional[str], field_name: str = "team") -> Optional[str]:
@@ -919,6 +935,218 @@ class YahooPlayerRecord(_NFLBase):
 
 
 # ===========================================================================
+# Additional schema models (player actuals, SportsDataIO)
+# ===========================================================================
+
+
+class PlayerActualsRecord(_NFLBase):
+    """Per-game player actuals derived from NFLverse play-by-play aggregation.
+
+    Produced by ``src/data/player_actuals.py``.
+    """
+
+    game_id: str
+    season: int
+    week: int
+    team_alias: str
+    player_id: Optional[str] = None
+    player_name: Optional[str] = None
+    stat_category: str = Field(description="passing | rushing | receiving | defense")
+    stats: Optional[str] = None          # JSON blob e.g. '{"yards": 120.0}'
+    value: Optional[float] = None        # convenience numeric extracted from stats
+
+    @field_validator("season", mode="before")
+    @classmethod
+    def _chk_season(cls, v: Any) -> int:
+        return _validate_season(int(v))
+
+    @field_validator("week", mode="before")
+    @classmethod
+    def _chk_week(cls, v: Any) -> int:
+        return _validate_week(int(v))
+
+    @field_validator("team_alias", mode="before")
+    @classmethod
+    def _chk_team(cls, v: Any) -> str:
+        result = _validate_nfl_team(str(v) if v is not None else None, "team_alias")
+        return result if result is not None else str(v)
+
+    @field_validator("game_id", mode="before")
+    @classmethod
+    def _chk_game_id(cls, v: Any) -> str:
+        s = str(v).strip()
+        if not _NFLVERSE_GAME_ID_RE.match(s):
+            raise ValueError(f"game_id '{s}' does not match expected format YYYY_WW_HOME_AWAY")
+        return s
+
+    @field_validator("stat_category", mode="before")
+    @classmethod
+    def _chk_stat_category(cls, v: Any) -> str:
+        valid = {"passing", "rushing", "receiving", "defense", "kicking"}
+        s = str(v).lower().strip()
+        if s not in valid:
+            raise ValueError(f"stat_category '{s}' not in {valid}")
+        return s
+
+
+class SportsDataIORecord(_NFLBase):
+    """Generic record from the SportsDataIO NFL API.
+
+    SportsDataIO serves many distinct feeds (teams, stadiums, schedules,
+    standings, projections, betting_futures, draft_picks, free_agents).
+    This schema captures the common envelope fields present across responses,
+    plus a flexible ``data`` dict for feed-specific payload.
+    """
+
+    feed_name: str = Field(description="API feed type (teams, schedules, standings, …)")
+    season: Optional[int] = None
+    week: Optional[int] = None
+    team: Optional[str] = None
+    game_id: Optional[str] = None
+    player_id: Optional[Any] = None
+    name: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+    @field_validator("season", mode="before")
+    @classmethod
+    def _chk_season(cls, v: Any) -> Optional[int]:
+        if _is_na(v):
+            return None
+        return _validate_season(int(v))
+
+    @field_validator("week", mode="before")
+    @classmethod
+    def _chk_week(cls, v: Any) -> Optional[int]:
+        if _is_na(v):
+            return None
+        return _validate_week(int(v))
+
+    @field_validator("team", mode="before")
+    @classmethod
+    def _chk_team(cls, v: Any) -> Optional[str]:
+        return _validate_nfl_team(str(v) if v is not None else None, "team")
+
+
+# ===========================================================================
+# DataFrame-level validation
+# ===========================================================================
+
+
+@dataclass
+class ValidationReport:
+    """Result of validating a DataFrame against a Pydantic schema.
+
+    Attributes:
+        schema_key:         Registry key used for validation.
+        total_rows:         Total rows in the input DataFrame.
+        valid_rows:         Rows that passed validation.
+        invalid_rows:       Rows that failed validation.
+        pass_rate:          Fraction of rows that passed (0.0–1.0).
+        errors:             List of ``(row_index, field, message)`` triples.
+        field_error_counts: Mapping of field name → number of failing rows.
+    """
+
+    schema_key: str
+    total_rows: int
+    valid_rows: int
+    invalid_rows: int
+    pass_rate: float
+    errors: List[Tuple[int, str, str]] = field(default_factory=list)
+    field_error_counts: Dict[str, int] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return (
+            f"ValidationReport({self.schema_key}): "
+            f"{self.valid_rows}/{self.total_rows} rows valid "
+            f"({self.pass_rate:.1%})"
+        )
+
+    @property
+    def passed(self) -> bool:
+        """True when every row passed validation."""
+        return self.invalid_rows == 0
+
+
+def validate_dataframe(
+    df: pd.DataFrame,
+    schema_key: str,
+    *,
+    warn_threshold: float = 0.05,
+    log_errors: bool = True,
+) -> ValidationReport:
+    """Validate every row of *df* against the registered Pydantic schema.
+
+    Never raises; returns a :class:`ValidationReport` so callers can decide
+    how to handle failures (log, alert, skip rows, etc.).
+
+    Args:
+        df:              DataFrame to validate.
+        schema_key:      Key into :data:`SCHEMA_MODELS`, e.g. ``"nflverse_schedule"``.
+        warn_threshold:  Log a WARNING when the error rate exceeds this fraction.
+        log_errors:      Emit per-row DEBUG log lines for validation failures.
+
+    Returns:
+        :class:`ValidationReport` with pass rate and field-level error counts.
+
+    Raises:
+        KeyError: When *schema_key* is not in the registry.
+    """
+    model_cls: Type[_NFLBase] = SCHEMA_MODELS[schema_key]
+
+    errors: List[Tuple[int, str, str]] = []
+    field_error_counts: Dict[str, int] = {}
+    valid_rows = 0
+
+    for idx, row in enumerate(df.to_dict(orient="records")):
+        try:
+            model_cls.model_validate(row)
+            valid_rows += 1
+        except ValidationError as exc:
+            for err in exc.errors():
+                field_name = ".".join(str(loc) for loc in err["loc"]) or "_root_"
+                msg = err["msg"]
+                errors.append((idx, field_name, msg))
+                field_error_counts[field_name] = field_error_counts.get(field_name, 0) + 1
+                if log_errors:
+                    logger.debug(
+                        "[schema:%s] row %d field '%s': %s",
+                        schema_key, idx, field_name, msg,
+                    )
+
+    total = len(df)
+    invalid = total - valid_rows
+    pass_rate = valid_rows / total if total > 0 else 1.0
+
+    report = ValidationReport(
+        schema_key=schema_key,
+        total_rows=total,
+        valid_rows=valid_rows,
+        invalid_rows=invalid,
+        pass_rate=pass_rate,
+        errors=errors,
+        field_error_counts=field_error_counts,
+    )
+
+    if total > 0 and (1.0 - pass_rate) > warn_threshold:
+        logger.warning(
+            "[schema:%s] high error rate %.1f%% (%d/%d rows failed). "
+            "Top fields: %s",
+            schema_key,
+            (1.0 - pass_rate) * 100,
+            invalid,
+            total,
+            sorted(field_error_counts.items(), key=lambda x: -x[1])[:5],
+        )
+    else:
+        logger.info(
+            "[schema:%s] validation complete — %d/%d rows valid (%.1f%%)",
+            schema_key, valid_rows, total, pass_rate * 100,
+        )
+
+    return report
+
+
+# ===========================================================================
 # Schema versioning registry
 # ===========================================================================
 
@@ -944,6 +1172,9 @@ SCHEMA_VERSIONS: Dict[str, str] = {
     "game_weather":           GameWeatherRecord.schema_version,
     # Yahoo
     "yahoo_player":           YahooPlayerRecord.schema_version,
+    # Player actuals / SportsDataIO
+    "player_actuals":         PlayerActualsRecord.schema_version,
+    "sportsdataio":           SportsDataIORecord.schema_version,
 }
 
 # Convenience map from schema key → model class for dynamic lookup
@@ -964,6 +1195,8 @@ SCHEMA_MODELS: Dict[str, type[_NFLBase]] = {
     "visualcrossing_weather": VisualCrossingWeatherRecord,
     "game_weather":           GameWeatherRecord,
     "yahoo_player":           YahooPlayerRecord,
+    "player_actuals":         PlayerActualsRecord,
+    "sportsdataio":           SportsDataIORecord,
 }
 
 

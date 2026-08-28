@@ -30,6 +30,7 @@ import pandas as pd
 
 from src.utils.io import RAW_DIR, read_df, write_df
 from src.utils.logging import configure as configure_logging
+from src.utils.pydantic_schemas import validate_dataframe
 
 SEASON_HISTORY_PATH = Path("data/reference/nfl_seasons_history.csv")
 MIN_INJURY_SEASON = 2009
@@ -96,6 +97,28 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
         combined = pd.concat([existing, new_df], ignore_index=True)
     combined = combined.drop_duplicates(ignore_index=True)
     write_df(combined, path)
+
+
+# Map from dataset label → schema key (for datasets where validation is meaningful)
+_LABEL_TO_SCHEMA = {
+    "schedules":    "nflverse_schedule",
+    "rosters":      "nflverse_roster",
+    "injuries":     "nflverse_injury",
+    "player stats": "nflverse_player_stats",
+    "PBP":          "nflverse_pbp",
+}
+
+
+def _validate_and_report(label: str, df: pd.DataFrame) -> None:
+    """Run schema validation for *df* if a schema is registered for *label*."""
+    schema_key = _LABEL_TO_SCHEMA.get(label)
+    if schema_key is None:
+        return
+    try:
+        report = validate_dataframe(df, schema_key, log_errors=False)
+        print(f"[nflverse] schema validation ({label}): {report}")
+    except Exception as exc:  # pragma: no cover
+        print(f"[nflverse] schema validation skipped for {label}: {exc}")
 
 
 def _print_skip(dataset: str, seasons: List[int]) -> None:
@@ -443,6 +466,7 @@ def main():
 
         df = fetch_fn(seasons_to_fetch)
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+            _validate_and_report(label, df)
             _merge_and_write(path, existing, df)
             print(f"[nflverse] saved {label} rows={len(df)} -> {path}")
             return
@@ -450,6 +474,7 @@ def main():
         if fallback_fn is not None:
             df_fallback = fallback_fn(seasons_to_fetch)
             if df_fallback is not None and isinstance(df_fallback, pd.DataFrame) and not df_fallback.empty:
+                _validate_and_report(label, df_fallback)
                 _merge_and_write(path, existing, df_fallback)
                 print(f"[nflverse] downloaded {label} rows={len(df_fallback)} -> {path}")
                 return

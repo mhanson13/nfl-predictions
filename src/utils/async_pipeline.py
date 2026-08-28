@@ -11,6 +11,7 @@ Issue #2: Refactor Pipeline Orchestrator for Async
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 from dataclasses import dataclass, field, asdict
@@ -271,7 +272,7 @@ class AsyncPipelineOrchestrator:
                 self.logger.info(f"Starting stage: {stage.name}")
                 
                 # Execute stage function
-                if asyncio.iscoroutinefunction(stage.func):
+                if inspect.iscoroutinefunction(stage.func):
                     stage.result = await stage.func()
                 else:
                     # Run sync function in executor

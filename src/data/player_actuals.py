@@ -23,6 +23,7 @@ from typing import Iterable
 import pandas as pd
 
 from src.utils.io import PROC_DIR, RAW_DIR, write_df
+from src.utils.pydantic_schemas import validate_dataframe
 from src.utils.teams import normalize_team_abbr
 
 
@@ -258,6 +259,8 @@ def build_player_actuals(seasons: list[int], *, output: Path, debug: bool) -> No
     keep_cols = ["season", "week", "game_id", "team_alias", "player_id", "player_name", "stat_category", "stats"]
     result = result[keep_cols].sort_values(["season", "week", "game_id", "team_alias"])
     output.parent.mkdir(parents=True, exist_ok=True)
+    report = validate_dataframe(result, "player_actuals", log_errors=False)
+    _log(f"schema validation: {report}", debug=debug)
     _log(f"writing {len(result)} rows to {output}", debug=debug)
     write_df(result, output)
 

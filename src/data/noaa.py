@@ -30,6 +30,7 @@ import pandas as pd
 import requests
 
 from src.utils.io import RAW_DIR, PROC_DIR, REF_DIR, read_df, write_df
+from src.utils.pydantic_schemas import validate_dataframe
 from src.utils.secrets import get_secret
 
 
@@ -462,6 +463,10 @@ def build_noaa_weather(
         combined = combined.drop_duplicates(subset=["game_id"], keep="last")
     else:
         combined = new_df
+
+    if not new_df.empty:
+        report = validate_dataframe(new_df, "noaa_weather", log_errors=False)
+        print(f"[noaa] schema validation: {report}")
 
     write_df(combined, OBS_CACHE_PATH)
     print(f"[noaa] saved {len(combined)} rows -> {OBS_CACHE_PATH}")

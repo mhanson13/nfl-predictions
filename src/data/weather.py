@@ -25,6 +25,7 @@ import pandas as pd
 import requests
 
 from src.utils.io import RAW_DIR, PROC_DIR, read_df, write_df
+from src.utils.pydantic_schemas import validate_dataframe
 from src.utils.logging import configure as configure_logging
 from pathlib import Path
 from datetime import timedelta
@@ -852,9 +853,11 @@ def main():
     if df is None or df.empty:
         print("[weather] No weather rows built (outside forecast window or missing schedule lat/lon)")
         return
-    out_path = PROC_DIR / "weather_games.parquet"
-    write_df(df, out_path)
-    print(f"[weather] saved {len(df)} rows -> {out_path}")
+    out_path = PROC_DIR / "weather_games.parquet"
+    report = validate_dataframe(df, "game_weather", log_errors=False)
+    print(f"[weather] schema validation: {report}")
+    write_df(df, out_path)
+    print(f"[weather] saved {len(df)} rows -> {out_path}")
 
 
 if __name__ == "__main__":

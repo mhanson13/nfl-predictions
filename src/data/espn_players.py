@@ -25,6 +25,7 @@ from datetime import datetime
 
 from src.utils.io import RAW_DIR, write_df
 from src.utils.logging import configure as configure_logging
+from src.utils.pydantic_schemas import validate_dataframe
 
 BASE_URLS = {
     "passing": "https://www.espn.com/nfl/stats/player/_/season/{year}/seasontype/{stype}",
@@ -167,6 +168,8 @@ def main():
             if df is None or df.empty:
                 print(f"[espn_players] No data for {cat} {year} stype={args.season_type}")
                 continue
+            report = validate_dataframe(df, "espn_player_stats", log_errors=False)
+            print(f"[espn_players] schema validation: {report}")
             write_df(df, out_path)
             print(f"[espn_players] Saved {len(df)} rows -> {out_path}")
 

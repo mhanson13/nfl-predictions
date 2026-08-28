@@ -134,7 +134,6 @@ class AsyncBaseDataFetcher(ABC):
                     self._client = httpx.AsyncClient(
                         limits=limits,
                         timeout=timeout_config,
-                        http2=True,
                         follow_redirects=True
                     )
                     self.logger.debug(f"Initialized async HTTP client for {self.name}")

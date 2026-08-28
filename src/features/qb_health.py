@@ -195,6 +195,7 @@ def build_qb_health_features(
             left_on=inj_join_cols + ["qb_player_id"],
             right_on=inj_join_cols + ["inj_player_id"],
             how="left",
+            suffixes=("", "_inj"),
         )
         missing_mask = merged["severity"].isna()
         merged.loc[missing_mask, :] = merged.loc[missing_mask, :].merge(

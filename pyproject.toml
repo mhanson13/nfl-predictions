@@ -158,9 +158,11 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+norecursedirs = ["tests/_backups_20260730_091618", "_backups_*", ".git", ".venv", "venv"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
 addopts = [
     "-ra",
     "--strict-markers",
@@ -174,6 +176,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "asyncio: marks tests as async",
 ]
 
 [tool.coverage.run]
