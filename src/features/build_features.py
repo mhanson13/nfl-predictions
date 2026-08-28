@@ -869,9 +869,13 @@ def _normalize_schedule_columns(sched: pd.DataFrame) -> pd.DataFrame:
 
     # Clean casing/whitespace on team codes
 
-    s["home_team"] = s["home_team"].astype(str).str.upper().str.strip()
+    s["home_team"] = s["home_team"].map(
+        lambda v: v.upper().strip() if isinstance(v, str) else np.nan
+    )
 
-    s["away_team"] = s["away_team"].astype(str).str.upper().str.strip()
+    s["away_team"] = s["away_team"].map(
+        lambda v: v.upper().strip() if isinstance(v, str) else np.nan
+    )
 
 
 
@@ -3997,7 +4001,10 @@ def _build_schedule_team_features(
 
 
 
-    sched["gameday_dt"] = pd.to_datetime(sched.get("gameday"), errors="coerce")
+    if "gameday" in sched.columns:
+        sched["gameday_dt"] = pd.to_datetime(sched["gameday"], errors="coerce")
+    else:
+        sched["gameday_dt"] = pd.Series(pd.NaT, index=sched.index, dtype="datetime64[ns]")
 
     sched["week"] = pd.to_numeric(sched["week"], errors="coerce")
 
@@ -4116,6 +4123,7 @@ def _build_schedule_team_features(
     team_df["season"] = team_df["season"].astype(int)
 
     team_df["week"] = team_df["week"].astype(int)
+    team_df["sched_gameday"] = pd.to_datetime(team_df["sched_gameday"], errors="coerce")
 
     team_df.sort_values(["season", "team", "sched_gameday", "week"], inplace=True)
 

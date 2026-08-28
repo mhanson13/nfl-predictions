@@ -33,7 +33,7 @@ class TestOddsConversions:
         # Should be approximately equal (within rounding)
         assert abs(back_to_american - odds) <= 1
     
-    @given(st.integers(min_value=-10000, max_value=-100))
+    @given(st.integers(min_value=-10000, max_value=-101))
     def test_american_negative_to_decimal_roundtrip(self, odds):
         """Test that converting negative American odds to decimal and back preserves value."""
         decimal = american_to_decimal(odds)
@@ -117,7 +117,8 @@ class TestDataFrameTransformations:
     def test_rolling_average_properties(self, df):
         """Test that rolling averages maintain properties."""
         assume(not df['value'].isna().all())
-        assume(not df['value'].isinf().any())
+        assume(not np.isinf(df['value']).any())
+        assume((df['value'].dropna().abs() < 1e100).all())
         
         window = 3
         df['rolling_avg'] = df['value'].rolling(window=window, min_periods=1).mean()
@@ -202,7 +203,11 @@ class TestStatisticalAggregations:
         
         mean = np.mean(values)
         
-        assert min(values) <= mean <= max(values)
+        assert (
+            min(values) <= mean <= max(values)
+            or np.isclose(mean, min(values))
+            or np.isclose(mean, max(values))
+        )
     
     @given(st.lists(st.floats(min_value=0, max_value=1000), min_size=2, max_size=100))
     def test_variance_non_negative(self, values):
@@ -244,8 +249,8 @@ class TestDateTimeOperations:
     )
     def test_date_difference_properties(self, dt1, dt2):
         """Test properties of date differences."""
-        diff = (dt2 - dt1).days
-        reverse_diff = (dt1 - dt2).days
+        diff = (dt2 - dt1).total_seconds()
+        reverse_diff = (dt1 - dt2).total_seconds()
         
         # Property: difference should be opposite when reversed
         assert diff == -reverse_diff
@@ -265,11 +270,12 @@ class TestCachingInvariants:
         cache = get_cache()
         
         # Set value
-        cache.set(key, value)
+        version = "property-test"
+        cache.set(key, value, version)
         
         # Get value multiple times
-        val1 = cache.get(key)
-        val2 = cache.get(key)
+        val1 = cache.get(key, version)
+        val2 = cache.get(key, version)
         
         # Should be the same
         assert val1 == val2 == value

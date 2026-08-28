@@ -12,13 +12,16 @@ Covers:
 from __future__ import annotations
 
 import math
-import textwrap
+import sys
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 import pytest
 
+from src.evaluation import calibrate_winprob as calibrate_module
+from src.evaluation import evaluate_predictions as eval_module
 from src.evaluation.calibrate_winprob import _load_history
 from src.evaluation.evaluate_predictions import (
     PREDICTION_PATTERN,
@@ -27,6 +30,8 @@ from src.evaluation.evaluate_predictions import (
     compute_overall_metrics,
     find_prediction_files,
     load_prediction_frames,
+    plot_metrics,
+    summarize_underperformance,
     unify_predictions,
 )
 
@@ -195,7 +200,11 @@ class TestLoadPredictionFrames:
 class TestUnifyPredictions:
     def _make_frame(self, tmp_path, filename, rows) -> PredictionFrame:
         p = _write_pred_csv(tmp_path, filename, rows)
-        return PredictionFrame(path=p, week=int(PREDICTION_PATTERN.match(filename).group(1)), df=pd.read_csv(p))
+        return PredictionFrame(
+            path=p,
+            week=int(PREDICTION_PATTERN.match(filename).group(1)),
+            df=pd.read_csv(p),
+        )
 
     def test_empty_input_returns_empty(self):
         result = unify_predictions([])
@@ -340,3 +349,229 @@ class TestLoadActuals:
         df.to_parquet(p, index=False)
         result = load_actuals(p)
         assert pd.isna(result["actual_home_win"].iloc[0])
+
+
+# ---------------------------------------------------------------------------
+# main workflows and report writers
+# ---------------------------------------------------------------------------
+
+def _make_evaluation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    pred_dir = tmp_path / "predictions"
+    pred_dir.mkdir()
+    output_dir = tmp_path / "evaluation"
+    games = [
+        ("2024_01_KC_BUF", "KC", "BUF", 0.70, 6.0, 7.0),
+        ("2024_01_DAL_PHI", "DAL", "PHI", 0.45, -2.0, -3.0),
+        ("2024_01_SF_SEA", "SF", "SEA", 0.80, 8.0, -4.0),
+        ("2024_01_BAL_CIN", "BAL", "CIN", 0.35, -4.0, 10.0),
+    ]
+    pred_rows = [
+        {
+            "game_id": game_id,
+            "season": 2024,
+            "week": 1,
+            "home_team": home,
+            "away_team": away,
+            "home_win_prob": prob,
+            "pred_home_margin": pred_margin,
+        }
+        for game_id, home, away, prob, pred_margin, _actual_margin in games
+    ]
+    actual_rows = [
+        {
+            "game_id": game_id,
+            "season": 2024,
+            "week": 1,
+            "home_team": home,
+            "away_team": away,
+            "home_score": 24 + max(int(actual_margin), 0),
+            "away_score": 24 + max(int(-actual_margin), 0),
+            "home_margin": actual_margin,
+        }
+        for game_id, home, away, _prob, _pred_margin, actual_margin in games
+    ]
+    pd.DataFrame(pred_rows).to_csv(pred_dir / "w1_predictions.csv", index=False)
+    features_path = tmp_path / "matchup_features.parquet"
+    pd.DataFrame(actual_rows).to_parquet(features_path, index=False)
+    return pred_dir, features_path, output_dir
+
+
+class TestEvaluationWorkflow:
+    def test_main_writes_expected_artifacts(self, tmp_path, monkeypatch):
+        pred_dir, features_path, output_dir = _make_evaluation_fixture(tmp_path)
+        output_dir.mkdir()
+        pd.DataFrame([{"n_games": 1, "accuracy": 1.0}]).to_csv(
+            output_dir / "overall_metrics.csv",
+            index=False,
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "evaluate_predictions",
+                "--pred-dir",
+                str(pred_dir),
+                "--features-path",
+                str(features_path),
+                "--output-dir",
+                str(output_dir),
+                "--min-games",
+                "4",
+                "--skip-plots",
+            ],
+        )
+
+        eval_module.main()
+
+        assert (output_dir / "merged_predictions_actuals.csv").exists()
+        assert (output_dir / "weekly_metrics.csv").exists()
+        overall = pd.read_csv(output_dir / "overall_metrics.csv")
+        assert "run_timestamp" in overall.columns
+        assert len(overall) == 2
+
+    def test_main_raises_when_no_predictions(self, tmp_path, monkeypatch):
+        pred_dir = tmp_path / "empty_predictions"
+        pred_dir.mkdir()
+        _, features_path, output_dir = _make_evaluation_fixture(tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "evaluate_predictions",
+                "--pred-dir",
+                str(pred_dir),
+                "--features-path",
+                str(features_path),
+                "--output-dir",
+                str(output_dir),
+            ],
+        )
+
+        with pytest.raises(FileNotFoundError):
+            eval_module.main()
+
+    def test_plot_metrics_writes_pngs(self, tmp_path):
+        weekly = pd.DataFrame(
+            {
+                "season": [2024, 2024],
+                "week": [1, 2],
+                "accuracy": [0.75, 0.50],
+                "brier": [0.18, 0.24],
+                "log_loss": [0.55, 0.70],
+                "mae_margin": [4.0, 6.0],
+                "rmse_margin": [5.0, 8.0],
+            }
+        )
+
+        assert plot_metrics(weekly, tmp_path)
+        assert (tmp_path / "classification_metrics.png").exists()
+        assert (tmp_path / "margin_metrics.png").exists()
+
+    def test_plot_metrics_skips_empty_and_large_inputs(self, tmp_path):
+        assert not plot_metrics(pd.DataFrame(), tmp_path)
+        weekly = pd.DataFrame(
+            {
+                "season": [2024] * 181,
+                "week": list(range(1, 182)),
+                "accuracy": [0.5] * 181,
+                "brier": [0.25] * 181,
+                "log_loss": [0.69] * 181,
+                "mae_margin": [7.0] * 181,
+                "rmse_margin": [9.0] * 181,
+            }
+        )
+        assert not plot_metrics(weekly, tmp_path)
+
+    def test_summarize_underperformance_writes_reports(self, tmp_path):
+        merged = pd.concat(
+            [
+                _make_pred_frame(
+                    game_id="g1",
+                    hwp=0.80,
+                    margin=10.0,
+                    home_margin=-7.0,
+                ),
+                _make_pred_frame(
+                    game_id="g2",
+                    hwp=0.35,
+                    margin=-3.0,
+                    home_margin=4.0,
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        summarize_underperformance(merged, tmp_path)
+
+        assert (tmp_path / "largest_margin_errors.csv").exists()
+        assert (tmp_path / "high_confidence_misclassifications.csv").exists()
+        assert (tmp_path / "calibration_by_prob_bin.csv").exists()
+        assert (tmp_path / "team_error_summary.csv").exists()
+
+
+class TestCalibrationWorkflow:
+    def test_main_writes_calibrator_metrics_and_plot(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(calibrate_module, "MODELS_DIR", tmp_path / "models")
+        history_dir = tmp_path / "history"
+        history_dir.mkdir()
+        history = pd.DataFrame(
+            {
+                "game_id": [f"game_{i}" for i in range(8)],
+                "season": [2024] * 8,
+                "home_win_prob": [0.20, 0.30, 0.40, 0.45, 0.55, 0.65, 0.75, 0.85],
+                "actual_home_win": [0, 0, 0, 1, 0, 1, 1, 1],
+            }
+        )
+        history.to_csv(history_dir / "history_2024.csv", index=False)
+        volatility_path = tmp_path / "volatility.csv"
+        pd.DataFrame(
+            {
+                "game_id": ["game_4", "game_5", "game_6", "game_7"],
+                "volatility_prob": [0.60, 0.70, 0.80, 0.90],
+            }
+        ).to_csv(volatility_path, index=False)
+        output_path = tmp_path / "models" / "winprob_calibrator.pkl"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "calibrate_winprob",
+                "--history-dir",
+                str(history_dir),
+                "--seasons",
+                "2024",
+                "--min-games",
+                "8",
+                "--output",
+                str(output_path),
+                "--volatility-dataset",
+                str(volatility_path),
+                "--volatility-threshold",
+                "0.55",
+                "--volatility-strength",
+                "0.25",
+            ],
+        )
+
+        calibrate_module.main()
+
+        artifact = joblib.load(output_path)
+        assert artifact["sample_count"] == 8
+        assert artifact["volatility_used"] is True
+        assert Path("predictions/evaluation/overall_metrics.csv").exists()
+        assert Path("analysis/reliability_curve.png").exists()
+
+    def test_main_rejects_missing_history_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "calibrate_winprob",
+                "--history-dir",
+                str(tmp_path / "missing"),
+            ],
+        )
+
+        with pytest.raises(FileNotFoundError):
+            calibrate_module.main()
