@@ -2,6 +2,8 @@
   "settings": {
     "start_season": 2016,
     "end_season": null,
+    "exclude_from_season": 2026,
+    "exclude_from_week": 2,
     "moneyline_thresholds": [
       0.0,
       0.02,
@@ -12,41 +14,41 @@
       1.0,
       2.0
     ],
-    "margin_error_sigma": 5.0809702008484825
+    "margin_error_sigma": 9.952406635891377
   },
   "moneyline_best": {
     "bet_type": "moneyline",
     "bet_side": "home",
     "threshold": 0.05,
-    "n_bets": 594.0,
-    "wins": 557.0,
-    "losses": 37.0,
+    "n_bets": 993.0,
+    "wins": 839.0,
+    "losses": 154.0,
     "pushes": 0.0,
-    "hit_rate": 0.9377104377104377,
-    "avg_model_prob": 0.6914561180353967,
-    "avg_implied_prob": 0.508969872713111,
-    "avg_expected_profit": 0.45498764628682814,
-    "avg_edge_prob": 0.18248624532228575,
-    "avg_odds_decimal": 2.2304103120280754,
-    "avg_odds_american": -4.429292929292929,
-    "total_profit": 595.0945497229985,
-    "roi": 1.0018426763013444
+    "hit_rate": 0.8449144008056395,
+    "avg_model_prob": 0.660789544586861,
+    "avg_implied_prob": 0.48029155046809135,
+    "avg_expected_profit": 0.4790038365824364,
+    "avg_edge_prob": 0.18049799411876966,
+    "avg_odds_decimal": 2.4741521631992187,
+    "avg_odds_american": 29.8539778449144,
+    "total_profit": 753.4514246610485,
+    "roi": 0.7587627640091122
   },
   "spread_best": {
     "bet_type": "spread",
-    "bet_side": "home",
+    "bet_side": "away",
     "threshold": 2.0,
-    "n_bets": 1478.0,
-    "wins": 1417.0,
-    "losses": 45.0,
-    "pushes": 16.0,
-    "hit_rate": 0.96922024623803,
-    "avg_cover_prob": 0.9385757171371986,
-    "avg_expected_profit": 0.8274992492413181,
-    "avg_edge_points": 14.320817640755955,
-    "avg_odds_decimal": 1.9467944042767429,
-    "avg_odds_american": -66.1129905277402,
-    "total_profit": 1296.9031052853097,
-    "roi": 0.8774716544555546
+    "n_bets": 860.0,
+    "wins": 827.0,
+    "losses": 26.0,
+    "pushes": 7.0,
+    "hit_rate": 0.9695193434935522,
+    "avg_cover_prob": 0.7628687997430142,
+    "avg_expected_profit": 0.48643166196233584,
+    "avg_edge_points": 7.848633968150135,
+    "avg_odds_decimal": 1.947202016090059,
+    "avg_odds_american": -64.15697674418605,
+    "total_profit": 757.7751534905365,
+    "roi": 0.8811338994076006
   }
 }

@@ -19,6 +19,7 @@ import argparse
 import os
 import re
 import shutil
+import warnings
 import joblib
 import numpy as np
 import pandas as pd
@@ -27,7 +28,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dateutil import tz
 from src.utils.io import RAW_DIR, PROC_DIR, read_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.odds import fetch_odds
 from src.utils.teams import get_team_abbr_from_name
 from src.predict.utils import apply_probability_caps, moneyline_to_prob
@@ -69,6 +70,253 @@ def _column_or_default(
         return pd.Series(pd.NA, index=df.index, dtype="object")
 
     return pd.Series(default_value, index=df.index)
+
+
+def _coerce_probability_series(values: Any, index: pd.Index) -> pd.Series:
+    """Return numeric probabilities aligned to *index*."""
+    if isinstance(values, pd.Series):
+        series = values.reindex(index) if not values.index.equals(index) else values.copy()
+    else:
+        series = pd.Series(np.asarray(values, dtype=float), index=index)
+    return pd.to_numeric(series, errors="coerce").astype(float)
+
+
+def _has_probability_signal(values: Any) -> bool:
+    """True when a probability vector contains more than one finite value."""
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    return len(series) > 1 and series.nunique(dropna=True) > 1
+
+
+def _is_collapsed_probability(values: Any) -> bool:
+    """True when multiple finite probabilities have collapsed to one value."""
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    return len(series) > 1 and series.nunique(dropna=True) <= 1
+
+
+def _probability_unique_count(values: Any) -> int:
+    """Count distinct finite probabilities."""
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    return int(series.nunique(dropna=True))
+
+
+def _probability_range(values: Any) -> float:
+    """Return max-min spread for finite probabilities."""
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    if series.empty:
+        return 0.0
+    return float(series.max() - series.min())
+
+
+def _is_saturated_probability_signal(values: Any) -> bool:
+    """True when probabilities are mostly pinned to extreme tails."""
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    if len(series) < 2:
+        return False
+    tail_rate = float(((series <= 0.02) | (series >= 0.98)).mean())
+    one_sided_tail_rate = float((series >= 0.95).mean() + (series <= 0.05).mean())
+    return tail_rate >= 0.5 or one_sided_tail_rate >= 0.75
+
+
+def _fallback_if_probability_collapsed(
+    candidate: pd.Series,
+    fallback: pd.Series,
+    *,
+    stage: str,
+) -> tuple[pd.Series, str | None]:
+    """Use fallback probabilities when a stage destroys all slate-level ranking signal."""
+    candidate_unique = _probability_unique_count(candidate)
+    fallback_unique = _probability_unique_count(fallback)
+    candidate_range = _probability_range(candidate)
+    fallback_range = _probability_range(fallback)
+    severe_compression = fallback_unique >= 8 and candidate_unique <= max(2, fallback_unique // 4)
+    severe_range_compression = fallback_range >= 0.03 and candidate_range <= max(0.005, fallback_range * 0.25)
+    if fallback_unique > 1 and (candidate_unique <= 1 or severe_compression or severe_range_compression):
+        clipped = fallback.clip(0.02, 0.98)
+        if _has_probability_signal(clipped):
+            return clipped, f"{stage}_collapsed"
+        lightly_clipped = fallback.clip(0.001, 0.999)
+        return lightly_clipped, f"{stage}_collapsed"
+    return candidate, None
+
+
+def _best_probability_signal(preds: pd.DataFrame, index: pd.Index) -> tuple[pd.Series, str]:
+    """Return the best available probability column that still has ranking signal."""
+    candidates: list[tuple[bool, float, pd.Series, str]] = []
+    for col in ("home_win_prob_capped", "home_win_prob_calibrated", "home_win_prob_model_raw"):
+        if col not in preds.columns:
+            continue
+        series = _coerce_probability_series(preds[col], index)
+        prob_range = _probability_range(series)
+        if _has_probability_signal(series):
+            candidates.append((_is_saturated_probability_signal(series), prob_range, series, col))
+    if candidates:
+        non_saturated = [item for item in candidates if not item[0]]
+        pool = non_saturated or candidates
+        _, _, best_series, best_col = max(pool, key=lambda item: item[1])
+        return best_series, best_col
+    if "home_win_prob" in preds.columns:
+        return _coerce_probability_series(preds["home_win_prob"], index), "home_win_prob"
+    return pd.Series(np.nan, index=index, dtype=float), "none"
+
+
+def _append_quality_fallback(preds: pd.DataFrame, reason: str) -> None:
+    """Append a fallback reason to the exported quality diagnostic column."""
+    existing = (
+        str(preds["home_win_prob_quality_fallback"].iloc[0])
+        if "home_win_prob_quality_fallback" in preds.columns and len(preds)
+        else ""
+    )
+    reasons = [part for part in existing.split(";") if part and part.lower() != "nan"]
+    if reason not in reasons:
+        reasons.append(reason)
+    preds["home_win_prob_quality_fallback"] = ";".join(reasons)
+
+
+def _should_skip_volatility_shrinkage(
+    labels: Any,
+    *,
+    min_coverage: float = 0.0,
+    max_coverage: float,
+) -> tuple[bool, float]:
+    """Return whether volatility labels cover too little or too much of the slate to be useful."""
+    series = pd.to_numeric(pd.Series(labels), errors="coerce").dropna()
+    if series.empty:
+        return False, 0.0
+    coverage = float((series == 1).mean())
+    min_cov = float(np.clip(min_coverage, 0.0, 1.0))
+    max_cov = float(np.clip(max_coverage, 0.0, 1.0))
+    return coverage < min_cov or coverage > max_cov, coverage
+
+
+def _volatility_artifact_skip_reason(
+    artifact: Any,
+    *,
+    min_auc: float = 0.55,
+    min_pred_positive_rate: float = 0.02,
+    max_pred_positive_rate: float = 0.85,
+) -> str | None:
+    """Return a diagnostic reason when a volatility artifact is too weak to adjust predictions."""
+    metrics = getattr(artifact, "metrics", None) or {}
+    auc = metrics.get("auc")
+    if auc is not None and np.isfinite(float(auc)) and float(auc) < min_auc:
+        return f"auc={float(auc):.3f}<min_auc={min_auc:.3f}"
+    pred_rate = metrics.get("pred_positive_rate")
+    if pred_rate is not None and np.isfinite(float(pred_rate)):
+        pred_rate = float(pred_rate)
+        if pred_rate < min_pred_positive_rate:
+            return f"pred_positive_rate={pred_rate:.3f}<min={min_pred_positive_rate:.3f}"
+        if pred_rate > max_pred_positive_rate:
+            return f"pred_positive_rate={pred_rate:.3f}>max={max_pred_positive_rate:.3f}"
+    return None
+
+
+def _apply_probability_calibrator(calibrator: Any, probabilities: pd.Series) -> pd.Series:
+    """Apply a probability calibrator while preserving probability, not class, output."""
+    values = pd.to_numeric(probabilities, errors="coerce").astype(float)
+    arr = values.to_numpy(dtype=float).reshape(-1, 1)
+    if hasattr(calibrator, "predict_proba"):
+        calibrated = np.asarray(calibrator.predict_proba(arr))[:, 1]
+    elif hasattr(calibrator, "predict"):
+        calibrated = calibrator.predict(values)
+    elif hasattr(calibrator, "transform"):
+        calibrated = calibrator.transform(values)
+    else:
+        raise TypeError(f"Unsupported calibrator type: {type(calibrator).__name__}")
+    return _coerce_probability_series(calibrated, probabilities.index)
+
+
+QB_PLAYER_PROJECTION_COLUMNS = [
+    "season",
+    "week",
+    "game_id",
+    "kickoff",
+    "kickoff_mt",
+    "team",
+    "team_side",
+    "player_rank",
+    "player_id",
+    "player_name",
+    "jersey_number",
+    "games_sampled",
+    "projected_passing_yards",
+    "projected_passing_tds",
+    "projected_rushing_tds",
+    "projected_passing_attempts",
+    "projected_interceptions",
+    "projected_completions",
+    "projected_rushing_yards",
+]
+
+OFFENSE_PLAYER_PROJECTION_COLUMNS = [
+    "season",
+    "week",
+    "game_id",
+    "kickoff",
+    "kickoff_mt",
+    "team",
+    "team_side",
+    "player_rank",
+    "player_id",
+    "player_name",
+    "jersey_number",
+    "games_sampled",
+    "projected_rushing_yards",
+    "projected_rushing_tds",
+    "projected_carries",
+    "projected_receiving_yards",
+    "projected_receiving_tds",
+    "projected_receptions",
+    "projected_targets",
+    "projected_total_yards",
+    "projected_total_tds",
+    "penalties_per_game",
+    "penalty_count",
+    "penalty_yards",
+]
+
+
+def _write_player_projection_csv(
+    frame: pd.DataFrame,
+    save_path: str,
+    columns: list[str],
+    label: str,
+    *,
+    debug: bool = False,
+) -> pd.DataFrame:
+    """Write player projection output, including explicit empty current-week files."""
+    output = frame.copy()
+    for col in columns:
+        if col not in output.columns:
+            output[col] = pd.NA
+    output = output[columns]
+    _backup_existing_file(Path(save_path))
+    output.to_csv(save_path, index=False)
+    if debug:
+        print(f"[predict][players] saved {label} projections -> {save_path} (rows={len(output)})")
+    return output
+
+
+def _recent_player_stat_threshold(
+    subset: pd.DataFrame,
+    target_season: int,
+    label: str,
+    *,
+    debug: bool = False,
+) -> int:
+    """Return recency floor, relaxing it when the player-stat feed is stale."""
+    target_floor = int(target_season) - 1
+    if subset is None or subset.empty or "season" not in subset.columns:
+        return target_floor
+    seasons = pd.to_numeric(subset["season"], errors="coerce").dropna()
+    if seasons.empty:
+        return target_floor
+    latest = int(seasons.max())
+    if latest < target_floor and debug:
+        print(
+            f"[predict][players][{label}] player stats only available through {latest}; "
+            f"using {latest} as the recency floor for {target_season} projections."
+        )
+    return min(target_floor, latest)
 
 
 
@@ -491,6 +739,14 @@ def _cleanup_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Drop duplicate, all-null, and all-zero numeric columns."""
 
     cleaned = df.copy()
+    preserve_zero_cols = {
+        "home_win_prob_model_raw",
+        "home_win_prob_calibrated",
+        "home_win_prob_capped",
+        "home_win_prob_raw",
+        "volatility_prob",
+        "volatility_label",
+    }
 
     idx = pd.Index(cleaned.columns)
 
@@ -513,6 +769,8 @@ def _cleanup_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     all_zero = []
 
     for col in numeric_cols:
+        if col in preserve_zero_cols:
+            continue
 
         series = pd.to_numeric(cleaned[col], errors="coerce")
 
@@ -757,11 +1015,19 @@ def _load_player_stats_frame() -> pd.DataFrame:
 
     df["week"] = df["week"].astype("int64")
 
-    df["season_type"] = pd.to_numeric(_column_or_default(df, "season_type"), errors="coerce")
+    season_type_raw = _column_or_default(df, "season_type")
+    season_type_num = pd.to_numeric(season_type_raw, errors="coerce")
+    season_type_text = season_type_raw.fillna("").astype(str).str.strip().str.upper()
+    regular_season = (
+        season_type_num.eq(2)
+        | season_type_text.isin(["", "REG", "REGULAR", "REGULAR_SEASON", "REGULAR SEASON"])
+    )
+    df = df[regular_season].copy()
 
-    df = df[df["season_type"].fillna(2) == 2]
-
-    recent_team = _column_or_default(df, "recent_team", default_value="", dtype="object")
+    if "recent_team" in df.columns:
+        recent_team = _column_or_default(df, "recent_team", default_value="", dtype="object")
+    else:
+        recent_team = _column_or_default(df, "team", default_value="", dtype="object")
 
     df["recent_team"] = recent_team.fillna("").astype(str).str.upper()
 
@@ -1135,7 +1401,7 @@ def _player_qb_predictions(
 
     if pred_games is None or pred_games.empty:
 
-        return None
+        return _write_player_projection_csv(pd.DataFrame(), save_path, QB_PLAYER_PROJECTION_COLUMNS, "QB", debug=debug)
 
     if stats is None or stats.empty:
 
@@ -1143,7 +1409,7 @@ def _player_qb_predictions(
 
             print("[predict][players] no player stats available for QB projections")
 
-        return None
+        return _write_player_projection_csv(pd.DataFrame(), save_path, QB_PLAYER_PROJECTION_COLUMNS, "QB", debug=debug)
 
 
 
@@ -1157,7 +1423,7 @@ def _player_qb_predictions(
 
             print("[predict][players] no QB stats available")
 
-        return None
+        return _write_player_projection_csv(pd.DataFrame(), save_path, QB_PLAYER_PROJECTION_COLUMNS, "QB", debug=debug)
 
 
 
@@ -1255,7 +1521,7 @@ def _player_qb_predictions(
 
         agg["last_team"] = agg["player_id"].map(last_team).astype(str).str.upper()
 
-        recent_threshold = int(season) - 1
+        recent_threshold = _recent_player_stat_threshold(subset, int(season), "qb", debug=debug)
 
         agg = agg[agg["last_season"].notna() & (agg["last_season"] >= recent_threshold)]
 
@@ -1371,20 +1637,12 @@ def _player_qb_predictions(
                     )
 
     if not results:
-
-        return None
+        if debug:
+            print("[predict][players][qb] no projection rows survived filters; writing empty current-week file")
+        return _write_player_projection_csv(pd.DataFrame(), save_path, QB_PLAYER_PROJECTION_COLUMNS, "QB", debug=debug)
 
     df_qb = pd.DataFrame(results)
-
-    _backup_existing_file(Path(save_path))
-
-    df_qb.to_csv(save_path, index=False)
-
-    if debug:
-
-        print(f"[predict][players] saved QB projections -> {save_path} (rows={len(df_qb)})")
-
-    return df_qb
+    return _write_player_projection_csv(df_qb, save_path, QB_PLAYER_PROJECTION_COLUMNS, "QB", debug=debug)
 
 
 
@@ -1412,7 +1670,9 @@ def _player_offense_predictions(
 
     if pred_games is None or pred_games.empty or stats is None or stats.empty:
 
-        return None
+        if debug and (stats is None or stats.empty):
+            print("[predict][players] no player stats available for offensive projections")
+        return _write_player_projection_csv(pd.DataFrame(), save_path, OFFENSE_PLAYER_PROJECTION_COLUMNS, "offensive", debug=debug)
 
 
 
@@ -1430,7 +1690,7 @@ def _player_offense_predictions(
 
             print("[predict][players] no offensive skill-position stats available")
 
-        return None
+        return _write_player_projection_csv(pd.DataFrame(), save_path, OFFENSE_PLAYER_PROJECTION_COLUMNS, "offensive", debug=debug)
 
 
 
@@ -1546,7 +1806,7 @@ def _player_offense_predictions(
 
         agg["last_team"] = agg["player_id"].map(last_team).astype(str).str.upper()
 
-        recent_threshold = int(season) - 1
+        recent_threshold = _recent_player_stat_threshold(subset, int(season), "offense", debug=debug)
 
         agg = agg[agg["last_season"].notna() & (agg["last_season"] >= recent_threshold)]
 
@@ -1864,20 +2124,12 @@ def _player_offense_predictions(
                     )
 
     if not results:
-
-        return None
+        if debug:
+            print("[predict][players][offense] no projection rows survived filters; writing empty current-week file")
+        return _write_player_projection_csv(pd.DataFrame(), save_path, OFFENSE_PLAYER_PROJECTION_COLUMNS, "offensive", debug=debug)
 
     df_off = pd.DataFrame(results)
-
-    _backup_existing_file(Path(save_path))
-
-    df_off.to_csv(save_path, index=False)
-
-    if debug:
-
-        print(f"[predict][players] saved offensive projections -> {save_path} (rows={len(df_off)})")
-
-    return df_off
+    return _write_player_projection_csv(df_off, save_path, OFFENSE_PLAYER_PROJECTION_COLUMNS, "offensive", debug=debug)
 
 
 
@@ -2469,6 +2721,12 @@ def main():
 
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
 
+    ap.add_argument(
+        "--enable-shap-explanations",
+        action="store_true",
+        help="Enable optional per-game SHAP explanations during prediction.",
+    )
+
     ap.add_argument("--save-players-qb", dest="save_players_qb", type=str, default="predictions_players_qb.csv", help="Path to save quarterback projections; set empty to skip")
 
     ap.add_argument("--save-players-offense", dest="save_players_offense", type=str, default="predictions_players_offense.csv", help="Path to save offensive skill-player projections (top 10 per team); set empty to skip")
@@ -2525,6 +2783,30 @@ def main():
 
     ap.add_argument(
 
+        "--volatility-min-coverage",
+
+        type=float,
+
+        default=0.02,
+
+        help="Skip volatility shrinkage when fewer than this share of the slate is labeled volatile.",
+
+    )
+
+    ap.add_argument(
+
+        "--volatility-max-coverage",
+
+        type=float,
+
+        default=0.85,
+
+        help="Skip volatility shrinkage when more than this share of the slate is labeled volatile.",
+
+    )
+
+    ap.add_argument(
+
         "--disable-volatility",
 
         action="store_true",
@@ -2537,7 +2819,8 @@ def main():
 
 
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
+    warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
     volatility_artifact_path = Path(args.volatility_artifact) if args.volatility_artifact else DEFAULT_VOLATILITY_ARTIFACT
 
@@ -2692,8 +2975,17 @@ def main():
     # Build the feature slice for that season/week and compute *_diff features
 
     this_week = feats[(feats["season"] == season) & (feats["week"] == week)].copy()
+    if this_week.empty:
+        raise RuntimeError(
+            f"No feature rows found for season {season}, week {week}. "
+            "Run the data/feature pipeline for that season/week before predicting."
+        )
 
     this_week = _make_feature_diffs(this_week)
+    if "game_id" in this_week.columns and this_week.duplicated("game_id").any():
+        dupes = this_week.loc[this_week.duplicated("game_id", keep=False), "game_id"].dropna().unique()
+        print(f"[predict][schedule] dropping duplicate feature rows for game_id(s): {list(dupes[:5])}")
+        this_week = this_week.drop_duplicates("game_id", keep="last").reset_index(drop=True)
 
     # Deduplicate columns to avoid duplicate-name DataFrame selections downstream
 
@@ -2881,6 +3173,9 @@ def main():
 
             try:
 
+                if not args.enable_shap_explanations:
+                    raise ImportError("SHAP explanations disabled for predict_upcoming")
+
                 import shap  # type: ignore
 
                 # Use underlying estimator if model is calibrated
@@ -3066,16 +3361,16 @@ def main():
                         pass
 
             cal_candidates = [
-
-                Path("models/isotonic_calibrator.pkl"),
-
                 Path("models/winprob_calibrator.pkl"),
-
+                Path("models/isotonic_calibrator.pkl"),
             ]
 
             cal_path = next((p for p in cal_candidates if p.exists()), None)
 
-            final_proba = proba_final.copy() if isinstance(proba_final, pd.Series) else np.asarray(proba_final, dtype=float)
+            model_raw_proba = _coerce_probability_series(proba_final, preds.index)
+            preds["home_win_prob_model_raw"] = model_raw_proba
+            final_proba = model_raw_proba.copy()
+            cal_art: dict[str, Any] = {}
 
             if cal_path is not None:
 
@@ -3086,14 +3381,7 @@ def main():
                     calibrator = cal_art.get("calibrator")
 
                     if calibrator is not None:
-
-                        if hasattr(calibrator, "predict"):
-
-                            final_proba = calibrator.predict(final_proba)
-
-                        elif hasattr(calibrator, "transform"):
-
-                            final_proba = calibrator.transform(final_proba)
+                        final_proba = _apply_probability_calibrator(calibrator, final_proba)
 
                 except Exception as ex:
 
@@ -3109,9 +3397,61 @@ def main():
 
                 market_caps = moneyline_to_prob(preds["home_moneyline"])
 
-            final_proba = apply_probability_caps(final_proba, market_caps)
+            fallback_reasons: list[str] = []
+            calibrated_proba = _coerce_probability_series(final_proba, preds.index)
+            calibrated_proba, fallback_reason = _fallback_if_probability_collapsed(
+                calibrated_proba,
+                model_raw_proba,
+                stage="calibration",
+            )
+            if fallback_reason is not None:
+                fallback_used = False
+                try:
+                    fallback_calibrator = cal_art.get("fallback_calibrator") if cal_path is not None else None
+                    fallback_method = str(cal_art.get("fallback_method", "fallback")) if cal_path is not None else "fallback"
+                    if fallback_calibrator is not None:
+                        fallback_proba = _apply_probability_calibrator(fallback_calibrator, model_raw_proba)
+                        _, fallback_check_reason = _fallback_if_probability_collapsed(
+                            fallback_proba,
+                            model_raw_proba,
+                            stage="calibration",
+                        )
+                        if fallback_check_reason is None:
+                            calibrated_proba = fallback_proba
+                            fallback_reasons.append(f"calibration_{fallback_method}_fallback")
+                            fallback_used = True
+                            print(
+                                "[predict][quality] warning: calibration collapsed probability ranking; "
+                                f"using {fallback_method} calibrator fallback for this slate."
+                            )
+                except Exception as ex:
+                    if args.debug:
+                        print(f"[predict][quality] calibration fallback failed: {ex}")
+                if not fallback_used:
+                    fallback_reasons.append(fallback_reason)
+                    print(
+                        "[predict][quality] warning: calibration collapsed probability ranking; "
+                        "using raw model probabilities for this slate."
+                    )
+            preds["home_win_prob_calibrated"] = calibrated_proba
+            final_proba = apply_probability_caps(calibrated_proba, market_caps)
+            capped_proba = _coerce_probability_series(final_proba, preds.index)
+            capped_proba, fallback_reason = _fallback_if_probability_collapsed(
+                capped_proba,
+                calibrated_proba,
+                stage="caps",
+            )
+            if fallback_reason is not None:
+                fallback_reasons.append(fallback_reason)
+                print(
+                    "[predict][quality] warning: probability caps collapsed probability ranking; "
+                    "using uncapped probabilities for this slate."
+                )
+            preds["home_win_prob_capped"] = capped_proba
+            if fallback_reasons:
+                preds["home_win_prob_quality_fallback"] = ";".join(fallback_reasons)
 
-            preds["home_win_prob"] = final_proba
+            preds["home_win_prob"] = capped_proba
 
 
 
@@ -3203,11 +3543,21 @@ def main():
 
                 artifact = load_volatility_artifact(volatility_artifact_path)
 
+                artifact_skip_reason = _volatility_artifact_skip_reason(artifact)
+
+                if artifact_skip_reason is not None:
+
+                    win_raw, _ = _best_probability_signal(preds, preds.index)
+
+                    preds["home_win_prob_raw"] = win_raw
+
+                    _append_quality_fallback(preds, "volatility_artifact_skipped")
+
+                    raise RuntimeError(f"weak volatility artifact: {artifact_skip_reason}")
+
                 threshold = args.volatility_threshold if args.volatility_threshold is not None else artifact.threshold
 
-                vol_prob, _ = score_volatility(this_week_nodup, artifact)
-
-                win_raw = preds["home_win_prob"] if "home_win_prob" in preds.columns else pd.Series(np.nan, index=preds.index)
+                win_raw, win_source = _best_probability_signal(preds, preds.index)
 
                 win_series = pd.Series(pd.to_numeric(win_raw, errors="coerce"), index=preds.index, dtype=float)
 
@@ -3220,6 +3570,19 @@ def main():
                     margin_raw = preds["pred_home_margin"]
 
                     margin_series = pd.Series(pd.to_numeric(margin_raw, errors="coerce"), index=preds.index, dtype=float)
+
+                volatility_input = this_week_nodup.copy()
+                for col in (
+                    "home_win_prob",
+                    "home_win_prob_model_raw",
+                    "home_win_prob_calibrated",
+                    "home_win_prob_capped",
+                    "pred_home_margin",
+                ):
+                    if col in preds.columns:
+                        volatility_input[col] = preds[col].reindex(volatility_input.index)
+
+                vol_prob, _ = score_volatility(volatility_input, artifact)
 
                 adj_prob, adj_margin, labels = apply_volatility_shrinkage(
 
@@ -3237,6 +3600,49 @@ def main():
 
                 )
 
+                adj_prob = _coerce_probability_series(adj_prob, preds.index)
+                skip_shrinkage, coverage = _should_skip_volatility_shrinkage(
+                    labels.reindex(preds.index),
+                    min_coverage=float(args.volatility_min_coverage),
+                    max_coverage=float(args.volatility_max_coverage),
+                )
+                if skip_shrinkage:
+                    shrinkage_status = "skipped"
+                    adj_prob = win_series
+                    adj_margin = margin_series
+                    _append_quality_fallback(preds, "volatility_coverage_skipped")
+                    print(
+                        "[predict][quality] warning: volatility adjustment selected "
+                        f"{coverage:.1%} of this slate, outside "
+                        f"{float(args.volatility_min_coverage):.1%}-{float(args.volatility_max_coverage):.1%}; "
+                        f"skipping shrinkage and using {win_source}."
+                    )
+                else:
+                    shrinkage_status = "applied"
+                    signal_fallback, signal_source = _best_probability_signal(preds, preds.index)
+                    restored_prob, fallback_reason = _fallback_if_probability_collapsed(
+                        adj_prob,
+                        signal_fallback,
+                        stage="volatility",
+                    )
+                    if fallback_reason is not None:
+                        restored_adj_prob, _, _ = apply_volatility_shrinkage(
+                            restored_prob,
+                            None,
+                            vol_prob.reindex(preds.index),
+                            threshold=float(threshold),
+                            prob_strength=float(args.volatility_strength),
+                            margin_strength=0.0,
+                        )
+                        restored_adj_prob = _coerce_probability_series(restored_adj_prob, preds.index)
+                        adj_prob = restored_adj_prob if _has_probability_signal(restored_adj_prob) else restored_prob
+                        win_raw = signal_fallback
+                        _append_quality_fallback(preds, fallback_reason)
+                        print(
+                            "[predict][quality] warning: volatility adjustment collapsed probability ranking; "
+                            f"using {signal_source} as the shrinkage input for this slate."
+                        )
+
                 preds["home_win_prob_raw"] = win_raw
 
                 preds["home_win_prob"] = adj_prob
@@ -3253,11 +3659,9 @@ def main():
 
                 if args.debug:
 
-                    coverage = float((preds["volatility_label"] == 1).mean()) if len(preds) else 0.0
-
                     print(
 
-                        "[predict][volatility] applied shrinkage: "
+                        f"[predict][volatility] {shrinkage_status} shrinkage: "
 
                         f"threshold={threshold:.2f} prob_strength={args.volatility_strength:.2f} "
 
@@ -3274,6 +3678,29 @@ def main():
         elif args.debug:
 
             print(f"[predict][volatility] artifact {volatility_artifact_path} not found; skipping adjustments")
+
+    prob_series = pd.to_numeric(preds.get("home_win_prob"), errors="coerce")
+    if len(prob_series.dropna()) > 1 and prob_series.dropna().nunique() <= 1:
+        details = []
+        for col in ("home_win_prob_model_raw", "home_win_prob_calibrated", "home_win_prob_capped"):
+            if col in preds.columns:
+                vals = pd.to_numeric(preds[col], errors="coerce").dropna()
+                if not vals.empty:
+                    details.append(f"{col} range={vals.min():.4f}-{vals.max():.4f}")
+        detail_text = "; ".join(details) if details else "no intermediate probability columns available"
+        print(
+            "[predict][quality] warning: home_win_prob collapsed to a constant "
+            f"{prob_series.dropna().iloc[0]:.4f}; {detail_text}"
+        )
+    for diag_col in ("home_win_prob_calibrated", "home_win_prob_capped", "home_win_prob_raw"):
+        if diag_col not in preds.columns:
+            continue
+        diag = pd.to_numeric(preds[diag_col], errors="coerce").dropna()
+        if len(diag) > 1 and diag.nunique(dropna=True) <= 1:
+            print(
+                f"[predict][quality] warning: {diag_col} collapsed to a constant "
+                f"{diag.iloc[0]:.4f}; final home_win_prob range={prob_series.min():.4f}-{prob_series.max():.4f}"
+            )
 
 
 
@@ -4673,7 +5100,7 @@ def main():
 
         # core predictions
 
-        "home_win_prob", "pred_home_margin", "pred_home_margin_expl", "home_pick", "home_confidence_pct", "home_odds_american", "home_odds_decimal", "pick_expl",
+        "home_win_prob", "home_win_prob_model_raw", "home_win_prob_calibrated", "home_win_prob_capped", "home_win_prob_raw", "home_win_prob_quality_fallback", "volatility_prob", "volatility_label", "pred_home_margin", "pred_home_margin_expl", "home_pick", "home_confidence_pct", "home_odds_american", "home_odds_decimal", "pick_expl",
 
         # offensive production projections
 

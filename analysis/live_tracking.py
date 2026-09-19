@@ -89,6 +89,47 @@ def get_metrics_filename(season: int, week: int) -> str:
     return f"week_{week:02d}_metrics.json"
 
 
+def _validate_lockable_predictions(df: pd.DataFrame, season: int, week: int) -> None:
+    if "game_id" not in df.columns:
+        raise ValueError("Cannot lock predictions without game_id column")
+
+    dup_mask = df.duplicated("game_id", keep=False)
+    if dup_mask.any():
+        dupes = sorted(df.loc[dup_mask, "game_id"].dropna().astype(str).unique().tolist())
+        raise ValueError(
+            f"Cannot lock predictions for season {season}, week {week}: duplicate game_id rows {dupes[:10]}"
+        )
+
+    if "home_win_prob" not in df.columns:
+        raise ValueError("Cannot lock predictions without home_win_prob column")
+
+    probs = pd.to_numeric(df["home_win_prob"], errors="coerce")
+    if probs.isna().any():
+        raise ValueError("Cannot lock predictions with missing or non-numeric home_win_prob values")
+    if ((probs < 0.0) | (probs > 1.0)).any():
+        raise ValueError("Cannot lock predictions with home_win_prob outside [0, 1]")
+    if len(probs) > 1 and probs.nunique(dropna=True) <= 1:
+        detail = ""
+        if "home_win_prob_model_raw" in df.columns:
+            raw = pd.to_numeric(df["home_win_prob_model_raw"], errors="coerce").dropna()
+            if not raw.empty:
+                detail = f" raw model range={raw.min():.4f}-{raw.max():.4f}"
+        raise ValueError(
+            f"Cannot lock predictions for season {season}, week {week}: home_win_prob is constant "
+            f"at {probs.iloc[0]:.4f}.{detail}"
+        )
+
+    for diag_col in ("home_win_prob_calibrated", "home_win_prob_capped", "home_win_prob_raw"):
+        if diag_col not in df.columns:
+            continue
+        diag = pd.to_numeric(df[diag_col], errors="coerce").dropna()
+        if len(diag) > 1 and diag.nunique(dropna=True) <= 1:
+            raise ValueError(
+                f"Cannot lock predictions for season {season}, week {week}: {diag_col} "
+                f"is constant at {diag.iloc[0]:.4f}; rerun the live pipeline before locking."
+            )
+
+
 def lock_predictions(season: int, week: int, source_file: Optional[Path] = None) -> Path:
     """
     Lock predictions for a specific week before games start.
@@ -116,6 +157,7 @@ def lock_predictions(season: int, week: int, source_file: Optional[Path] = None)
     
     if df.empty:
         raise ValueError(f"No predictions found for season {season}, week {week}")
+    _validate_lockable_predictions(df, season, week)
     
     # Add metadata
     df["locked_at"] = datetime.now(timezone.utc).isoformat()
@@ -128,15 +170,19 @@ def lock_predictions(season: int, week: int, source_file: Optional[Path] = None)
     
     # Check if already locked
     if output_file.exists():
-        print(f"⚠️  Predictions already locked for {season} Week {week}")
+        print(f"[warning] Predictions already locked for {season} Week {week}")
         print(f"   Existing file: {output_file}")
-        response = input("   Overwrite? (yes/no): ").strip().lower()
+        try:
+            response = input("   Overwrite? (yes/no): ").strip().lower()
+        except EOFError:
+            print("   Aborted. Stdin is not interactive; keeping existing locked predictions.")
+            return output_file
         if response != "yes":
             print("   Aborted. Keeping existing locked predictions.")
             return output_file
     
     df.to_csv(output_file, index=False)
-    print(f"✓ Locked {len(df)} predictions for {season} Week {week}")
+    print(f"[ok] Locked {len(df)} predictions for {season} Week {week}")
     print(f"  File: {output_file}")
     print(f"  Timestamp: {df['locked_at'].iloc[0]}")
     
@@ -188,7 +234,7 @@ def fetch_actuals(season: int, week: int) -> Path:
     output_file = season_dir / get_actuals_filename(season, week)
     
     actuals.to_csv(output_file, index=False)
-    print(f"✓ Fetched {len(actuals)} actual results for {season} Week {week}")
+    print(f"[ok] Fetched {len(actuals)} actual results for {season} Week {week}")
     print(f"  File: {output_file}")
     print(f"  Timestamp: {actuals['fetched_at'].iloc[0]}")
     
@@ -266,7 +312,7 @@ def calculate_metrics(season: int, week: int) -> Dict[str, Any]:
     with open(metrics_file, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
     
-    print(f"✓ Calculated metrics for {season} Week {week}")
+    print(f"[ok] Calculated metrics for {season} Week {week}")
     print(f"  File: {metrics_file}")
     
     if "win_probability" in metrics:
@@ -366,7 +412,7 @@ def generate_report(season: int, week: int) -> Path:
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(report_content)
     
-    print(f"✓ Generated report for {season} Week {week}")
+    print(f"[ok] Generated report for {season} Week {week}")
     print(f"  File: {report_file}")
     
     return report_file
@@ -403,11 +449,11 @@ def weekly_cycle(season: int, week: int, lock_source: Optional[Path] = None) -> 
         generate_report(season, week)
         
         print("\n" + "=" * 80)
-        print("✓ Weekly validation cycle complete!")
+        print("[ok] Weekly validation cycle complete!")
         print("=" * 80)
         
     except Exception as e:
-        print(f"\n✗ Error during weekly cycle: {e}")
+        print(f"\n[error] Error during weekly cycle: {e}")
         raise
 
 

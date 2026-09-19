@@ -45,6 +45,8 @@ _NFL_ABBRS: frozenset[str] = frozenset(
         "NYJ", "PHI", "PIT", "SF",  "SEA", "TB",  "TEN", "WAS",
         # Historical aliases kept for backward-compat with older data
         "OAK", "SD",  "STL", "JAC",
+        # Provider aliases seen in nflverse/nflfastR-era feeds
+        "ARZ", "BLT", "CLV", "HST", "LA", "SL",
     }
 )
 
@@ -69,8 +71,8 @@ def _is_na(v: Any) -> bool:
     if v is None:
         return True
     try:
-        import math
-        return isinstance(v, float) and math.isnan(v)
+        result = pd.isna(v)
+        return bool(result) if not isinstance(result, (list, tuple)) else False
     except (TypeError, ValueError):
         return False
 
@@ -123,6 +125,14 @@ class _NFLBase(BaseModel):
 
     #: Schema version tag – concrete subclasses set this in SCHEMA_VERSIONS.
     schema_version: ClassVar[str] = "1.0.0"
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_pandas_nulls(cls, data: Any) -> Any:
+        """Treat pandas null sentinels as missing values for optional fields."""
+        if isinstance(data, dict):
+            return {key: (None if _is_na(value) else value) for key, value in data.items()}
+        return data
 
 
 # ===========================================================================
@@ -331,10 +341,10 @@ class NFLverseInjuryRecord(_NFLBase):
 
 
 class NFLversePlayerStatsRecord(_NFLBase):
-    """One player-season row from nfl_data_py.import_seasonal_data()."""
+    """One player stats row from nflverse player-stat feeds."""
 
     season: int
-    season_type: Optional[str] = None       # REG, POST
+    season_type: Optional[int] = None       # 1=preseason, 2=regular season, 3=postseason
     player_id: Optional[str] = None
     player_name: Optional[str] = None
     recent_team: Optional[str] = None
@@ -371,6 +381,36 @@ class NFLversePlayerStatsRecord(_NFLBase):
     @classmethod
     def check_season(cls, v: Any) -> int:
         return _validate_season(int(v))
+
+    @field_validator("season_type", mode="before")
+    @classmethod
+    def check_season_type(cls, v: Any) -> Optional[int]:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            value = v.strip().upper()
+            if value == "":
+                return None
+            mapping = {
+                "PRE": 1,
+                "PRESEASON": 1,
+                "REG": 2,
+                "REGULAR": 2,
+                "REGULAR_SEASON": 2,
+                "REGULAR SEASON": 2,
+                "POST": 3,
+                "POSTSEASON": 3,
+                "POST_SEASON": 3,
+            }
+            if value in mapping:
+                return mapping[value]
+        numeric = pd.to_numeric(v, errors="coerce")
+        if pd.isna(numeric):
+            raise ValueError(f"season_type={v!r} is not recognised")
+        val = int(numeric)
+        if float(numeric) != float(val) or val not in {1, 2, 3}:
+            raise ValueError(f"season_type={v!r} must be PRE/REG/POST or 1/2/3")
+        return val
 
     @field_validator("recent_team", mode="before")
     @classmethod

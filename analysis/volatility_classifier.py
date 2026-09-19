@@ -18,7 +18,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from datetime import datetime, timezone
 import joblib
@@ -50,6 +50,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from analysis.volatility_slices import build_dataset, _compute_error_columns
 from src.features.volatility import build_volatility_feature_matrix, VolatilityFeatureFrame
+from src.utils.week_filter import filter_before_week
 
 
 ANALYSIS_DIR = Path("analysis")
@@ -65,7 +66,15 @@ NEW_VOLATILITY_FEATURES = {
     "travel_timezone_product",
     "travel_short_rest_flag",
     "travel_rest_pressure",
+    "model_confidence_abs",
+    "model_uncertainty",
+    "model_logit_abs",
+    "pred_margin_abs",
+    "pred_margin_confidence",
+    "model_margin_disagreement",
 }
+MIN_PRED_POSITIVE_RATE = 0.02
+MAX_PRED_POSITIVE_RATE = 0.85
 
 
 def save_calibration_plot(probs: np.ndarray, targets: np.ndarray, threshold: float, path: Path) -> None:
@@ -104,27 +113,117 @@ def build_labels(
     use_logloss: bool,
     use_margin: bool,
 ) -> tuple[pd.Series, pd.Series]:
-    indoor = df.get("indoor_game", pd.Series(False, index=df.index)).fillna(False).astype(bool)
-    wind = pd.to_numeric(df.get("wind_mph"), errors="coerce").fillna(999.0)
-    wind_ok = wind < 10.0
-    qb_uncertain = df.get("qb_uncertain", pd.Series(False, index=df.index)).fillna(False).astype(bool)
-    qb_score = pd.to_numeric(df.get("qb_uncertainty_score"), errors="coerce").fillna(0.0)
-    qb_recent = pd.to_numeric(df.get("qb_uncertainty_recent"), errors="coerce").fillna(0.0)
-    qb_ok = (~qb_uncertain) & (qb_score <= 0.0) & (qb_recent <= 0.0)
-    home_rest = pd.to_numeric(df.get("home_rest"), errors="coerce").fillna(0.0)
-    away_rest = pd.to_numeric(df.get("away_rest"), errors="coerce").fillna(0.0)
-    rest_ok = (home_rest >= 7.0) & (away_rest >= 7.0)
-    short_rest = df.get("short_rest", pd.Series(False, index=df.index)).fillna(False).astype(bool)
-    back_to_back = df.get("back_to_back_travel", pd.Series(False, index=df.index)).fillna(False).astype(bool)
-    travel_flag = pd.to_numeric(df.get("travel_short_rest_flag"), errors="coerce").fillna(0.0)
-    travel_ok = (~short_rest) & (~back_to_back) & (travel_flag <= 0.0)
+    percentile = float(np.clip(percentile, 0.0, 1.0))
+    metric_ranks: list[pd.Series] = []
 
-    stable_mask = indoor & wind_ok & qb_ok & rest_ok & travel_ok
-    labels = (~stable_mask).astype(int)
-    return labels, stable_mask.astype(int)
-
-
-def train_classifier(
+    if use_margin and "abs_margin_error" in df.columns:
+        margin_error = pd.to_numeric(df["abs_margin_error"], errors="coerce")
+        if margin_error.notna().any():
+            metric_ranks.append(margin_error.rank(pct=True, method="average"))
+
+    if use_logloss and "log_loss_per_game" in df.columns:
+        logloss = pd.to_numeric(df["log_loss_per_game"], errors="coerce")
+        if logloss.notna().any():
+            metric_ranks.append(logloss.rank(pct=True, method="average"))
+
+    if not metric_ranks:
+        if "prob_error_sq" not in df.columns:
+            raise ValueError("No usable error columns available for volatility labels.")
+        prob_error = pd.to_numeric(df["prob_error_sq"], errors="coerce")
+        if not prob_error.notna().any():
+            raise ValueError("No finite error values available for volatility labels.")
+        metric_ranks.append(prob_error.rank(pct=True, method="average"))
+
+    error_score = pd.concat(metric_ranks, axis=1).mean(axis=1).fillna(0.0)
+    labels = (error_score >= percentile).astype(int)
+    stable_mask = (labels == 0).astype(int)
+    return labels, stable_mask
+
+
+def _candidate_thresholds(y_prob: np.ndarray, extras: tuple[float, ...] = ()) -> np.ndarray:
+    probs = np.asarray(y_prob, dtype=float)
+    probs = probs[np.isfinite(probs)]
+    if probs.size == 0:
+        return np.array([0.5], dtype=float)
+
+    quantile_thresholds = np.quantile(probs, np.linspace(0.02, 0.98, 49))
+    thresholds = np.concatenate([quantile_thresholds, np.asarray(extras or (0.5,), dtype=float)])
+    thresholds = thresholds[np.isfinite(thresholds)]
+    thresholds = np.clip(thresholds, 0.0, 1.0)
+    return np.unique(np.round(thresholds, 6))
+
+
+def _threshold_record(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    threshold: float,
+    auc_value: float,
+) -> dict[str, float]:
+    y_pred = (y_prob >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    specificity = tn / max(tn + fp, 1)
+    balanced_accuracy = 0.5 * (recall + specificity)
+    f1 = 2 * precision * recall / max(precision + recall, 1e-9)
+    return {
+        "threshold": float(threshold),
+        "precision": float(precision),
+        "recall": float(recall),
+        "specificity": float(specificity),
+        "balanced_accuracy": float(balanced_accuracy),
+        "f1": float(f1),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "auc": float(auc_value),
+        "pred_positive_rate": float(y_pred.mean()),
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
+    }
+
+
+def build_threshold_sweep(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    *,
+    decision_threshold: Optional[float] = None,
+) -> list[dict[str, float]]:
+    auc_value = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float("nan")
+    extras = (float(decision_threshold),) if decision_threshold is not None else (0.5,)
+    thresholds = _candidate_thresholds(y_prob, extras=extras)
+    return [_threshold_record(y_true, y_prob, float(threshold), auc_value) for threshold in thresholds]
+
+
+def select_threshold_from_sweep(
+    sweep_records: list[dict[str, float]],
+    *,
+    threshold_metric: str,
+    decision_threshold: Optional[float] = None,
+    min_pred_positive_rate: float = MIN_PRED_POSITIVE_RATE,
+    max_pred_positive_rate: float = MAX_PRED_POSITIVE_RATE,
+) -> dict[str, float]:
+    if not sweep_records:
+        raise ValueError("Cannot select threshold from an empty sweep.")
+    if decision_threshold is not None:
+        target = float(np.clip(decision_threshold, 0.0, 1.0))
+        return min(sweep_records, key=lambda r: abs(r["threshold"] - target))
+
+    candidates = [
+        r
+        for r in sweep_records
+        if min_pred_positive_rate <= r["pred_positive_rate"] <= max_pred_positive_rate
+    ]
+    if not candidates:
+        candidates = sweep_records
+
+    strategy = (threshold_metric or "balanced").lower()
+    if strategy == "f1":
+        return max(candidates, key=lambda r: (r["f1"], r["balanced_accuracy"], r["precision"], r["recall"]))
+    return max(candidates, key=lambda r: (r["balanced_accuracy"], r["f1"], r["precision"], r["recall"]))
+
+
+def train_classifier(
     X_train: np.ndarray,
     y_train: np.ndarray,
     model_name: str,
@@ -239,19 +338,36 @@ def evaluate_model(
             best_threshold = 0.5
         best_threshold = float(np.clip(best_threshold, 0.0, 1.0))
 
-    y_pred = (y_prob >= best_threshold).astype(int)
+    sweep_records = build_threshold_sweep(
+        y_test,
+        y_prob,
+        decision_threshold=decision_threshold,
+    )
+    selected = select_threshold_from_sweep(
+        sweep_records,
+        threshold_metric=threshold_metric,
+        decision_threshold=decision_threshold,
+    )
+    best_threshold = float(selected["threshold"])
+    y_pred = (y_prob >= best_threshold).astype(int)
 
     metrics = {
         "auc": roc_auc_score(y_test, y_prob) if len(np.unique(y_test)) > 1 else float("nan"),
         "average_precision": average_precision_score(y_test, y_prob),
         "accuracy": accuracy_score(y_test, y_pred),
         "precision": precision_score(y_test, y_pred, zero_division=0),
-        "recall": recall_score(y_test, y_pred, zero_division=0),
+        "recall": recall_score(y_test, y_pred, zero_division=0),
+
+        "specificity": selected["specificity"],
+
+        "balanced_accuracy": selected["balanced_accuracy"],
+
+        "f1": selected["f1"],
         "positive_rate": float(y_test.mean()),
         "pred_positive_rate": float(y_pred.mean()),
         "threshold": best_threshold,
     }
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
     metrics.update({"tp": int(tp), "fp": int(fp), "tn": int(tn), "fn": int(fn)})
     return metrics, y_prob, y_pred, best_threshold
 
@@ -286,7 +402,15 @@ def main(args: argparse.Namespace) -> None:
     if args.start_season is not None:
         df = df[df["season"] >= args.start_season]
     if args.end_season is not None:
-        df = df[df["season"] <= args.end_season]
+        df = df[df["season"] <= args.end_season]
+
+    before_cutoff = len(df)
+    df = filter_before_week(df, args.exclude_from_season, args.exclude_from_week)
+    if args.exclude_from_season is not None and args.exclude_from_week is not None and len(df) != before_cutoff:
+        print(
+            f"[volatility] excluded {before_cutoff - len(df)} rows at/after "
+            f"{args.exclude_from_season} Week {args.exclude_from_week}"
+        )
     if df.empty:
         raise ValueError("No games remaining after applying filters.")
 
@@ -341,52 +465,48 @@ def main(args: argparse.Namespace) -> None:
         for row in highlighted.itertuples(index=False):
             print(f"  {row.feature}: importance={row.importance:.4f}")
 
-    sweep_thresholds = np.round(np.arange(0.50, 0.91, 0.05), 2)
-    sweep_records: list[dict[str, float]] = []
-    auc_value = metrics.get("auc", float("nan"))
-    print("[volatility] threshold sweep (0.50 -> 0.90):")
-    for thr in sweep_thresholds:
-        preds_thr = (y_prob_test >= thr).astype(int)
-        prec = precision_score(y_test, preds_thr, zero_division=0)
-        rec = recall_score(y_test, preds_thr, zero_division=0)
-        acc = accuracy_score(y_test, preds_thr)
-        pred_rate = float(preds_thr.mean())
-        record = {
-            "threshold": float(thr),
-            "precision": float(prec),
-            "recall": float(rec),
-            "accuracy": float(acc),
-            "auc": float(auc_value),
-            "pred_positive_rate": pred_rate,
-        }
-        sweep_records.append(record)
-        print(
-            f"  thr={thr:.2f} precision={prec:.3f} recall={rec:.3f} "
-            f"accuracy={acc:.3f} auc={auc_value:.3f} pred%={pred_rate:.3f}"
-        )
-
-    candidates = [r for r in sweep_records if r["precision"] >= 0.7]
-    if candidates:
-        chosen = min(candidates, key=lambda r: abs(r["recall"] - 0.8))
-    else:
-        chosen = max(sweep_records, key=lambda r: (r["precision"], r["recall"]))
+    sweep_records = build_threshold_sweep(
+        y_test,
+        y_prob_test,
+        decision_threshold=args.decision_threshold,
+    )
+    chosen = select_threshold_from_sweep(
+        sweep_records,
+        threshold_metric=args.threshold_metric,
+        decision_threshold=args.decision_threshold,
+    )
     selected_threshold = float(np.clip(chosen["threshold"], 0.0, 1.0))
     final_pred = (y_prob_test >= selected_threshold).astype(int)
-    tn, fp, fn, tp = confusion_matrix(y_test, final_pred).ravel()
+    tn, fp, fn, tp = confusion_matrix(y_test, final_pred, labels=[0, 1]).ravel()
     final_metrics = {
-        "auc": float(auc_value),
+        "auc": float(chosen["auc"]),
         "average_precision": average_precision_score(y_test, y_prob_test),
-        "accuracy": float(accuracy_score(y_test, final_pred)),
-        "precision": float(precision_score(y_test, final_pred, zero_division=0)),
-        "recall": float(recall_score(y_test, final_pred, zero_division=0)),
+        "accuracy": float(chosen["accuracy"]),
+        "precision": float(chosen["precision"]),
+        "recall": float(chosen["recall"]),
+        "specificity": float(chosen["specificity"]),
+        "balanced_accuracy": float(chosen["balanced_accuracy"]),
+        "f1": float(chosen["f1"]),
         "positive_rate": float(y_test.mean()),
-        "pred_positive_rate": float(final_pred.mean()),
+        "pred_positive_rate": float(chosen["pred_positive_rate"]),
         "threshold": selected_threshold,
         "tp": int(tp),
         "fp": int(fp),
         "tn": int(tn),
         "fn": int(fn),
     }
+    print("[volatility] top threshold candidates:")
+    ranked_sweep = sorted(
+        sweep_records,
+        key=lambda r: (r.get("balanced_accuracy", 0.0), r.get("f1", 0.0)),
+        reverse=True,
+    )
+    for record in ranked_sweep[:8]:
+        print(
+            f"  thr={record['threshold']:.3f} precision={record['precision']:.3f} "
+            f"recall={record['recall']:.3f} bal_acc={record['balanced_accuracy']:.3f} "
+            f"auc={record['auc']:.3f} pred%={record['pred_positive_rate']:.3f}"
+        )
     print("[volatility] recommended threshold "
           f"{selected_threshold:.2f} -> precision={final_metrics['precision']:.3f} "
           f"recall={final_metrics['recall']:.3f} accuracy={final_metrics['accuracy']:.3f}")
@@ -413,7 +533,9 @@ def main(args: argparse.Namespace) -> None:
         "settings": {
             "percentile": args.percentile,
             "start_season": args.start_season,
-            "end_season": args.end_season,
+            "end_season": args.end_season,
+            "exclude_from_season": args.exclude_from_season,
+            "exclude_from_week": args.exclude_from_week,
             "train_end_season": args.train_end_season,
             "test_start_season": args.test_start_season,
             "disable_season_split": args.disable_season_split,
@@ -478,7 +600,9 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a classifier to flag high-error (volatile) games.")
     parser.add_argument("--start-season", type=int, default=2016, help="Lower bound season for dataset.")
-    parser.add_argument("--end-season", type=int, default=None, help="Upper bound season for dataset.")
+    parser.add_argument("--end-season", type=int, default=None, help="Upper bound season for dataset.")
+    parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from volatility training.")
+    parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from volatility training.")
     parser.add_argument(
         "--train-end-season",
         type=int,
@@ -545,4 +669,9 @@ if __name__ == "__main__":
     else:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
+
     main(args)

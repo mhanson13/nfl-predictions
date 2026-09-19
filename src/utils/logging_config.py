@@ -10,6 +10,7 @@ This module provides consistent logging setup across all modules with:
 """
 
 import logging
+import re
 import sys
 import time
 from contextlib import contextmanager
@@ -24,8 +25,32 @@ from src.config import get_config
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+SENSITIVE_QUERY_RE = re.compile(
+    r"(?i)([?&](?:key|api_key|apikey|token|access_token|refresh_token|client_secret)=)([^&\s]+)"
+)
 
-class ColoredFormatter(logging.Formatter):
+
+def redact_secrets(text: str) -> str:
+    """Mask common query-string credentials before log output."""
+    return SENSITIVE_QUERY_RE.sub(r"\1***REDACTED***", text)
+
+
+class RedactingFormatter(logging.Formatter):
+    """Formatter that redacts secret-looking query params."""
+
+    def format(self, record):
+        original_msg = record.msg
+        original_args = record.args
+        try:
+            record.msg = redact_secrets(record.getMessage())
+            record.args = ()
+            return super().format(record)
+        finally:
+            record.msg = original_msg
+            record.args = original_args
+
+
+class ColoredFormatter(RedactingFormatter):
     """Formatter that adds colors to console output."""
     
     # ANSI color codes
@@ -90,7 +115,7 @@ def setup_logging(
         if colored and sys.stdout.isatty():
             formatter = ColoredFormatter(LOG_FORMAT, DATE_FORMAT)
         else:
-            formatter = logging.Formatter(LOG_FORMAT, DATE_FORMAT)
+            formatter = RedactingFormatter(LOG_FORMAT, DATE_FORMAT)
         
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
@@ -102,7 +127,7 @@ def setup_logging(
         
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(getattr(logging, level.upper()))
-        file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+        file_handler.setFormatter(RedactingFormatter(LOG_FORMAT, DATE_FORMAT))
         logger.addHandler(file_handler)
     
     # Prevent propagation to root logger

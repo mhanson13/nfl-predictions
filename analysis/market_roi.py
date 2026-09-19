@@ -23,6 +23,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+from src.utils.week_filter import filter_before_week
+
 
 ANALYSIS_DIR = Path("analysis")
 ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
@@ -60,7 +62,12 @@ def standard_normal_cdf(value: pd.Series | np.ndarray | float) -> np.ndarray:
     return 0.5 * (1.0 + erf_vec(arr / scale))
 
 
-def load_predictions(start_season: int | None, end_season: int | None) -> pd.DataFrame:
+def load_predictions(
+    start_season: int | None,
+    end_season: int | None,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
+) -> pd.DataFrame:
     if not MERGED_PREDICTIONS_PATH.exists():
         raise FileNotFoundError(
             f"{MERGED_PREDICTIONS_PATH} not found. Run evaluation before market ROI analysis."
@@ -70,6 +77,7 @@ def load_predictions(start_season: int | None, end_season: int | None) -> pd.Dat
         df = df[df["season"] >= start_season]
     if end_season is not None:
         df = df[df["season"] <= end_season]
+    df = filter_before_week(df, exclude_from_season, exclude_from_week)
     df = df.dropna(subset=["home_win_prob", "pred_home_margin", "home_margin"])
     df["home_margin"] = df["home_margin"].astype(float)
     return df
@@ -325,7 +333,12 @@ def summarize_spread(
 
 
 def run(args: argparse.Namespace) -> None:
-    predictions = load_predictions(args.start_season, args.end_season)
+    predictions = load_predictions(
+        args.start_season,
+        args.end_season,
+        args.exclude_from_season,
+        args.exclude_from_week,
+    )
     if args.debug:
         print(
             f"[market_roi] Loaded {len(predictions)} evaluated games "
@@ -354,6 +367,8 @@ def run(args: argparse.Namespace) -> None:
         "settings": {
             "start_season": args.start_season,
             "end_season": args.end_season,
+            "exclude_from_season": args.exclude_from_season,
+            "exclude_from_week": args.exclude_from_week,
             "moneyline_thresholds": list(map(float, args.moneyline_thresholds)),
             "spread_thresholds": list(map(float, args.spread_thresholds)),
             "margin_error_sigma": float(sigma),
@@ -421,6 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate market ROI for model predictions.")
     parser.add_argument("--start-season", type=int, default=2016, help="Lower bound season for analysis (inclusive).")
     parser.add_argument("--end-season", type=int, default=None, help="Upper bound season for analysis (inclusive).")
+    parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from ROI analysis.")
+    parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from ROI analysis.")
     parser.add_argument("--debug", action="store_true", help="Enable verbose logging.")
     parser.add_argument(
         "--moneyline-thresholds",

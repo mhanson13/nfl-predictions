@@ -585,7 +585,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
-        logging.getLogger("urllib3").setLevel(logging.DEBUG)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
     else:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 

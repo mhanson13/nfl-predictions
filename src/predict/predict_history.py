@@ -27,7 +27,7 @@ import pandas as pd
 from dateutil import tz
 
 from src.utils.io import PROC_DIR, MODELS_DIR
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.predict.utils import apply_probability_caps, moneyline_to_prob
 from src.predict.volatility import (
     apply_shrinkage as apply_volatility_shrinkage,
@@ -164,7 +164,7 @@ def _format_mountain_time(series: pd.Series) -> pd.Series:
 def main() -> None:
     """Entry point for generating historical predictions over completed games."""
     args = parse_args()
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
     logger = logging.getLogger("predict_history")
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 

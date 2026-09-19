@@ -316,6 +316,15 @@ class TestNFLversePlayerStatsRecord:
         assert rec.completions == 378
         assert rec.recent_team == "KC"
 
+    def test_season_type_accepts_release_text_and_normalized_numeric(self):
+        assert NFLversePlayerStatsRecord.model_validate({**self.BASE, "season_type": "REG"}).season_type == 2
+        assert NFLversePlayerStatsRecord.model_validate({**self.BASE, "season_type": 2.0}).season_type == 2
+        assert NFLversePlayerStatsRecord.model_validate({**self.BASE, "season_type": "POST"}).season_type == 3
+
+    def test_invalid_season_type_rejected(self):
+        data = {**self.BASE, "season_type": "UNKNOWN"}
+        _raises_validation(NFLversePlayerStatsRecord, data)
+
     def test_completions_exceeding_attempts_rejected(self):
         data = {**self.BASE, "completions": 400, "attempts": 300}
         _raises_validation(NFLversePlayerStatsRecord, data)
@@ -917,7 +926,7 @@ class TestNFLAbbreviations:
             assert abbr in _NFL_ABBRS, f"{abbr} not in _NFL_ABBRS"
 
     def test_historical_aliases_included(self):
-        for abbr in ("OAK", "SD", "STL", "JAC"):
+        for abbr in ("OAK", "SD", "STL", "JAC", "ARZ", "BLT", "CLV", "HST", "LA", "SL"):
             assert abbr in _NFL_ABBRS
 
     def test_invalid_abbrs_not_included(self):
@@ -1148,6 +1157,44 @@ class TestValidateDataframe:
         df = pd.DataFrame([{"x": 1}])
         with pytest.raises(KeyError):
             validate_dataframe(df, "no_such_schema")
+
+    def test_schedule_optional_pandas_nulls_do_not_fail_rows(self):
+        df = pd.DataFrame([
+            {
+                "game_id": "2026_02_KC_BUF",
+                "season": 2026,
+                "week": 2,
+                "home_team": "KC",
+                "away_team": "BUF",
+                "overtime": float("nan"),
+                "home_moneyline": pd.NA,
+                "away_moneyline": pd.NA,
+                "roof": pd.NA,
+            },
+        ])
+
+        report = validate_dataframe(df, "nflverse_schedule")
+
+        assert report.valid_rows == 1
+        assert report.field_error_counts == {}
+
+    def test_roster_optional_pandas_nulls_do_not_fail_rows(self):
+        df = pd.DataFrame([
+            {
+                "season": 2026,
+                "team": "KC",
+                "sportradar_id": pd.NA,
+                "pfr_id": pd.NA,
+                "college": pd.NA,
+                "birth_date": pd.NaT,
+                "height": float("nan"),
+            },
+        ])
+
+        report = validate_dataframe(df, "nflverse_roster")
+
+        assert report.valid_rows == 1
+        assert report.field_error_counts == {}
 
     def test_player_actuals_schema(self):
         df = pd.DataFrame([

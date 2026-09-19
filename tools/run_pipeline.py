@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import concurrent.futures
+import importlib.util
 import os
 import subprocess
 import sys
@@ -48,6 +49,21 @@ PREDICT_OUTPUTS = [
 #   1. Concurrent data ingestion (NFLverse/ESPN/weather/etc.)
 #   2. Sequential transforms: reference refresh, features, training, predictions, calibration, evaluation.
 #   3. Post-run analysis: run comparisons, GPU SHAP explainability, README metric refresh.
+
+
+def verify_runtime_dependencies() -> None:
+    """Fail fast when the pipeline interpreter cannot run required data jobs."""
+    missing: list[str] = []
+    if importlib.util.find_spec("nfl_data_py") is None:
+        missing.append("nfl-data-py")
+
+    if missing:
+        raise RuntimeError(
+            "Missing required pipeline dependencies for "
+            f"{PYTHON_EXECUTABLE}: {', '.join(missing)}. "
+            "Install into this environment with `python -m pip install nfl-data-py` "
+            "or launch the pipeline with an interpreter that already has it."
+        )
 
 
 @dataclass(frozen=True)
@@ -96,6 +112,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--skip-sportsdataio",
         action="store_true",
         help="Skip SportsDataIO data fetch even if an API key is configured.",
+    )
+    parser.add_argument(
+        "--enable-sportsdataio",
+        action="store_true",
+        help="Run SportsDataIO even when BallDontLie is configured; otherwise BallDontLie takes precedence.",
+    )
+    parser.add_argument(
+        "--skip-balldontlie",
+        action="store_true",
+        help="Skip BallDontLie data fetch even if an API key is configured.",
     )
     parser.add_argument(
         "--skip-visualcrossing",
@@ -184,8 +210,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--volatility-threshold",
         type=float,
-        default=0.55,
-        help="Volatility probability threshold triggering win-prob shrinkage.",
+        default=None,
+        help="Override volatility probability threshold; default uses the classifier's learned threshold.",
     )
     parser.add_argument(
         "--volatility-strength",
@@ -205,10 +231,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Number of most recent seasons to use when fitting win probability calibration.",
     )
     parser.add_argument(
+        "--prediction-week",
+        type=str,
+        default="auto",
+        help="Week passed to predict_upcoming; use 'auto' or an explicit week number such as 1.",
+    )
+    parser.add_argument(
+        "--live-run",
+        action="store_true",
+        help="Exclude the prediction season/week and later rows from training, calibration, evaluation, and ROI.",
+    )
+    parser.add_argument(
         "--sportsdataio-feeds",
         nargs="+",
         default=None,
         help="Override SportsDataIO feeds (default: teams stadiums schedules standings projections dfs_slates betting_futures draft_picks free_agents).",
+    )
+    parser.add_argument(
+        "--balldontlie-feeds",
+        nargs="+",
+        default=None,
+        help="Override BallDontLie feeds (default: teams players active_players games standings injuries stats season_stats team_stats team_season_stats).",
     )
     parser.add_argument(
         "--yahoo-feeds",
@@ -247,33 +290,54 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def build_years(start_year: int) -> list[int]:
     """Return list of seasons from `start_year` through the current year inclusive."""
-    current_year = datetime.now().year
-    if start_year > current_year:
-        raise ValueError(f"start_year {start_year} exceeds current year {current_year}")
-    return list(range(start_year, current_year + 1))
-
-
+    current_year = datetime.now().year
+
+    if start_year > current_year:
+
+        raise ValueError(f"start_year {start_year} exceeds current year {current_year}")
+
+    return list(range(start_year, current_year + 1))
+
+
+
+
+
 def ensure_predictions_dir(pred_dir: Path) -> None:
     """Make sure prediction output directory exists and current artifacts are removed."""
     pred_dir.mkdir(parents=True, exist_ok=True)
     for file_path in Path(".").glob("predictions*.csv*"):
         if pred_dir.resolve() in file_path.resolve().parents:
             continue
-        if not file_path.is_file():
-            continue
-        move_target = pred_dir / file_path.name
-        if not move_target.exists():
-            file_path.rename(move_target)
-            continue
-        counter = 1
-        while True:
-            candidate = pred_dir / f"{file_path.stem}.migration_{counter}{file_path.suffix}"
-            if not candidate.exists():
-                file_path.rename(candidate)
-                break
-            counter += 1
-
-
+        if not file_path.is_file():
+
+            continue
+
+        move_target = pred_dir / file_path.name
+
+        if not move_target.exists():
+
+            file_path.rename(move_target)
+
+            continue
+
+        counter = 1
+
+        while True:
+
+            candidate = pred_dir / f"{file_path.stem}.migration_{counter}{file_path.suffix}"
+
+            if not candidate.exists():
+
+                file_path.rename(candidate)
+
+                break
+
+            counter += 1
+
+
+
+
+
 def format_command(cmd: Sequence[str]) -> str:
     """Render a subprocess command into a readable string for logging."""
     return " ".join(f'"{c}"' if " " in c else c for c in cmd)
@@ -300,15 +364,22 @@ def run_job(job: Job, env: dict[str, str] | None = None, dry_run: bool = False) 
             )
             return
         raise RuntimeError(f"Job {job.name} failed with exit code {result.returncode}")
-    print(f"[pipeline] Completed {job.name}")
-
-
+    print(f"[pipeline] Completed {job.name}")
+
+
+
+
+
 def run_jobs_sequential(jobs: Iterable[Job], env: dict[str, str] | None, dry_run: bool) -> None:
     """Run a list of jobs one after another, failing fast when a stage errors."""
-    for job in jobs:
-        run_job(job, env=env, dry_run=dry_run)
-
-
+    for job in jobs:
+
+        run_job(job, env=env, dry_run=dry_run)
+
+
+
+
+
 def run_jobs_parallel(
     jobs: Sequence[Job],
     max_workers: int,
@@ -406,82 +477,188 @@ async def _async_run_jobs_parallel(
     if errors:
         # Re-raise first non-optional failure
         raise errors[0]
-
-
+
+
+
+
 def build_data_jobs(
     years: list[int],
     current_year: int,
-    debug_flag: list[str],
-    *,
-    include_sportsdataio: bool,
-    sportsdataio_feeds: list[str] | None,
+    debug_flag: list[str],
+
+    *,
+
+    include_balldontlie: bool,
+
+    balldontlie_feeds: list[str] | None,
+
+    include_sportsdataio: bool,
+
+    sportsdataio_feeds: list[str] | None,
+
     include_yahoo: bool,
     yahoo_feeds: list[str] | None,
     yahoo_season: int | None,
+    prediction_week: str = "auto",
 ) -> list[Job]:
     """Construct the list of ingestion jobs (NFLverse/ESPN/etc.) for the requested seasons."""
-    season_args = [str(y) for y in years]
-    debug = debug_flag.copy()
-    jobs: list[Job] = []
-
-    jobs.append(
-        Job(
-            "nflverse",
-            ["python", "-m", "src.data.nflverse", "--season", *season_args, "--pbp", "--schedules", "--rosters", "--injuries", "--snaps", "--depthcharts", "--players", "--pfr", "passing", "rushing", "receiving", *debug],
-        )
-    )
-    jobs.append(
-        Job(
-            "nflcom",
-            ["python", "-m", "src.data.nflcom", "--year", *season_args, "--category", "passing", "rushing", "receiving", "scoring", "downs", *debug],
-        )
-    )
-    jobs.append(
-        Job(
-            "espn_players",
-            ["python", "-m", "src.data.espn_players", "--season", *season_args, "--season_type", "2", "--category", "passing", "rushing", "receiving", *debug],
-        )
-    )
-    jobs.append(
-        Job(
-            "espn_player_news",
-            ["python", "-m", "src.data.espn_player_news", "--season", str(current_year), "--limit", "4", *debug],
-        )
-    )
-    jobs.append(
-        Job(
-            "espn_team_news",
-            ["python", "-m", "src.data.espn_team_news", "--season", str(current_year), "--limit", "50", *debug],
-        )
-    )
-    jobs.append(
-        Job(
-            "noaa_weather",
-            ["python", "-m", "src.data.noaa", "--seasons", *season_args, *debug],
-        )
-    )
-    if include_sportsdataio:
-        sportsdataio_cmd = [
-            "python",
-            "-m",
-            "src.data.sportsdataio",
-            "--seasons",
-            str(current_year),
-            *debug,
-        ]
-        if sportsdataio_feeds:
-            sportsdataio_cmd.extend(["--feeds", *sportsdataio_feeds])
-        jobs.append(Job("sportsdataio", sportsdataio_cmd))
-    if include_yahoo:
-        yahoo_cmd = ["python", "-m", "src.data.yahoo", *debug]
-        if yahoo_feeds:
-            yahoo_cmd.extend(["--feeds", *yahoo_feeds])
-        if yahoo_season is not None:
-            yahoo_cmd.extend(["--season", str(yahoo_season)])
-        jobs.append(Job("yahoo_static", yahoo_cmd))
-    return jobs
-
-
+    season_args = [str(y) for y in years]
+
+    debug = debug_flag.copy()
+    jobs: list[Job] = []
+
+
+
+    jobs.append(
+
+        Job(
+
+            "nflverse",
+
+            ["python", "-m", "src.data.nflverse", "--season", *season_args, "--pbp", "--schedules", "--rosters", "--injuries", "--snaps", "--depthcharts", "--players", "--pfr", "passing", "rushing", "receiving", *debug],
+
+        )
+
+    )
+
+    jobs.append(
+
+        Job(
+
+            "nflcom",
+
+            ["python", "-m", "src.data.nflcom", "--year", *season_args, "--category", "passing", "rushing", "receiving", "scoring", "downs", *debug],
+
+        )
+
+    )
+
+    jobs.append(
+
+        Job(
+
+            "espn_players",
+
+            ["python", "-m", "src.data.espn_players", "--season", *season_args, "--season_type", "2", "--category", "passing", "rushing", "receiving", *debug],
+
+        )
+
+    )
+
+    jobs.append(
+
+        Job(
+
+            "espn_player_news",
+
+            ["python", "-m", "src.data.espn_player_news", "--season", str(current_year), "--limit", "4", *debug],
+
+        )
+
+    )
+
+    jobs.append(
+
+        Job(
+
+            "espn_team_news",
+
+            ["python", "-m", "src.data.espn_team_news", "--season", str(current_year), "--limit", "50", *debug],
+
+        )
+
+    )
+
+    jobs.append(
+
+        Job(
+
+            "noaa_weather",
+
+            ["python", "-m", "src.data.noaa", "--seasons", *season_args, *debug],
+
+        )
+
+    )
+
+    if include_balldontlie:
+
+        balldontlie_cmd = [
+
+            "python",
+
+            "-m",
+
+            "src.data.balldontlie",
+
+            "--seasons",
+
+            str(current_year),
+
+            *debug,
+
+        ]
+
+        if prediction_week and str(prediction_week).lower() != "auto":
+
+            try:
+
+                balldontlie_cmd.extend(["--weeks", str(int(prediction_week))])
+
+            except ValueError:
+
+                pass
+
+        if balldontlie_feeds:
+
+            balldontlie_cmd.extend(["--feeds", *balldontlie_feeds])
+
+        jobs.append(Job("balldontlie", balldontlie_cmd))
+
+    if include_sportsdataio:
+
+        sportsdataio_cmd = [
+
+            "python",
+
+            "-m",
+
+            "src.data.sportsdataio",
+
+            "--seasons",
+
+            str(current_year),
+
+            *debug,
+
+        ]
+
+        if sportsdataio_feeds:
+
+            sportsdataio_cmd.extend(["--feeds", *sportsdataio_feeds])
+
+        jobs.append(Job("sportsdataio", sportsdataio_cmd))
+
+    if include_yahoo:
+
+        yahoo_cmd = ["python", "-m", "src.data.yahoo", *debug]
+
+        if yahoo_feeds:
+
+            yahoo_cmd.extend(["--feeds", *yahoo_feeds])
+
+        if yahoo_season is not None:
+
+            yahoo_cmd.extend(["--season", str(yahoo_season)])
+
+        jobs.append(Job("yahoo_static", yahoo_cmd))
+
+    return jobs
+
+
+
+
+
 def build_sequential_jobs(
     years: list[int],
     current_year: int,
@@ -501,10 +678,21 @@ def build_sequential_jobs(
     skip_market_roi: bool,
     volatility_options: dict[str, object] | None = None,
     cv_folds: int = 3,
+    prediction_week: str = "auto",
+    live_exclude: tuple[int, int] | None = None,
 ) -> list[Job]:
     """Build the ordered list of feature/model/evaluation jobs that must run serially."""
-    season_args = [str(y) for y in years]
-    debug = debug_flag.copy()
+    season_args = [str(y) for y in years]
+
+    debug = debug_flag.copy()
+    live_exclude_args: list[str] = []
+    if live_exclude is not None:
+        live_exclude_args = [
+            "--exclude-from-season",
+            str(live_exclude[0]),
+            "--exclude-from-week",
+            str(live_exclude[1]),
+        ]
     jobs: list[Job] = []
     vol_cfg = volatility_options or {}
     volatility_dataset_path = Path(vol_cfg.get("dataset_path", Path("analysis/volatility_classifier_dataset.csv")))
@@ -512,11 +700,16 @@ def build_sequential_jobs(
 
     jobs.append(Job("nfl_reference_refresh", ["python", "-m", "src.data.reference.update_regular_season", *debug]))
     winprob_config_path = tuning_dir / "winprob_best.json"
-    spread_config_path = tuning_dir / "spread_best.json"
-    apply_winprob_config = enable_tuning or winprob_config_path.exists()
-    apply_spread_config = enable_tuning or spread_config_path.exists()
-
-    jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
+    spread_config_path = tuning_dir / "spread_best.json"
+
+    apply_winprob_config = enable_tuning or winprob_config_path.exists()
+
+    apply_spread_config = enable_tuning or spread_config_path.exists()
+
+
+
+    jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
+
     if include_visualcrossing:
         jobs.append(
             Job(
@@ -531,71 +724,130 @@ def build_sequential_jobs(
         )
     )
     jobs.append(Job("build_features", ["python", "-m", "src.features.build_features", "--season", *season_args, *debug]))
-
-    if enable_tuning:
-        tune_storage = tuning_options.get("storage_uri")
-        tune_prefix = tuning_options.get("study_prefix", "pipeline")
-        load_existing = tuning_options.get("load_if_exists", True)
-        tune_win_cmd = [
-            "python",
-            "-m",
-            "src.models.tune",
-            "--target",
-            "win_prob",
-            "--metric",
-            "logloss",
-            "--trials",
-            str(tuning_options.get("trials_winprob", 60)),
-            "--save-best",
-            str(winprob_config_path),
-            *debug,
-        ]
-        if train_start_year is not None:
-            tune_win_cmd.extend(["--train-start-year", str(train_start_year)])
-        if use_gpu:
-            tune_win_cmd.append("--use-gpu")
-        if tune_storage:
-            tune_win_cmd.extend(["--storage", tune_storage])
-        if tune_prefix:
-            tune_win_cmd.extend(["--study-name", f"{tune_prefix}_win_prob"])
-        if load_existing:
-            tune_win_cmd.append("--load-if-exists")
-        timeout_win = tuning_options.get("timeout_winprob")
+
+
+    if enable_tuning:
+
+        tune_storage = tuning_options.get("storage_uri")
+
+        tune_prefix = tuning_options.get("study_prefix", "pipeline")
+
+        load_existing = tuning_options.get("load_if_exists", True)
+
+        tune_win_cmd = [
+
+            "python",
+
+            "-m",
+
+            "src.models.tune",
+
+            "--target",
+
+            "win_prob",
+
+            "--metric",
+
+            "logloss",
+
+            "--trials",
+
+            str(tuning_options.get("trials_winprob", 60)),
+
+            "--save-best",
+
+            str(winprob_config_path),
+
+            *debug,
+
+        ]
+
+        if train_start_year is not None:
+
+            tune_win_cmd.extend(["--train-start-year", str(train_start_year)])
+
+        if use_gpu:
+
+            tune_win_cmd.append("--use-gpu")
+
+        if tune_storage:
+
+            tune_win_cmd.extend(["--storage", tune_storage])
+
+        if tune_prefix:
+
+            tune_win_cmd.extend(["--study-name", f"{tune_prefix}_win_prob"])
+
+        if load_existing:
+
+            tune_win_cmd.append("--load-if-exists")
+
+        timeout_win = tuning_options.get("timeout_winprob")
+
         if timeout_win is not None:
             tune_win_cmd.extend(["--timeout", str(timeout_win)])
         tune_win_cmd.extend(["--cv-folds", str(cv_folds)])
+        tune_win_cmd.extend(live_exclude_args)
         jobs.append(Job("tune_win_prob", tune_win_cmd))
-
-        tune_spread_cmd = [
-            "python",
-            "-m",
-            "src.models.tune",
-            "--target",
-            "spread",
-            "--metric",
-            "mae",
-            "--trials",
-            str(tuning_options.get("trials_spread", 60)),
-            "--save-best",
-            str(spread_config_path),
-            *debug,
-        ]
-        if train_start_year is not None:
-            tune_spread_cmd.extend(["--train-start-year", str(train_start_year)])
-        if use_gpu:
-            tune_spread_cmd.append("--use-gpu")
-        if tune_storage:
-            tune_spread_cmd.extend(["--storage", tune_storage])
-        if tune_prefix:
-            tune_spread_cmd.extend(["--study-name", f"{tune_prefix}_spread"])
-        if load_existing:
-            tune_spread_cmd.append("--load-if-exists")
-        timeout_spread = tuning_options.get("timeout_spread")
+
+
+        tune_spread_cmd = [
+
+            "python",
+
+            "-m",
+
+            "src.models.tune",
+
+            "--target",
+
+            "spread",
+
+            "--metric",
+
+            "mae",
+
+            "--trials",
+
+            str(tuning_options.get("trials_spread", 60)),
+
+            "--save-best",
+
+            str(spread_config_path),
+
+            *debug,
+
+        ]
+
+        if train_start_year is not None:
+
+            tune_spread_cmd.extend(["--train-start-year", str(train_start_year)])
+
+        if use_gpu:
+
+            tune_spread_cmd.append("--use-gpu")
+
+        if tune_storage:
+
+            tune_spread_cmd.extend(["--storage", tune_storage])
+
+        if tune_prefix:
+
+            tune_spread_cmd.extend(["--study-name", f"{tune_prefix}_spread"])
+
+        if load_existing:
+
+            tune_spread_cmd.append("--load-if-exists")
+
+        timeout_spread = tuning_options.get("timeout_spread")
+
         if timeout_spread is not None:
             tune_spread_cmd.extend(["--timeout", str(timeout_spread)])
         tune_spread_cmd.extend(["--cv-folds", str(cv_folds)])
+        tune_spread_cmd.extend(live_exclude_args)
         jobs.append(Job("tune_spread", tune_spread_cmd))
-
+
+
     train_win_cmd = ["python", "-m", "src.models.train", "--target", "win_prob", *debug]
     if train_start_year is not None:
         train_win_cmd.extend(["--train-start-year", str(train_start_year)])
@@ -608,6 +860,7 @@ def build_sequential_jobs(
     if apply_winprob_config:
         train_win_cmd.extend(["--param-config", str(winprob_config_path)])
     train_win_cmd.extend(["--cv-folds", str(cv_folds)])
+    train_win_cmd.extend(live_exclude_args)
     jobs.append(Job("train_win_prob", train_win_cmd))
 
     train_spread_cmd = ["python", "-m", "src.models.train", "--target", "spread", "--calibrate", *debug]
@@ -618,123 +871,250 @@ def build_sequential_jobs(
     if apply_spread_config:
         train_spread_cmd.extend(["--param-config", str(spread_config_path)])
     train_spread_cmd.extend(["--cv-folds", str(cv_folds)])
+    train_spread_cmd.extend(live_exclude_args)
     jobs.append(Job("train_spread", train_spread_cmd))
-
-    pred_save = str(pred_dir / "predictions.csv")
-    pred_full = str(pred_dir / "predictions_full.csv")
-    qb_path = str(pred_dir / "predictions_players_qb.csv")
-    off_path = str(pred_dir / "predictions_players_offense.csv")
-    def_path = str(pred_dir / "predictions_players_defense.csv")
-
-    jobs.append(
-        Job(
-            "predict_upcoming",
-            [
-                "python",
-                "-m",
-                "src.predict.predict_upcoming",
-                "--season",
-                str(current_year),
-                "--week",
-                "auto",
-                "--save",
-                pred_save,
-                "--dump-all",
-                pred_full,
-                "--save-players-qb",
-                qb_path,
-                "--save-players-offense",
-                off_path,
-                "--save-players-defense",
-                def_path,
-                *debug,
-            ],
-        )
-    )
-    history_args = [
-        "python",
-        "-m",
-        "src.predict.predict_history",
-        "--seasons",
-        *season_args,
-        "--output-dir",
-        str(Path("predictions/history")),
-        "--overwrite",
-        *debug,
-    ]
-    jobs.append(Job("predict_history", history_args))
-
-    if not skip_volatility:
-        volatility_dataset_path.parent.mkdir(parents=True, exist_ok=True)
-        volatility_cmd = [
-            "python",
-            "-m",
-            "analysis.volatility_classifier",
-            "--model",
-            str(vol_cfg.get("model", "logreg")),
-            "--percentile",
-            str(vol_cfg.get("percentile", 0.6)),
-            "--random-state",
-            str(vol_cfg.get("random_state", 42)),
-            "--disable-season-split",
-            "--calibrate",
-            *debug,
-        ]
-        jobs.append(Job("volatility_classifier", volatility_cmd))
-
-    calibrate_args = [
-        "python",
-        "-m",
-        "src.evaluation.calibrate_winprob",
-        "--history-dir",
-        str(Path("predictions/history")),
-        "--season-window",
-        str(calibration_season_window),
-        *debug,
-    ]
-    if not skip_volatility:
-        calibrate_args.extend(
-            [
-                "--volatility-dataset",
-                str(volatility_dataset_path),
-                "--volatility-threshold",
-                str(vol_cfg.get("threshold", 0.55)),
-                "--volatility-strength",
-                str(vol_cfg.get("strength", 0.35)),
-            ]
-        )
-    else:
-        calibrate_args.append("--disable-volatility")
-    jobs.append(Job("calibrate_winprob", calibrate_args))
-
-    if not skip_evaluation:
-        jobs.append(
-            Job(
-                "evaluate_predictions",
-                [
-                    "python",
-                    "-m",
-                    "src.evaluation.evaluate_predictions",
-                    "--min-games",
-                    "1",
-                    "--skip-plots",
-                    *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
-                    *debug,
-                ],
-            )
-        )
-
-    if not skip_evaluation and not skip_market_roi:
-        roi_cmd = [
-            "python",
-            "-m",
-            "analysis.market_roi",
-            *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
-            *debug,
-        ]
-        jobs.append(Job("market_roi", roi_cmd))
-
+
+
+    pred_save = str(pred_dir / "predictions.csv")
+
+    pred_full = str(pred_dir / "predictions_full.csv")
+
+    qb_path = str(pred_dir / "predictions_players_qb.csv")
+
+    off_path = str(pred_dir / "predictions_players_offense.csv")
+
+    def_path = str(pred_dir / "predictions_players_defense.csv")
+
+
+
+    predict_upcoming_job = (
+
+        Job(
+
+            "predict_upcoming",
+
+            [
+
+                "python",
+
+                "-m",
+
+                "src.predict.predict_upcoming",
+
+                "--season",
+
+                str(current_year),
+
+                "--week",
+                str(prediction_week),
+                "--save",
+                pred_save,
+
+                "--dump-all",
+
+                pred_full,
+
+                "--save-players-qb",
+
+                qb_path,
+
+                "--save-players-offense",
+
+                off_path,
+
+                "--save-players-defense",
+
+                def_path,
+
+                *debug,
+
+            ],
+
+        )
+
+    )
+
+    history_args = [
+
+        "python",
+
+        "-m",
+
+        "src.predict.predict_history",
+
+        "--seasons",
+
+        *season_args,
+
+        "--output-dir",
+
+        str(Path("predictions/history")),
+
+        "--overwrite",
+
+        *debug,
+
+    ]
+
+    jobs.append(Job("predict_history", history_args))
+
+
+
+    if not skip_volatility:
+
+        volatility_dataset_path.parent.mkdir(parents=True, exist_ok=True)
+
+        volatility_cmd = [
+
+            "python",
+
+            "-m",
+
+            "analysis.volatility_classifier",
+
+            "--model",
+
+            str(vol_cfg.get("model", "logreg")),
+
+            "--percentile",
+
+            str(vol_cfg.get("percentile", 0.6)),
+
+            "--random-state",
+
+            str(vol_cfg.get("random_state", 42)),
+
+            "--disable-season-split",
+
+            "--calibrate",
+
+            *debug,
+
+        ]
+
+        volatility_cmd.extend(live_exclude_args)
+        jobs.append(Job("volatility_classifier", volatility_cmd))
+
+
+    calibrate_args = [
+
+        "python",
+
+        "-m",
+
+        "src.evaluation.calibrate_winprob",
+
+        "--history-dir",
+
+        str(Path("predictions/history")),
+
+        "--season-window",
+
+        str(calibration_season_window),
+
+        *debug,
+
+    ]
+
+    if not skip_volatility:
+
+        calibrate_args.extend(
+            [
+                "--volatility-dataset",
+                str(volatility_dataset_path),
+                "--volatility-strength",
+                str(vol_cfg.get("strength", 0.35)),
+            ]
+        )
+        if vol_cfg.get("threshold") is not None:
+            calibrate_args.extend(["--volatility-threshold", str(vol_cfg["threshold"])])
+
+    else:
+
+        calibrate_args.append("--disable-volatility")
+
+    calibrate_args.extend(live_exclude_args)
+    jobs.append(Job("calibrate_winprob", calibrate_args))
+
+    jobs.append(predict_upcoming_job)
+
+
+    if not skip_evaluation:
+
+        jobs.append(
+
+            Job(
+
+                "evaluate_predictions",
+
+                [
+
+                    "python",
+
+                    "-m",
+
+                    "src.evaluation.evaluate_predictions",
+
+                    "--min-games",
+
+                    "1",
+
+                    "--skip-plots",
+
+                    *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
+
+                    *debug,
+                    *live_exclude_args,
+                ],
+
+            )
+
+        )
+
+
+
+    if not skip_evaluation and not skip_market_roi:
+
+        roi_cmd = [
+
+            "python",
+
+            "-m",
+
+            "analysis.market_roi",
+
+            *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
+
+            *debug,
+
+        ]
+
+        roi_cmd.extend(live_exclude_args)
+        jobs.append(Job("market_roi", roi_cmd))
+
+
     return jobs
+
+
+def resolve_live_exclude(prediction_week: str, live_run: bool, current_year: int) -> tuple[int, int] | None:
+    """Return training cutoff args for a live slate, warning on explicit weeks without cutoff."""
+    if live_run:
+        if str(prediction_week).lower() == "auto":
+            raise ValueError("--live-run requires an explicit --prediction-week value")
+        try:
+            live_week = int(prediction_week)
+        except ValueError as exc:
+            raise ValueError("--live-run requires a numeric --prediction-week value") from exc
+        print(f"[pipeline] Live run: excluding rows at/after {current_year} Week {live_week}")
+        return current_year, live_week
+
+    if str(prediction_week).lower() != "auto":
+        print(
+            "[pipeline] Warning: --prediction-week was set without --live-run; "
+            "training, calibration, evaluation, and ROI will not exclude the prediction week."
+        )
+
+    return None
 
 
 def run_post_run_analysis() -> None:
@@ -751,92 +1131,203 @@ def run_post_run_analysis() -> None:
             func()
         except Exception as exc:  # pragma: no cover - best effort
             print(f"[pipeline] Warning: post-run analysis '{name}' failed ({exc}).")
-
-
+
+
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entrypoint for the multi-stage pipeline; returns process exit code."""
-    args = parse_args(argv)
-    years = build_years(args.start_year)
-    current_year = datetime.now().year
-    debug_flag = ["--debug"] if args.debug else []
-
-    pred_dir = Path("predictions")
-    ensure_predictions_dir(pred_dir)
-
-    tuning_dir = Path("tuning")
-    tuning_storage: str | None
-    if args.enable_tuning:
-        tuning_dir.mkdir(parents=True, exist_ok=True)
-        if args.tuning_storage:
-            tuning_storage = args.tuning_storage
-        else:
-            default_storage_path = tuning_dir / "tuning.db"
-            tuning_storage = f"sqlite:///{default_storage_path.resolve().as_posix()}"
-    else:
-        tuning_storage = args.tuning_storage
-
-    tuning_options = {
-        "storage_uri": tuning_storage,
-        "study_prefix": args.tuning_study_prefix,
-        "trials_winprob": args.tuning_trials_winprob,
-        "trials_spread": args.tuning_trials_spread,
-        "timeout_winprob": args.tuning_winprob_timeout,
-        "timeout_spread": args.tuning_spread_timeout,
-        "load_if_exists": True,
-    }
-
-    volatility_options = {
-        "skip": args.skip_volatility,
-        "model": args.volatility_model,
-        "percentile": args.volatility_percentile,
-        "random_state": args.volatility_random_state,
-        "threshold": args.volatility_threshold,
-        "strength": args.volatility_strength,
-        "dataset_path": Path("analysis/volatility_classifier_dataset.csv"),
-    }
-
-    env = os.environ.copy()
-    sportsdataio_key = get_secret("SPORTSDATAIO_API_KEY")
-    include_sportsdataio = bool(sportsdataio_key) and not args.skip_sportsdataio
-    if args.skip_sportsdataio:
-        print("[pipeline] SportsDataIO fetch skipped via flag.")
-    elif not sportsdataio_key:
-        print("[pipeline] SportsDataIO API key not found; skipping SportsDataIO job.")
-
-    visualcrossing_key = get_secret("VISUAL_CROSSING_API_KEY")
-    include_visualcrossing = bool(visualcrossing_key) and not args.skip_visualcrossing
-    if args.skip_visualcrossing:
-        print("[pipeline] Visual Crossing fetch skipped via flag.")
-    elif not visualcrossing_key:
-        print("[pipeline] Visual Crossing API key not found; skipping Visual Crossing weather job.")
-
-    yahoo_client_id = get_secret("YAHOO_CLIENT_ID")
-    yahoo_client_secret = get_secret("YAHOO_CLIENT_SECRET")
-    yahoo_access_token = get_secret("YAHOO_ACCESS_TOKEN")
-    yahoo_access_secret = get_secret("YAHOO_ACCESS_TOKEN_SECRET")
-    yahoo_refresh_token = yahoo_access_secret  # backwards compatibility
-    if not yahoo_refresh_token:
-        yahoo_refresh_token = get_secret("YAHOO_REFRESH_TOKEN")
-    include_yahoo = bool(yahoo_client_id and yahoo_client_secret and yahoo_access_token and yahoo_refresh_token) and not args.skip_yahoo
-    if args.skip_yahoo:
-        print("[pipeline] Yahoo fetch skipped via flag.")
-    elif not include_yahoo:
-        print("[pipeline] Yahoo API credentials not found; skipping Yahoo job.")
-
-    data_jobs = build_data_jobs(
-        years,
-        current_year,
-        debug_flag,
-        include_sportsdataio=include_sportsdataio,
-        sportsdataio_feeds=args.sportsdataio_feeds,
-        include_yahoo=include_yahoo,
-        yahoo_feeds=args.yahoo_feeds,
-        yahoo_season=args.yahoo_season,
-    )
-    print(
-        f"[pipeline] Running {len(data_jobs)} data jobs with max_parallel={args.max_parallel_data}, "
-        f"launch_delay={args.data_start_delay:.1f}s"
-    )
+    args = parse_args(argv)
+
+    years = build_years(args.start_year)
+
+    current_year = datetime.now().year
+
+    debug_flag = ["--debug"] if args.debug else []
+    live_exclude = resolve_live_exclude(args.prediction_week, args.live_run, current_year)
+
+    if not args.dry_run:
+        verify_runtime_dependencies()
+
+
+    pred_dir = Path("predictions")
+
+    ensure_predictions_dir(pred_dir)
+
+
+
+    tuning_dir = Path("tuning")
+
+    tuning_storage: str | None
+
+    if args.enable_tuning:
+
+        tuning_dir.mkdir(parents=True, exist_ok=True)
+
+        if args.tuning_storage:
+
+            tuning_storage = args.tuning_storage
+
+        else:
+
+            default_storage_path = tuning_dir / "tuning.db"
+
+            tuning_storage = f"sqlite:///{default_storage_path.resolve().as_posix()}"
+
+    else:
+
+        tuning_storage = args.tuning_storage
+
+
+
+    tuning_options = {
+
+        "storage_uri": tuning_storage,
+
+        "study_prefix": args.tuning_study_prefix,
+
+        "trials_winprob": args.tuning_trials_winprob,
+
+        "trials_spread": args.tuning_trials_spread,
+
+        "timeout_winprob": args.tuning_winprob_timeout,
+
+        "timeout_spread": args.tuning_spread_timeout,
+
+        "load_if_exists": True,
+
+    }
+
+
+
+    volatility_options = {
+
+        "skip": args.skip_volatility,
+
+        "model": args.volatility_model,
+
+        "percentile": args.volatility_percentile,
+
+        "random_state": args.volatility_random_state,
+
+        "threshold": args.volatility_threshold,
+
+        "strength": args.volatility_strength,
+
+        "dataset_path": Path("analysis/volatility_classifier_dataset.csv"),
+
+    }
+
+
+
+    env = os.environ.copy()
+
+    balldontlie_key = get_secret("BALLDONTLIE_API_KEY")
+
+    include_balldontlie = bool(balldontlie_key) and not args.skip_balldontlie
+
+    if args.skip_balldontlie:
+
+        print("[pipeline] BallDontLie fetch skipped via flag.")
+
+    elif not balldontlie_key:
+
+        print("[pipeline] BallDontLie API key not found; skipping BallDontLie job.")
+
+
+
+    sportsdataio_key = get_secret("SPORTSDATAIO_API_KEY")
+
+    include_sportsdataio = (
+        bool(sportsdataio_key)
+        and not args.skip_sportsdataio
+        and (args.enable_sportsdataio or not include_balldontlie)
+    )
+
+    if args.skip_sportsdataio:
+
+        print("[pipeline] SportsDataIO fetch skipped via flag.")
+
+    elif sportsdataio_key and include_balldontlie and not args.enable_sportsdataio:
+
+        print("[pipeline] SportsDataIO fetch skipped because BallDontLie is configured. Use --enable-sportsdataio to run both.")
+
+    elif not sportsdataio_key:
+
+        print("[pipeline] SportsDataIO API key not found; skipping SportsDataIO job.")
+
+
+
+    visualcrossing_key = get_secret("VISUAL_CROSSING_API_KEY")
+
+    include_visualcrossing = bool(visualcrossing_key) and not args.skip_visualcrossing
+
+    if args.skip_visualcrossing:
+
+        print("[pipeline] Visual Crossing fetch skipped via flag.")
+
+    elif not visualcrossing_key:
+
+        print("[pipeline] Visual Crossing API key not found; skipping Visual Crossing weather job.")
+
+
+
+    yahoo_client_id = get_secret("YAHOO_CLIENT_ID")
+
+    yahoo_client_secret = get_secret("YAHOO_CLIENT_SECRET")
+
+    yahoo_access_token = get_secret("YAHOO_ACCESS_TOKEN")
+
+    yahoo_access_secret = get_secret("YAHOO_ACCESS_TOKEN_SECRET")
+
+    yahoo_refresh_token = get_secret("YAHOO_REFRESH_TOKEN") or yahoo_access_secret
+
+    include_yahoo = bool(yahoo_client_id and yahoo_client_secret and yahoo_access_token and yahoo_refresh_token) and not args.skip_yahoo
+
+    if args.skip_yahoo:
+
+        print("[pipeline] Yahoo fetch skipped via flag.")
+
+    elif not include_yahoo:
+
+        print("[pipeline] Yahoo API credentials not found; skipping Yahoo job.")
+
+
+
+    data_jobs = build_data_jobs(
+
+        years,
+
+        current_year,
+
+        debug_flag,
+
+        include_balldontlie=include_balldontlie,
+
+        balldontlie_feeds=args.balldontlie_feeds,
+
+        include_sportsdataio=include_sportsdataio,
+
+        sportsdataio_feeds=args.sportsdataio_feeds,
+
+        include_yahoo=include_yahoo,
+
+        yahoo_feeds=args.yahoo_feeds,
+
+        yahoo_season=args.yahoo_season,
+
+        prediction_week=args.prediction_week,
+
+    )
+
+    print(
+
+        f"[pipeline] Running {len(data_jobs)} data jobs with max_parallel={args.max_parallel_data}, "
+
+        f"launch_delay={args.data_start_delay:.1f}s"
+
+    )
+
     use_async = getattr(args, "use_async", False)
     run_jobs_parallel(
         data_jobs,
@@ -846,7 +1337,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         dry_run=args.dry_run,
         use_async=use_async,
     )
-
+
+
     sequential_jobs = build_sequential_jobs(
         years,
         current_year,
@@ -865,6 +1357,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         skip_market_roi=args.skip_market_roi,
         volatility_options=volatility_options,
         cv_folds=args.cv_folds,
+        prediction_week=args.prediction_week,
+        live_exclude=live_exclude,
     )
     print(f"[pipeline] Running {len(sequential_jobs)} sequential jobs")
     run_jobs_sequential(sequential_jobs, env=env, dry_run=args.dry_run)
@@ -874,7 +1368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print("[pipeline] Pipeline complete")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+
+
+if __name__ == "__main__":
+    sys.exit(main())

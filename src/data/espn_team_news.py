@@ -23,7 +23,7 @@ import requests
 from pathlib import Path
 
 from src.utils.io import RAW_DIR
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 
 ESPN_NEWS_URL = "http://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
 
@@ -200,7 +200,7 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug output.")
     args = parser.parse_args()
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     if args.debug:
         print(f"[espn_team_news] fetching up to {args.limit} articles for season {args.season}")

@@ -11,7 +11,7 @@ This document explains how to get the NFL Predictions Platform running locally s
 
 Successful installs write artifacts under:
 
-- `data/raw/` – cached ingestion parquet files (nflverse, ESPN, NOAA, SportsDataIO, etc.)
+- `data/raw/` – cached ingestion parquet files (nflverse, ESPN, NOAA, BallDontLie, etc.)
 - `data/processed/` – derived matchup matrices (e.g., `matchup_features.parquet`)
 - `models/` – serialized model weights and calibrators
 - `predictions/` and `results/` – weekly CSVs, evaluation reports, and dashboard assets
@@ -84,6 +84,7 @@ Secrets and API tokens are loaded from environment variables or `secrets.env` at
 
 ```ini
 # secrets.env (example)
+BALLDONTLIE_API_KEY=...
 SPORTSDATAIO_API_KEY=...
 VISUAL_CROSSING_API_KEY=...
 TOMORROW_API_KEY=...           # or TOMORROWIO_API_KEY
@@ -117,7 +118,11 @@ python -m src.data.nflverse --season 2024 2025 \
 # NFL.com team stats
 python -m src.data.nflcom --year 2024 2025
 
-# SportsDataIO projections and injuries (requires SPORTSDATAIO_API_KEY)
+# BallDontLie commercial supplement (requires BALLDONTLIE_API_KEY; ALL-STAR tier)
+python -m src.data.balldontlie --feeds teams players active_players games standings injuries stats season_stats team_stats team_season_stats \
+  --seasons 2024 2025 --weeks 1 2 3
+
+# Legacy SportsDataIO fallback (requires SPORTSDATAIO_API_KEY; not run by default when BallDontLie is configured)
 python -m src.data.sportsdataio --feeds teams schedules player_season_projections dfs_slates \
   --seasons 2024 2025 --weeks 1 2 3
 
@@ -145,10 +150,13 @@ Use `tools/run_pipeline.py` for end-to-end runs or call stages individually.
 python -m tools.run_pipeline \
   --start-year 2002 \
   --train-start-year 2016 \
-  --max-parallel-data 4 \
-  --data-start-delay 0.5 \
+  --max-parallel-data 8 \
+  --data-start-delay 1 \
+  --use-async \
   --use-gpu \
   --skip-logit \
+  --prediction-week 1 \
+  --live-run \
   --debug
 ```
 
@@ -157,6 +165,7 @@ Outputs:
 - Historical and upcoming predictions under `predictions/`
 - Evaluation CSVs/plots under `predictions/evaluation/`
 - SHAP summaries and run-comparison reports under `analysis/`
+- Use `--prediction-week 1 --live-run` for an explicit Week 1 run that excludes that slate from training/calibration/evaluation, or leave the default `auto` for the current/next slate.
 
 ### Stage-by-stage workflow
 
@@ -190,6 +199,7 @@ The commands above mirror the README and `tools/run_pipeline.py`. Adjust season 
 | Symptom | Fix |
 | --- | --- |
 | `ImportError: No module named ...` | Re-run `python scripts/smoke_test.py`; confirm the virtual environment is activated before installing `requirements.txt`. |
+| `BALLDONTLIE_API_KEY not configured` (or similar) | Add the missing key to `secrets.env` or export it in your shell. The pipeline skips BallDontLie when the key is absent. |
 | `SPORTSDATAIO_API_KEY not configured` (or similar) | Add the missing key to `secrets.env` or export it in your shell. |
 | `pyarrow.lib.ArrowInvalid: Repetition level histogram size mismatch` | Delete the problematic parquet file from `data/raw/` and rerun the corresponding fetcher; `src.utils.io` automatically retries with `fastparquet`. |
 | `CUDA driver version is insufficient` | Upgrade NVIDIA drivers or run without `--use-gpu`. |

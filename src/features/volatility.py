@@ -29,6 +29,11 @@ VOLATILITY_OPTIONAL_COLUMNS: list[str] = [
     "weather_temp_kickoff_f_wx",
     "wind",
     "temp",
+    "home_win_prob",
+    "home_win_prob_capped",
+    "home_win_prob_calibrated",
+    "home_win_prob_model_raw",
+    "pred_home_margin",
 ]
 
 VOLATILITY_REQUIRED_COLUMNS: list[str] = [
@@ -107,6 +112,12 @@ VOLATILITY_FEATURE_COLUMNS: list[str] = [
     "travel_rest_pressure",
     "rest_diff",
     "rest_days_diff",
+    "model_confidence_abs",
+    "model_uncertainty",
+    "model_logit_abs",
+    "pred_margin_abs",
+    "pred_margin_confidence",
+    "model_margin_disagreement",
 ]
 
 
@@ -121,11 +132,26 @@ def _coalesce(df: pd.DataFrame, columns: Iterable[str], default=np.nan) -> pd.Se
     if not cols:
         return pd.Series(default, index=df.index)
     data = df[cols].copy()
-    return data.bfill(axis=1).iloc[:, 0].fillna(default)
+    series = data.bfill(axis=1).iloc[:, 0].fillna(default)
+    return series.infer_objects(copy=False)
+
+
+def _ensure_roof_is_dome(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "roof_is_dome" in out.columns:
+        return out
+    if "roof" in out.columns:
+        roof = out["roof"].astype("string").str.lower().str.strip()
+        out["roof_is_dome"] = roof.isin({"closed", "dome", "fixed", "indoor", "indoors"}).astype(int)
+    elif "home_indoor" in out.columns or "away_indoor" in out.columns:
+        indoor_cols = [c for c in ["home_indoor", "away_indoor"] if c in out.columns]
+        indoor = out[indoor_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+        out["roof_is_dome"] = (indoor.max(axis=1) > 0).astype(int)
+    return out
 
 
 def engineer_volatility_inputs(df: pd.DataFrame) -> pd.DataFrame:
-    enriched = df.copy()
+    enriched = _ensure_roof_is_dome(df)
     enriched["wind_mph"] = pd.to_numeric(
         _coalesce(enriched, ["weather_wind_mph", "weather_wind_mph_wx", "wind"]), errors="coerce"
     )
@@ -228,10 +254,38 @@ def engineer_volatility_inputs(df: pd.DataFrame) -> pd.DataFrame:
     away_rest_series = enriched["away_rest"] if "away_rest" in enriched.columns else pd.Series(0, index=enriched.index)
     enriched["travel_rest_pressure"] = distance_series.fillna(0).astype(float) * np.clip(7.0 - away_rest_series.fillna(0).astype(float), 0.0, None)
 
+    model_prob = pd.to_numeric(
+        _coalesce(
+            enriched,
+            [
+                "home_win_prob",
+                "home_win_prob_capped",
+                "home_win_prob_calibrated",
+                "home_win_prob_model_raw",
+            ],
+        ),
+        errors="coerce",
+    )
+    model_prob = model_prob.where(model_prob.between(0.0, 1.0))
+    model_confidence = model_prob.sub(0.5).abs()
+    enriched["model_confidence_abs"] = model_confidence
+    enriched["model_uncertainty"] = (1.0 - 2.0 * model_confidence).clip(lower=0.0, upper=1.0)
+    clipped_prob = model_prob.clip(lower=1e-6, upper=1.0 - 1e-6)
+    enriched["model_logit_abs"] = np.log(clipped_prob / (1.0 - clipped_prob)).abs()
+
+    pred_margin = pd.to_numeric(_coalesce(enriched, ["pred_home_margin"]), errors="coerce")
+    pred_margin_abs = pred_margin.abs()
+    enriched["pred_margin_abs"] = pred_margin_abs
+    enriched["pred_margin_confidence"] = np.tanh(pred_margin_abs / 14.0)
+    enriched["model_margin_disagreement"] = (
+        enriched["model_confidence_abs"] - enriched["pred_margin_confidence"]
+    ).abs()
+
     return enriched
 
 
 def build_volatility_feature_matrix(df: pd.DataFrame) -> VolatilityFeatureFrame:
+    df = _ensure_roof_is_dome(df)
     missing_required = [c for c in VOLATILITY_REQUIRED_COLUMNS if c not in df.columns]
     if missing_required:
         raise KeyError(f"DataFrame missing required volatility columns: {missing_required}")

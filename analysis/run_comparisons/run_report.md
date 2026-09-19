@@ -1,39 +1,39 @@
 # Run Comparison Report
-Generated: 2026-02-11 16:50:25 UTC
+Generated: 2026-09-19 18:29:33 UTC
 
 ## Run Leaderboard
  run_id    model_name                       created_at      auc    brier
-run_148 unknown_model 2026-02-11 16:50:24.264607+00:00 0.956813 0.131151
-run_145 unknown_model 2026-02-06 17:21:13.695287+00:00 0.919257 0.118692
-run_147 unknown_model 2026-02-06 17:21:13.695287+00:00 0.943222 0.086733
-run_146 unknown_model 2026-02-06 17:21:13.695287+00:00 0.938543 0.165166
-run_142 unknown_model 2025-12-27 15:43:13.588107+00:00 0.926418 0.111782
-run_144 unknown_model 2025-12-27 15:43:13.588107+00:00 0.820723 0.160619
-run_143 unknown_model 2025-12-27 15:43:13.588107+00:00 0.796034 0.193777
-run_141 unknown_model 2025-12-25 15:53:43.827167+00:00 0.839621 0.151143
-run_139 unknown_model 2025-12-25 15:53:43.827167+00:00 0.929168 0.111100
-run_140 unknown_model 2025-12-25 15:53:43.827167+00:00 0.826641 0.181688
+run_192 unknown_model 2026-09-19 18:29:32.182463+00:00 0.996073 0.085367
+run_189 unknown_model 2026-09-19 18:15:00.688890+00:00 0.995693 0.086719
+run_191 unknown_model 2026-09-19 18:15:00.688890+00:00 0.989188 0.023423
+run_190 unknown_model 2026-09-19 18:15:00.688890+00:00 0.987433 0.099766
+run_186 unknown_model 2026-09-19 17:35:11.530495+00:00 0.995266 0.082389
+run_188 unknown_model 2026-09-19 17:35:11.530495+00:00 0.986774 0.032467
+run_187 unknown_model 2026-09-19 17:35:11.530495+00:00 0.983821 0.104505
+run_184 unknown_model 2026-09-19 17:16:17.155045+00:00 0.985625 0.098302
+run_183 unknown_model 2026-09-19 17:16:17.155045+00:00 0.995004 0.082335
+run_185 unknown_model 2026-09-19 17:16:17.155045+00:00 0.988629 0.023156
 
 ## Metric Leaders
 ### AUC leaders
  run_id    model_name                       created_at      auc
-run_148 unknown_model 2026-02-11 16:50:24.264607+00:00 0.956813
-run_109 unknown_model 2025-12-08 01:22:37.720952+00:00 0.946371
-run_147 unknown_model 2026-02-06 17:21:13.695287+00:00 0.943222
-run_124 unknown_model 2025-12-10 20:50:31.621072+00:00 0.940835
-run_112 unknown_model 2025-12-09 14:27:49.755454+00:00 0.940248
+run_192 unknown_model 2026-09-19 18:29:32.182463+00:00 0.996073
+run_189 unknown_model 2026-09-19 18:15:00.688890+00:00 0.995693
+run_186 unknown_model 2026-09-19 17:35:11.530495+00:00 0.995266
+run_171 unknown_model 2026-09-19 15:40:05.185670+00:00 0.995233
+run_174 unknown_model 2026-09-19 16:17:34.071875+00:00 0.995009
 
 ### Brier leaders
  run_id    model_name                       created_at    brier
-run_147 unknown_model 2026-02-06 17:21:13.695287+00:00 0.086733
-run_124 unknown_model 2025-12-10 20:50:31.621072+00:00 0.105417
-run_127 unknown_model 2025-12-11 00:02:43.259783+00:00 0.107006
-run_121 unknown_model 2025-12-10 19:13:08.542957+00:00 0.108984
-run_130 unknown_model 2025-12-11 00:32:46.772612+00:00 0.109602
+run_162 unknown_model 2026-09-18 20:19:32.422136+00:00 0.022661
+run_182 unknown_model 2026-09-19 16:17:34.071875+00:00 0.022831
+run_185 unknown_model 2026-09-19 17:16:17.155045+00:00 0.023156
+run_180 unknown_model 2026-09-19 16:17:34.071875+00:00 0.023332
+run_191 unknown_model 2026-09-19 18:15:00.688890+00:00 0.023423
 
 ## Highlights
-Best run so far: **unknown_model (run_148)** on 2026-02-11. AUC=0.957, Brier=0.131, LogLoss=NA, Accuracy=NA, n=NA.
-It edges the previous leader (unknown_model / run_109) by +0.010 AUC and +0.001 Brier.
+Best run so far: **unknown_model (run_192)** on 2026-09-19. AUC=0.996, Brier=0.085, LogLoss=NA, Accuracy=NA, n=NA.
+It edges the previous leader (unknown_model / run_189) by +0.000 AUC and +0.001 Brier.
 
 ## Metric Trends
 ![](./auc_over_time.png)

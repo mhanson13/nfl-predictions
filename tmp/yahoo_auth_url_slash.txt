@@ -1,0 +1,2 @@
+https://api.login.yahoo.com/oauth2/request_auth?client_id=dj0yJmk9MEhUa2k3YlY4RlQ2JmQ9WVdrOVdrVlZkSFJ3ZDJZbWNHbzlNQT09JnM9Y29uc3VtZXJzZWNyZXQmc3Y9MCZ4PTc4&redirect_uri=https%3A%2F%2Fwww.mattythebookie.com%2F&response_type=code&language=en-us&state=xhmYjkpw4UQgscsMbx2DKi-c
+state=xhmYjkpw4UQgscsMbx2DKi-c

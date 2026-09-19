@@ -62,6 +62,7 @@ yahoo_temp.py
 .DS_Store
 Thumbs.db
 secrets.json
+output_*debug*
 
 # Backup & migration artifacts
 predictions/*.backup_*

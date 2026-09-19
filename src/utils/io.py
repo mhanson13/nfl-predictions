@@ -132,19 +132,27 @@ def _sanitize_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
 
 # ---------- public IO API ----------
 
-def write_df(df: pd.DataFrame, path: Path) -> None:
+def write_df(df: pd.DataFrame, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     clean = _sanitize_for_parquet(df)
     try:
         if path.suffix == ".parquet":
             clean.to_parquet(path, index=False)
+            return path
         elif path.suffix in {".csv", ""}:
-            clean.to_csv(path.with_suffix(".csv"), index=False, encoding="utf-8")
+            output_path = path.with_suffix(".csv")
+            clean.to_csv(output_path, index=False, encoding="utf-8")
+            return output_path
         else:
-            clean.to_parquet(path.with_suffix(".parquet"), index=False)
-    except Exception:
+            output_path = path.with_suffix(".parquet")
+            clean.to_parquet(output_path, index=False)
+            return output_path
+    except Exception as exc:
         # Fallback to CSV if Parquet still complains
-        clean.to_csv(path.with_suffix(".csv"), index=False, encoding="utf-8")
+        output_path = path.with_suffix(".csv")
+        clean.to_csv(output_path, index=False, encoding="utf-8")
+        print(f"[io] Warning: failed to write {path}; wrote CSV fallback {output_path} ({exc})")
+        return output_path
 
 
 def read_df(path: Path, **kwargs) -> pd.DataFrame:

@@ -2,23 +2,23 @@
 
 ## Model Performance
 
-The current best win-probability run is **winprob_model (run_148)** from 2026-02-11. It logged AUC=0.957, Brier=0.131, LogLoss=0.426, Accuracy=0.833, MAE=3.95, and RMSE=5.08. Compared to the early baseline (winprob_model / run_1), AUC improved by +0.250 and Brier dropped by +0.094.
+The current best win-probability run is **winprob_model (run_192)** from 2026-09-19. It logged AUC=0.996, Brier=0.085, LogLoss=0.341, Accuracy=0.973, MAE=7.62, and RMSE=9.95. Compared to the early baseline (winprob_model / run_1), AUC improved by +0.289 and Brier dropped by +0.140.
 
 ### Metrics Snapshot
 | Metric | Value |
 |--------|-------|
-| Accuracy | 0.833 |
-| AUC | 0.957 |
-| Brier | 0.131 |
-| LogLoss | 0.426 |
-| MAE | 3.95 |
-| RMSE | 5.08 |
+| Accuracy | 0.973 |
+| AUC | 0.996 |
+| Brier | 0.085 |
+| LogLoss | 0.341 |
+| MAE | 7.62 |
+| RMSE | 9.95 |
 | n | - |
 
 ### Why it matters
-- **AUC ~0.957** - elite ranking of winners vs. losers for an NFL model.
-- **Brier ~0.131** - probabilities stay tightly calibrated.
-- **Accuracy ~0.833** - strong directional hit rate despite league parity.
+- **AUC ~0.996** - elite ranking of winners vs. losers for an NFL model.
+- **Brier ~0.085** - probabilities stay tightly calibrated.
+- **Accuracy ~0.973** - strong directional hit rate despite league parity.
 
 ### Explainability (GPU SHAP)
 We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm which engineered signals (QB availability deltas, passing EPA trends, opponent-adjusted efficiency, red-zone execution, and pressure metrics) drove these gains.
@@ -28,7 +28,7 @@ We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm wh
 
 This repository contains a fully scripted NFL prediction workflow:
 
-1. **Ingest** schedules, play-by-play, weather, injuries, and market data from public APIs (nflverse, ESPN, NFL.com, NOAA, Visual Crossing, SportsDataIO, Yahoo, etc.).
+1. **Ingest** schedules, play-by-play, weather, injuries, and market data from public APIs (nflverse, ESPN, NFL.com, NOAA, Visual Crossing, BallDontLie, Yahoo, etc.).
 2. **Engineer matchup features** that describe travel, rest, weather deltas, QB availability, red-zone efficiency, pressure rates, passing EPA trends, and opponent-adjusted strength.
 3. **Train and calibrate** models for win probability, spread/margin, and volatility (high-error) detection.
 4. **Generate predictions** for historical seasons and upcoming slates, then shrink and calibrate probabilities using volatility-aware isotonic models.
@@ -64,7 +64,7 @@ Explainability: GPU-accelerated TreeSHAP (nalysis/shap/*.png) highlights the fe
 ## 3. System Architecture
 
 `
-raw data (nflverse / ESPN / NOAA / SportsDataIO / Yahoo / Visual Crossing)
+raw data (nflverse / ESPN / NOAA / BallDontLie / Yahoo / Visual Crossing)
         └─> src/data/*.py fetchers  ──┐
                                        ├─> data/raw/*.parquet (with caching + fastparquet fallbacks)
 consolidated schedule/weather/rosters ─┘
@@ -119,13 +119,14 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
    - Python 3.10+ (Anaconda 
 flgpu env shown below)
    - pip install -r requirements.txt
-   - Set API keys in secrets.env (SportsDataIO, Yahoo, Visual Crossing, etc.).
+   - Set API keys in secrets.env (BallDontLie, Yahoo, Visual Crossing, etc.).
 
 2. **Full run**
    `powershell
-   python -m tools.run_pipeline      --start-year 2002      --train-start-year 2016      --max-parallel-data 4      --data-start-delay 0.5      --use-gpu      --skip-logit      --debug
+   python -m tools.run_pipeline      --start-year 2002      --train-start-year 2016      --max-parallel-data 8      --data-start-delay 1      --use-async      --use-gpu      --skip-logit      --prediction-week 1      --live-run      --debug
    `
    - Data fetchers run in parallel (respecting API quotas).
+   - Use `--prediction-week 1 --live-run` to force Week 1 predictions and exclude that slate from training/calibration/evaluation.
    - Sequential stage builds features, trains models, predicts history/upcoming, calibrates, evaluates, and runs post-analysis (compare runs + SHAP + README update).
    - Native Windows stack-overflow exit codes (0xC0000409) are tolerated for predict_upcoming if the outputs were written (due to a PyArrow teardown bug).
 

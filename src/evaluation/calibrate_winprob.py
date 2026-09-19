@@ -27,7 +27,40 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
+from src.predict.calibration import SigmoidCalibrator
 from src.utils.io import MODELS_DIR
+from src.utils.week_filter import filter_before_week
+
+
+def _fit_sigmoid_calibrator(preds: pd.Series, actual: pd.Series) -> tuple[SigmoidCalibrator, np.ndarray]:
+    """Fit a Platt-style sigmoid calibrator without SciPy optimizer dependency."""
+    x_raw = preds.to_numpy(dtype=float).reshape(-1)
+    y = actual.astype(int).to_numpy(dtype=float).reshape(-1)
+    x_mean = float(np.nanmean(x_raw))
+    x_scale = float(np.nanstd(x_raw))
+    if not np.isfinite(x_scale) or x_scale <= 0:
+        x_scale = 1.0
+    x = (x_raw - x_mean) / x_scale
+    design = np.column_stack([np.ones_like(x), x])
+    beta = np.zeros(2, dtype=float)
+    l2 = 1.0
+    reg = np.diag([0.0, l2])
+    for _ in range(100):
+        z = np.clip(design @ beta, -35.0, 35.0)
+        p = 1.0 / (1.0 + np.exp(-z))
+        weights = np.clip(p * (1.0 - p), 1e-6, None)
+        grad = design.T @ (p - y) + reg @ beta
+        hessian = design.T @ (design * weights[:, None]) + reg
+        try:
+            step = np.linalg.solve(hessian, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.pinv(hessian) @ grad
+        beta -= step
+        if float(np.linalg.norm(step)) < 1e-8:
+            break
+    calibrator = SigmoidCalibrator(beta[0], beta[1], x_mean, x_scale)
+    calibrated = calibrator.predict_proba(x_raw.reshape(-1, 1))[:, 1]
+    return calibrator, calibrated
 
 
 def _load_history(paths: Iterable[Path]) -> pd.DataFrame:
@@ -54,12 +87,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=MODELS_DIR / "winprob_calibrator.pkl", help="Destination for calibrator artifact (deprecated; use --save-calibrator)")
     parser.add_argument("--save-calibrator", type=Path, default=None, help="Path to persist the calibrator artifact")
     parser.add_argument("--volatility-dataset", type=Path, default=Path("analysis/volatility_classifier_dataset.csv"), help="Path to volatility probabilities dataset")
-    parser.add_argument("--volatility-threshold", type=float, default=0.55, help="Only adjust predictions when volatility_prob >= threshold")
+    parser.add_argument("--volatility-threshold", type=float, default=None, help="Override volatility probability threshold; defaults to the volatility dataset's learned threshold")
     parser.add_argument("--volatility-strength", type=float, default=0.35, help="Strength of shrinkage toward 0.5 for volatile games (0-1)")
+    parser.add_argument("--volatility-min-coverage", type=float, default=0.02, help="Skip volatility adjustment below this selected-game share")
+    parser.add_argument("--volatility-max-coverage", type=float, default=0.85, help="Skip volatility adjustment above this selected-game share")
     parser.add_argument("--disable-volatility", action="store_true", help="Skip volatility-based shrinkage prior to calibration")
     parser.add_argument("--apply-isotonic", dest="apply_isotonic", action="store_true", help="Apply isotonic regression calibrator after volatility shrinkage")
     parser.add_argument("--skip-isotonic", dest="apply_isotonic", action="store_false", help="Skip isotonic calibration step")
     parser.set_defaults(apply_isotonic=True)
+    parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later history rows from calibration.")
+    parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later history rows from calibration.")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging.")
     return parser.parse_args()
 
@@ -68,6 +105,10 @@ def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     logging.getLogger("urllib3").setLevel(logging.DEBUG if args.debug else logging.INFO)
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
     if not args.history_dir.exists():
         raise FileNotFoundError(f"History directory {args.history_dir} not found")
@@ -94,7 +135,16 @@ def main() -> None:
 
     history["season"] = pd.to_numeric(history["season"], errors="coerce")
     history = history.dropna(subset=["season"])
-    history["season"] = history["season"].astype(int)
+    history["season"] = history["season"].astype(int)
+    if "week" in history.columns:
+        history["week"] = pd.to_numeric(history["week"], errors="coerce")
+    before_cutoff = len(history)
+    history = filter_before_week(history, args.exclude_from_season, args.exclude_from_week)
+    if args.exclude_from_season is not None and args.exclude_from_week is not None and len(history) != before_cutoff:
+        print(
+            f"[calibrate] excluded {before_cutoff - len(history)} rows at/after "
+            f"{args.exclude_from_season} Week {args.exclude_from_week}"
+        )
 
     if args.seasons:
         seasons = sorted(set(args.seasons))
@@ -119,12 +169,21 @@ def main() -> None:
     original_preds = preds.copy()
     volatility_applied = False
     volatility_strength = float(args.volatility_strength)
-    volatility_threshold = float(args.volatility_threshold)
+    volatility_threshold = float(args.volatility_threshold) if args.volatility_threshold is not None else None
     volatility_meta: dict[str, float] = {}
 
     if not args.disable_volatility and args.volatility_dataset.exists():
         try:
-            vol_df = pd.read_csv(args.volatility_dataset, usecols=["game_id", "volatility_prob"])
+            vol_df = pd.read_csv(args.volatility_dataset)
+            if not {"game_id", "volatility_prob"}.issubset(vol_df.columns):
+                raise ValueError("volatility dataset must include game_id and volatility_prob")
+            if volatility_threshold is None:
+                threshold_values = (
+                    pd.to_numeric(vol_df.get("volatility_threshold"), errors="coerce").dropna()
+                    if "volatility_threshold" in vol_df.columns
+                    else pd.Series(dtype=float)
+                )
+                volatility_threshold = float(threshold_values.iloc[0]) if not threshold_values.empty else 0.55
             vol_map = vol_df.set_index("game_id")["volatility_prob"]
             history["volatility_prob"] = history["game_id"].map(vol_map)
             vol_series = pd.Series(history["volatility_prob"], index=history.index).astype(float)
@@ -132,7 +191,15 @@ def main() -> None:
             vol_series = vol_series.loc[mask]
             clip_strength = np.clip(volatility_strength, 0.0, 1.0)
             adjust_mask = vol_series >= volatility_threshold
-            if adjust_mask.any() and clip_strength > 0:
+            coverage = float(adjust_mask.mean())
+            min_coverage = float(np.clip(args.volatility_min_coverage, 0.0, 1.0))
+            max_coverage = float(np.clip(args.volatility_max_coverage, 0.0, 1.0))
+            if coverage < min_coverage or coverage > max_coverage:
+                print(
+                    "[calibrate] volatility adjustment skipped: "
+                    f"coverage={coverage:.2%} outside {min_coverage:.2%}-{max_coverage:.2%}"
+                )
+            elif adjust_mask.any() and clip_strength > 0:
                 shrink = 1.0 - clip_strength * vol_series
                 shrink = np.where(adjust_mask, shrink, 1.0)
                 preds = 0.5 + (preds - 0.5) * shrink
@@ -140,14 +207,14 @@ def main() -> None:
                 volatility_meta = {
                     "volatility_threshold": float(volatility_threshold),
                     "volatility_strength": float(clip_strength),
-                    "volatility_coverage": float(adjust_mask.mean()),
+                    "volatility_coverage": coverage,
                     "volatility_mean_prob": float(vol_series.mean()),
                 }
                 adj_brier = brier_score_loss(actual, preds)
                 adj_auc = roc_auc_score(actual, preds)
                 print(
                     "[calibrate] volatility adjustment applied: "
-                    f"coverage={adjust_mask.mean():.2%} strength={clip_strength:.2f} "
+                    f"coverage={coverage:.2%} strength={clip_strength:.2f} "
                     f"Brier(after adjust)={adj_brier:.4f} AUC(after adjust)={adj_auc:.3f}"
                 )
         except Exception as exc:  # pragma: no cover - diagnostic only
@@ -156,15 +223,26 @@ def main() -> None:
     if len(preds) < args.min_games:
         raise RuntimeError(f"Not enough samples for calibration: {len(preds)} < {args.min_games}")
 
+    metrics_volatility_threshold = float(volatility_threshold) if volatility_threshold is not None else float("nan")
     before_brier = brier_score_loss(actual, preds)
     before_auc = roc_auc_score(actual, preds)
     print(f"[calibrate] samples={len(preds)} seasons={seasons}  baseline Brier={before_brier:.4f} AUC={before_auc:.3f}")
 
     calibrated = preds.copy()
     calibrator: IsotonicRegression | None = None
+    fallback_calibrator: SigmoidCalibrator | None = None
+    fallback_method: str | None = None
+    sigmoid_brier = before_brier
+    sigmoid_auc = before_auc
     after_brier = before_brier
     after_auc = before_auc
     if args.apply_isotonic:
+        fallback_calibrator, sigmoid_calibrated = _fit_sigmoid_calibrator(preds, actual)
+        sigmoid_brier = brier_score_loss(actual, sigmoid_calibrated)
+        sigmoid_auc = roc_auc_score(actual, sigmoid_calibrated)
+        fallback_method = "sigmoid"
+        print(f"[calibrate] sigmoid Brier={sigmoid_brier:.4f} AUC={sigmoid_auc:.3f}")
+
         calibrator = IsotonicRegression(out_of_bounds="clip")
         calibrator.fit(preds, actual)
         calibrated = calibrator.predict(preds)
@@ -184,6 +262,10 @@ def main() -> None:
         "calibrated_brier": float(after_brier),
         "baseline_auc": float(before_auc),
         "calibrated_auc": float(after_auc),
+        "fallback_calibrator": fallback_calibrator,
+        "fallback_method": fallback_method,
+        "fallback_brier": float(sigmoid_brier),
+        "fallback_auc": float(sigmoid_auc),
         "volatility_used": volatility_applied,
     }
     artifact["volatility_metadata"] = volatility_meta
@@ -206,7 +288,7 @@ def main() -> None:
             "samples": int(len(preds)),
             "brier": float(before_brier),
             "auc": float(before_auc),
-            "volatility_threshold": float(volatility_threshold),
+            "volatility_threshold": metrics_volatility_threshold,
             "volatility_strength": float(volatility_strength),
             "volatility_coverage": volatility_meta.get("volatility_coverage", 0.0),
         },
@@ -216,7 +298,7 @@ def main() -> None:
             "samples": int(len(preds)),
             "brier": float(after_brier),
             "auc": float(after_auc),
-            "volatility_threshold": float(volatility_threshold),
+            "volatility_threshold": metrics_volatility_threshold,
             "volatility_strength": float(volatility_strength),
             "volatility_coverage": volatility_meta.get("volatility_coverage", 0.0),
         },

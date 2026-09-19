@@ -33,6 +33,17 @@ SEVERITY_WEIGHTS = {
 }
 
 
+def _first_available_series(
+    df: pd.DataFrame,
+    candidates: list[str],
+    default=None,
+) -> pd.Series:
+    for col in candidates:
+        if col in df.columns:
+            return df[col]
+    return pd.Series(default, index=df.index)
+
+
 def _normalize_name(value: Optional[str]) -> Optional[str]:
     """Upper-case and trim player names so roster / injury sheets can be aligned."""
     if not isinstance(value, str):
@@ -141,8 +152,16 @@ def build_qb_health_features(
             qb_injuries["team"] = qb_injuries[team_col].astype(str).str.upper().str.strip().apply(lambda v: norm_team(v, None))
         else:
             qb_injuries["team"] = pd.NA
-        qb_injuries["player_name_clean"] = qb_injuries.get("player_name") or qb_injuries.get("full_name")
+        qb_injuries["player_name_clean"] = _first_available_series(
+            qb_injuries,
+            ["player_name", "full_name", "name", "display_name"],
+        )
         qb_injuries["player_name_clean"] = qb_injuries["player_name_clean"].apply(_normalize_name)
+        qb_injuries["inj_player_id"] = _first_available_series(
+            qb_injuries,
+            ["player_id", "gsis_id", "nfl_id", "espn_id"],
+            default=pd.NA,
+        )
         status_col = next((c for c in qb_injuries.columns if "status" in c.lower()), None)
         practice_col = next((c for c in qb_injuries.columns if "practice" in c.lower()), None)
         if status_col is None and practice_col is None:
@@ -155,8 +174,14 @@ def build_qb_health_features(
                 for a, b in zip(status_text, practice_text)
             ]
         qb_injuries = qb_injuries[
-            ["season", "week", "team", "player_name_clean", "severity", "player_id"]
-        ].rename(columns={"player_id": "inj_player_id"})
+            ["season", "week", "team", "player_name_clean", "severity", "inj_player_id"]
+        ]
+        qb_injuries["severity"] = pd.to_numeric(qb_injuries["severity"], errors="coerce").fillna(0.0)
+        qb_injuries = (
+            qb_injuries.sort_values("severity")
+            .drop_duplicates(["season", "week", "team", "player_name_clean", "inj_player_id"], keep="last")
+            .reset_index(drop=True)
+        )
 
     roster_lookup = pd.DataFrame()
     if roster_df is not None and not roster_df.empty:
@@ -190,23 +215,30 @@ def build_qb_health_features(
 
     if not qb_injuries.empty:
         inj_join_cols = ["season", "week"]
-        merged = merged.merge(
-            qb_injuries,
-            left_on=inj_join_cols + ["qb_player_id"],
-            right_on=inj_join_cols + ["inj_player_id"],
-            how="left",
-            suffixes=("", "_inj"),
-        )
-        missing_mask = merged["severity"].isna()
-        merged.loc[missing_mask, :] = merged.loc[missing_mask, :].merge(
+        id_injuries = qb_injuries[
+            qb_injuries["inj_player_id"].notna()
+            & (qb_injuries["inj_player_id"].astype(str).str.strip() != "")
+        ]
+        if not id_injuries.empty:
+            merged = merged.merge(
+                id_injuries,
+                left_on=inj_join_cols + ["qb_player_id"],
+                right_on=inj_join_cols + ["inj_player_id"],
+                how="left",
+                suffixes=("", "_inj"),
+            )
+        else:
+            merged["severity"] = np.nan
+
+        name_match = merged.merge(
             qb_injuries.drop(columns=["inj_player_id"]),
             left_on=inj_join_cols + ["team", "qb_name_clean"],
             right_on=inj_join_cols + ["team", "player_name_clean"],
             how="left",
             suffixes=("", "_namefallback"),
         )
-        if "severity_namefallback" in merged.columns:
-            merged["severity"] = merged["severity"].fillna(merged["severity_namefallback"])
+        if "severity_namefallback" in name_match.columns:
+            merged["severity"] = merged["severity"].fillna(name_match["severity_namefallback"])
         merged["severity"] = merged["severity"].fillna(0.0)
     else:
         merged["severity"] = 0.0

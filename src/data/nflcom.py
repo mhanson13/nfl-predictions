@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import re
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import pandas as pd
 from urllib.error import HTTPError
@@ -25,7 +25,7 @@ from urllib.parse import urlencode
 from tqdm import tqdm
 
 from src.utils.io import RAW_DIR, read_df, write_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 
 CATEGORIES = {
     "passing": "offense/passing",
@@ -64,6 +64,44 @@ def _page_url(path: str, year: int, page: int | None = None) -> str:
         return base
     # NFL uses query parameter 'page' for pagination when present
     return base + f"?{urlencode({'page': page})}"
+
+
+def _repair_spaced_header(name: str) -> str:
+    """Undo pandas/nfl.com headers like 'T e a m' without touching normal labels."""
+    tokens = str(name).strip().split()
+    if len(tokens) > 1 and all(len(token) == 1 for token in tokens):
+        return "".join(tokens)
+    return str(name).strip()
+
+
+def _flatten_column_name(column: Any) -> str:
+    if isinstance(column, tuple):
+        parts = [
+            str(part).strip()
+            for part in column
+            if str(part).strip() and not str(part).startswith("Unnamed")
+        ]
+        return _repair_spaced_header(" ".join(parts))
+    return _repair_spaced_header(str(column))
+
+
+def _prepare_team_stats_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize NFL.com stat tables so cache writes are stable parquet files."""
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    out.columns = [_flatten_column_name(c) for c in out.columns]
+
+    team_col = next((c for c in out.columns if re.search(r"team", str(c), re.I)), None)
+    if team_col and team_col != "Team":
+        out = out.rename(columns={team_col: "Team"})
+
+    # NFL.com's long-play columns can mix ints and strings such as "T-12".
+    # Store raw object columns as nullable strings; feature loading reparses numerics.
+    for col in out.select_dtypes(include=["object"]).columns:
+        out[col] = out[col].map(lambda value: None if pd.isna(value) else str(value))
+    return out
 
 def _read_html_with_retries(url: str, attempts: int = MAX_RETRIES, base_delay: float = RETRY_BACKOFF) -> list[pd.DataFrame]:
     """Fetch HTML tables with bounded retries to survive transient HTTP errors."""
@@ -140,16 +178,7 @@ def fetch_team_stats(
     if not frames:
         raise RuntimeError(f"No tables parsed for {category} {year}.")
     out = pd.concat(frames, ignore_index=True)
-    # Clean: Flatten multiindex columns, strip
-    out.columns = [" ".join(map(str, c)).strip() for c in out.columns.values]
-    for c in out.columns:
-        if isinstance(c, str):
-            out.rename(columns={c: c.strip()}, inplace=True)
-    # Standardize team column name
-    team_col = next((c for c in out.columns if re.search(r"team", str(c), re.I)), None)
-    if team_col and team_col != "Team":
-        out.rename(columns={team_col: "Team"}, inplace=True)
-    return out
+    return _prepare_team_stats_frame(out)
 
 def fetch_multi(years: List[int], categories: List[str], force: bool = False) -> Dict[str, pd.DataFrame]:
     results: Dict[str, pd.DataFrame] = {}
@@ -173,6 +202,8 @@ def fetch_multi(years: List[int], categories: List[str], force: bool = False) ->
                     continue
                 # Save per-year cache
                 write_df(df, per_year_path)
+            else:
+                df = _prepare_team_stats_frame(df)
             frames.append(df)
         if not frames:
             message = (
@@ -184,7 +215,7 @@ def fetch_multi(years: List[int], categories: List[str], force: bool = False) ->
         if skipped_years:
             skipped_str = ", ".join(map(str, skipped_years))
             _warn(f"Category '{cat}': missing seasons due to unavailable tables -> {skipped_str}")
-        results[cat] = pd.concat(frames, ignore_index=True)
+        results[cat] = _prepare_team_stats_frame(pd.concat(frames, ignore_index=True))
     return results
 
 def main():
@@ -196,7 +227,7 @@ def main():
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
     args = ap.parse_args()
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     # Expand year ranges if given like 2010-2020
     years = []

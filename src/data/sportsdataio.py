@@ -24,7 +24,7 @@ from typing import Any, Iterable, Optional
 import pandas as pd
 import requests
 
-from src.utils.io import RAW_DIR, write_df
+from src.utils.io import RAW_DIR, read_df, write_df
 from src.utils.secrets import get_secret
 
 
@@ -170,6 +170,19 @@ def _build_output_path(feed: str, season: Optional[int], week: Optional[int]) ->
     return RAW_DIR / f"{base}.parquet"
 
 
+def _cached_feed_has_rows(path: Path) -> bool:
+    """Return True when an existing cache file is readable and non-empty."""
+    try:
+        frame = read_df(path)
+    except Exception as exc:
+        logging.warning("Cached SportsDataIO file %s is unreadable (%s); refetching.", path, exc)
+        return False
+    if frame.empty:
+        logging.info("Cached SportsDataIO file %s has no rows; refetching.", path)
+        return False
+    return True
+
+
 def _to_dataframe(payload: Any) -> pd.DataFrame:
     if isinstance(payload, list):
         if not payload:
@@ -283,7 +296,7 @@ def _fetch_feed(
         season if feed.requires_season else None,
         week if feed.requires_week else None,
     )
-    if output_path.exists() and not overwrite:
+    if output_path.exists() and not overwrite and _cached_feed_has_rows(output_path):
         logging.info("Skipping %s%s (cached at %s)", feed_name, f" {season}" if season else "", output_path)
         return None
 
@@ -436,7 +449,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(levelname)s:%(name)s:%(message)s",
     )
-    logging.getLogger("urllib3").setLevel(logging.DEBUG if args.debug else logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
     api_key = get_secret("SPORTSDATAIO_API_KEY")
     if not api_key:

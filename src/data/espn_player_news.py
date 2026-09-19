@@ -25,7 +25,7 @@ import pandas as pd
 import requests
 
 from src.utils.io import RAW_DIR, read_df, write_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 
 NEWS_ENDPOINT = "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players"
 META_PATH = RAW_DIR / "espn_player_news_meta.json"
@@ -152,7 +152,7 @@ def main() -> None:
     ap.add_argument("--debug", action="store_true", help="Enable verbose logging.")
     args = ap.parse_args()
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     now_utc = datetime.utcnow()
     if not args.force_refresh:

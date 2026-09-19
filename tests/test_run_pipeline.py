@@ -64,6 +64,174 @@ class TestParseArgs:
         assert args.use_async is True
         assert args.max_parallel_data == 6
 
+    def test_prediction_week_defaults_to_auto(self):
+        args = self.rp.parse_args([])
+        assert args.prediction_week == "auto"
+
+    def test_prediction_week_accepts_explicit_week(self):
+        args = self.rp.parse_args(["--prediction-week", "1"])
+        assert args.prediction_week == "1"
+
+    def test_live_run_defaults_false(self):
+        args = self.rp.parse_args([])
+        assert args.live_run is False
+
+    def test_live_run_flag_sets_true(self):
+        args = self.rp.parse_args(["--prediction-week", "1", "--live-run"])
+        assert args.live_run is True
+
+    def test_balldontlie_flags_parse(self):
+        args = self.rp.parse_args([
+            "--skip-balldontlie",
+            "--balldontlie-feeds",
+            "teams",
+            "games",
+            "--enable-sportsdataio",
+        ])
+
+        assert args.skip_balldontlie is True
+        assert args.enable_sportsdataio is True
+        assert args.balldontlie_feeds == ["teams", "games"]
+
+
+class TestRuntimeDependencies:
+    def setup_method(self):
+        self.rp = _import_run_pipeline()
+
+    def test_missing_nfl_data_py_raises_clear_error(self):
+        with patch.object(self.rp.importlib.util, "find_spec", return_value=None):
+            with pytest.raises(RuntimeError, match="nfl-data-py"):
+                self.rp.verify_runtime_dependencies()
+
+
+class TestResolveLiveExclude:
+    def setup_method(self):
+        self.rp = _import_run_pipeline()
+
+    def test_live_run_requires_explicit_prediction_week(self):
+        with pytest.raises(ValueError, match="explicit --prediction-week"):
+            self.rp.resolve_live_exclude("auto", True, 2026)
+
+    def test_live_run_requires_numeric_prediction_week(self):
+        with pytest.raises(ValueError, match="numeric --prediction-week"):
+            self.rp.resolve_live_exclude("wk2", True, 2026)
+
+    def test_live_run_returns_cutoff(self, capsys):
+        cutoff = self.rp.resolve_live_exclude("2", True, 2026)
+
+        assert cutoff == (2026, 2)
+        assert "excluding rows at/after 2026 Week 2" in capsys.readouterr().out
+
+    def test_explicit_prediction_week_without_live_run_warns(self, capsys):
+        cutoff = self.rp.resolve_live_exclude("2", False, 2026)
+
+        assert cutoff is None
+        assert "--prediction-week was set without --live-run" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# build_sequential_jobs — predict_upcoming command wiring
+# ---------------------------------------------------------------------------
+
+class TestBuildSequentialJobs:
+    def setup_method(self):
+        self.rp = _import_run_pipeline()
+
+    def test_prediction_week_is_passed_to_predict_upcoming(self, tmp_path):
+        jobs = self.rp.build_sequential_jobs(
+            years=[2026],
+            current_year=2026,
+            pred_dir=tmp_path / "predictions",
+            debug_flag=[],
+            skip_evaluation=True,
+            include_visualcrossing=False,
+            train_start_year=2016,
+            calibration_season_window=3,
+            use_gpu=False,
+            calibrate_winprob=False,
+            enable_tuning=False,
+            tuning_dir=tmp_path / "tuning",
+            tuning_options={},
+            skip_logit=True,
+            skip_market_roi=True,
+            volatility_options={"skip": True},
+            prediction_week="1",
+        )
+
+        predict_job = next(job for job in jobs if job.name == "predict_upcoming")
+        week_arg_index = predict_job.command.index("--week")
+        assert predict_job.command[week_arg_index + 1] == "1"
+
+    def test_live_exclude_is_passed_to_training_and_analysis_jobs(self, tmp_path):
+        jobs = self.rp.build_sequential_jobs(
+            years=[2024, 2025, 2026],
+            current_year=2026,
+            pred_dir=tmp_path / "predictions",
+            debug_flag=[],
+            skip_evaluation=False,
+            include_visualcrossing=False,
+            train_start_year=2016,
+            calibration_season_window=3,
+            use_gpu=False,
+            calibrate_winprob=False,
+            enable_tuning=False,
+            tuning_dir=tmp_path / "tuning",
+            tuning_options={},
+            skip_logit=True,
+            skip_market_roi=False,
+            volatility_options={"skip": False},
+            prediction_week="1",
+            live_exclude=(2026, 1),
+        )
+
+        for name in [
+            "train_win_prob",
+            "train_spread",
+            "volatility_classifier",
+            "calibrate_winprob",
+            "evaluate_predictions",
+            "market_roi",
+        ]:
+            command = next(job.command for job in jobs if job.name == name)
+            assert "--exclude-from-season" in command
+            assert command[command.index("--exclude-from-season") + 1] == "2026"
+            assert "--exclude-from-week" in command
+            assert command[command.index("--exclude-from-week") + 1] == "1"
+
+        predict_job = next(job for job in jobs if job.name == "predict_upcoming")
+        assert "--exclude-from-season" not in predict_job.command
+
+        calibrate_job = next(job for job in jobs if job.name == "calibrate_winprob")
+        assert "--volatility-threshold" not in calibrate_job.command
+
+    def test_predict_upcoming_runs_after_fresh_calibration(self, tmp_path):
+        jobs = self.rp.build_sequential_jobs(
+            years=[2024, 2025, 2026],
+            current_year=2026,
+            pred_dir=tmp_path / "predictions",
+            debug_flag=[],
+            skip_evaluation=False,
+            include_visualcrossing=False,
+            train_start_year=2016,
+            calibration_season_window=3,
+            use_gpu=False,
+            calibrate_winprob=False,
+            enable_tuning=False,
+            tuning_dir=tmp_path / "tuning",
+            tuning_options={},
+            skip_logit=True,
+            skip_market_roi=False,
+            volatility_options={"skip": False},
+            prediction_week="2",
+            live_exclude=(2026, 2),
+        )
+
+        names = [job.name for job in jobs]
+        assert names.index("predict_history") < names.index("volatility_classifier")
+        assert names.index("volatility_classifier") < names.index("calibrate_winprob")
+        assert names.index("calibrate_winprob") < names.index("predict_upcoming")
+        assert names.index("predict_upcoming") < names.index("evaluate_predictions")
+
 
 # ---------------------------------------------------------------------------
 # run_jobs_parallel — async branch routing

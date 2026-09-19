@@ -24,7 +24,7 @@ import requests
 from datetime import datetime
 
 from src.utils.io import RAW_DIR, write_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.pydantic_schemas import validate_dataframe
 
 BASE_URLS = {
@@ -148,7 +148,7 @@ def main():
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
     args = ap.parse_args()
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     finalized_seasons = _load_finalized_seasons()
     if args.debug and finalized_seasons:

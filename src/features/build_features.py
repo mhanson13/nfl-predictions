@@ -51,7 +51,7 @@ from src.features.redzone_features import build_redzone_features
 from src.features.volatility import engineer_volatility_inputs
 from src.data.weather_fallback import get_fallback_weather
 from src.utils.io import RAW_DIR, PROC_DIR, write_df, read_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.teams import normalize_team_abbr, TEAM_NAME_TO_ABBR
 
 EARTH_RADIUS_KM = 6371.0
@@ -461,7 +461,10 @@ def _load_weather_sources() -> pd.DataFrame:
 
     weather_frames.sort(key=lambda item: item[0])
 
-    weather_df = pd.concat([frame for _, frame in weather_frames], ignore_index=True, sort=False)
+    weather_parts = [frame.dropna(axis=1, how="all") for _, frame in weather_frames if not frame.empty]
+    if not weather_parts:
+        return pd.DataFrame()
+    weather_df = pd.concat(weather_parts, ignore_index=True, sort=False)
 
     weather_df["_weather_rank"] = (
 
@@ -879,8 +882,33 @@ def _normalize_schedule_columns(sched: pd.DataFrame) -> pd.DataFrame:
 
 
 
+    if "roof_is_dome" not in s.columns and "roof" in s.columns:
+        roof = s["roof"].astype("string").str.lower().str.strip()
+        s["roof_is_dome"] = roof.isin({"closed", "dome", "fixed", "indoor", "indoors"}).astype(int)
+
     return s
 
+
+
+def _dedupe_schedule_games(sched: pd.DataFrame, label: str = "schedule") -> pd.DataFrame:
+    """Keep one row per scheduled game after source feeds have been merged."""
+    if sched is None or sched.empty:
+        return sched
+
+    if "game_id" in sched.columns:
+        key = ["game_id"]
+    elif {"season", "week", "home_team", "away_team"}.issubset(sched.columns):
+        key = ["season", "week", "home_team", "away_team"]
+    else:
+        return sched
+
+    dup_mask = sched.duplicated(subset=key, keep=False)
+    if dup_mask.any():
+        examples = sched.loc[dup_mask, key].drop_duplicates().head(5).to_dict("records")
+        print(f"[features] warning: dropping duplicate {label} rows on {key}: {examples}")
+        return sched.drop_duplicates(subset=key, keep="last").reset_index(drop=True)
+
+    return sched
 
 
 # =========================== PBP helpers ===========================
@@ -2641,6 +2669,7 @@ def build_matchup_features(schedule: pd.DataFrame, team_stats: pd.DataFrame) -> 
         team_stats = team_stats.drop_duplicates(subset=['season', 'abbr'])
     
     s = _normalize_schedule_columns(schedule)
+    s = _dedupe_schedule_games(s, "matchup schedule")
     
     # Only keep rows where both teams are real NFL teams
     valid_abbrs = set(team_stats['abbr'].unique()) if 'abbr' in team_stats.columns else set()
@@ -2804,7 +2833,7 @@ def main():
 
 
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     seasons = [int(s) for s in args.season]
 

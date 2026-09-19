@@ -29,7 +29,7 @@ from typing import Callable, List, Optional
 import pandas as pd
 
 from src.utils.io import RAW_DIR, read_df, write_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.pydantic_schemas import validate_dataframe
 
 SEASON_HISTORY_PATH = Path("data/reference/nfl_seasons_history.csv")
@@ -89,14 +89,39 @@ def _determine_seasons_to_fetch(
     return to_fetch
 
 
-def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> None:
+def _dedupe_schedule_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if "game_id" in df.columns:
+        key = ["game_id"]
+    elif {"season", "week", "home_team", "away_team"}.issubset(df.columns):
+        key = ["season", "week", "home_team", "away_team"]
+    else:
+        return df.drop_duplicates(ignore_index=True)
+
+    dup_mask = df.duplicated(subset=key, keep=False)
+    if dup_mask.any():
+        examples = df.loc[dup_mask, key].drop_duplicates().head(5).to_dict("records")
+        print(f"[nflverse] schedules: dropping duplicate rows on {key}: {examples}")
+    return df.drop_duplicates(subset=key, keep="last", ignore_index=True)
+
+
+def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> Path:
     """Append new rows onto cached dataset and write back to disk."""
+    if path.name == "nfl_player_stats.parquet":
+        if not existing.empty:
+            existing = _normalize_player_stats(existing)
+        new_df = _normalize_player_stats(new_df)
+
     if existing.empty:
         combined = new_df
     else:
         combined = pd.concat([existing, new_df], ignore_index=True)
-    combined = combined.drop_duplicates(ignore_index=True)
-    write_df(combined, path)
+    if path.name == "nfl_schedules.parquet":
+        combined = _dedupe_schedule_rows(combined)
+    else:
+        combined = combined.drop_duplicates(ignore_index=True)
+    return write_df(combined, path)
 
 
 # Map from dataset label → schema key (for datasets where validation is meaningful)
@@ -184,7 +209,14 @@ def fetch_pbp(seasons: List[int]) -> pd.DataFrame:
             frames.append(df)
             print(f"{yr} done.")
         except Exception as e:
-            print(f"[nflverse] PBP fetch failed for {yr}: {e}")
+            msg = str(e)
+            if isinstance(e, NameError) and "name 'Error' is not defined" in msg:
+                print(
+                    f"[nflverse] PBP unavailable for {yr}: nfl_data_py raised "
+                    "NameError('Error') for the current-season feed; continuing with cached data."
+                )
+            else:
+                print(f"[nflverse] PBP fetch failed for {yr}: {e}")
             continue
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -264,15 +296,36 @@ def fetch_depth_charts(seasons: List[int]) -> Optional[pd.DataFrame]:
 
 
 def fetch_player_stats(seasons: List[int]) -> Optional[pd.DataFrame]:
-    """Fetch player-level seasonal stats, preferring modern APIs with legacy fallbacks."""
+    """Fetch player-level weekly stats, preferring current nflverse release files."""
+    release_df = download_player_stats(seasons)
+    if release_df is not None and isinstance(release_df, pd.DataFrame) and not release_df.empty:
+        return _normalize_player_stats(release_df)
+
     nfl = _try_import_nfl()
-    # Preferred modern endpoint (available in recent nfl_data_py builds)
+    # Downstream player projection exports expect weekly rows. Fetch seasons
+    # individually so an unavailable current-season file does not discard every
+    # season in the request.
+    fn_weekly = getattr(nfl, "import_weekly_data", None)
+    if callable(fn_weekly):
+        frames: List[pd.DataFrame] = []
+        for season in seasons:
+            try:
+                df = fn_weekly([season], downcast=True, thread_requests=False)  # type: ignore[arg-type]
+            except Exception as exc:  # pragma: no cover - upstream/network errors vary
+                print(f"[nflverse] import_weekly_data failed for {season}: {exc}")
+                continue
+            if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                frames.append(df)
+        if frames:
+            return _normalize_player_stats(pd.concat(frames, ignore_index=True))
+
+    # Fallback endpoints return seasonal rows in some nfl_data_py versions.
     fn = getattr(nfl, "import_seasonal_data", None)
     if callable(fn):
         try:
             df = fn(seasons, s_type="REG")  # type: ignore[arg-type]
             if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
-                return df
+                return _normalize_player_stats(df)
         except Exception as exc:  # pragma: no cover - upstream errors
             print(f"[nflverse] import_seasonal_data failed: {exc}")
     # Legacy fallbacks
@@ -283,7 +336,7 @@ def fetch_player_stats(seasons: List[int]) -> Optional[pd.DataFrame]:
         try:
             df = fn_legacy(seasons)  # type: ignore[misc]
             if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
-                return df
+                return _normalize_player_stats(df)
         except Exception as exc:  # pragma: no cover
             print(f"[nflverse] {name} failed: {exc}")
     return None
@@ -354,7 +407,13 @@ def _try_read_url(url: str) -> Optional[pd.DataFrame]:
         return None
 
 
-def _download_release_dataset(tag: str, patterns: List[str], seasons: List[int]) -> Optional[pd.DataFrame]:
+def _download_release_dataset(
+    tag: str,
+    patterns: List[str],
+    seasons: List[int],
+    *,
+    log_missing: bool = True,
+) -> Optional[pd.DataFrame]:
     frames: List[pd.DataFrame] = []
     for yr in seasons:
         success = False
@@ -377,7 +436,7 @@ def _download_release_dataset(tag: str, patterns: List[str], seasons: List[int])
                 frames.append(df)
                 success = True
                 break
-        if not success:
+        if not success and log_missing:
             print(f"[nflverse] release not found for {tag} {yr}")
     return pd.concat(frames, ignore_index=True) if frames else None
 
@@ -398,9 +457,58 @@ def download_participation(seasons: List[int]) -> Optional[pd.DataFrame]:
 
 
 def download_player_stats(seasons: List[int]) -> Optional[pd.DataFrame]:
-    return _download_release_dataset("player_stats", ["player_stats_{season}.csv"], seasons)
-
-
+    modern = _download_release_dataset(
+        "stats_player",
+        [
+            "stats_player_week_{season}.parquet",
+            "stats_player_week_{season}.csv.gz",
+            "stats_player_week_{season}.csv",
+        ],
+        seasons,
+        log_missing=False,
+    )
+    if modern is not None and not modern.empty:
+        return _normalize_player_stats(modern)
+
+    legacy = _download_release_dataset(
+        "player_stats",
+        [
+            "player_stats_{season}.parquet",
+            "player_stats_{season}.csv.gz",
+            "player_stats_{season}.csv",
+        ],
+        seasons,
+    )
+    return _normalize_player_stats(legacy) if legacy is not None and not legacy.empty else None
+
+def _normalize_player_stats(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    if "recent_team" not in out.columns and "team" in out.columns:
+        out["recent_team"] = out["team"]
+    if "team" not in out.columns and "recent_team" in out.columns:
+        out["team"] = out["recent_team"]
+
+    if "season_type" in out.columns:
+        season_type = out["season_type"]
+        season_type_text = season_type.astype("string").str.strip().str.upper()
+        mapped = season_type_text.map(
+            {
+                "REG": 2,
+                "REGULAR": 2,
+                "REGULAR_SEASON": 2,
+                "REGULAR SEASON": 2,
+                "POST": 3,
+                "POSTSEASON": 3,
+                "POST_SEASON": 3,
+            }
+        )
+        numeric = pd.to_numeric(season_type, errors="coerce")
+        out["season_type"] = numeric.where(numeric.notna(), mapped)
+
+    return out
+
+
 def download_pfr_passing(seasons: List[int]) -> Optional[pd.DataFrame]:
     supported = _filter_supported_seasons(seasons, min_year=MIN_PFR_SEASON, label="pfr_passing release")
     if not supported:
@@ -438,7 +546,7 @@ def main():
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
     args = ap.parse_args()
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     seasons = [int(s) for s in args.season]
     finalized_seasons = _load_finalized_seasons()
@@ -467,16 +575,16 @@ def main():
         df = fetch_fn(seasons_to_fetch)
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             _validate_and_report(label, df)
-            _merge_and_write(path, existing, df)
-            print(f"[nflverse] saved {label} rows={len(df)} -> {path}")
+            output_path = _merge_and_write(path, existing, df)
+            print(f"[nflverse] saved {label} rows={len(df)} -> {output_path}")
             return
 
         if fallback_fn is not None:
             df_fallback = fallback_fn(seasons_to_fetch)
             if df_fallback is not None and isinstance(df_fallback, pd.DataFrame) and not df_fallback.empty:
                 _validate_and_report(label, df_fallback)
-                _merge_and_write(path, existing, df_fallback)
-                print(f"[nflverse] downloaded {label} rows={len(df_fallback)} -> {path}")
+                output_path = _merge_and_write(path, existing, df_fallback)
+                print(f"[nflverse] downloaded {label} rows={len(df_fallback)} -> {output_path}")
                 return
 
         print(f"[nflverse] no {label} returned for seasons {seasons_to_fetch}")
@@ -503,7 +611,7 @@ def main():
         run_dataset("depth charts", RAW_DIR / "nfl_depth_charts.parquet", fetch_depth_charts)
 
     if args.players:
-        run_dataset("player stats", RAW_DIR / "nfl_player_stats.parquet", fetch_player_stats, download_player_stats)
+        run_dataset("player stats", RAW_DIR / "nfl_player_stats.parquet", fetch_player_stats)
 
     if args.pfr:
         if "passing" in args.pfr:

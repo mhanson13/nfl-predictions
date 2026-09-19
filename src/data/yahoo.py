@@ -26,18 +26,20 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 from src.utils.io import RAW_DIR
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.secrets import get_secret
 
 logger = logging.getLogger("yahoo")
 
 
-def ensure_credentials() -> tuple[str, str, str, str, str]:
+def ensure_credentials() -> tuple[str, str, str, str, str, Optional[str]]:
     app_id = get_secret("YAHOO_APP_ID")
     client_id = get_secret("YAHOO_CLIENT_ID")
     client_secret = get_secret("YAHOO_CLIENT_SECRET")
     access_token = get_secret("YAHOO_ACCESS_TOKEN")
-    refresh_token = get_secret("YAHOO_REFRESH_TOKEN") or get_secret("YAHOO_ACCESS_TOKEN_SECRET")
+    refresh_token = get_secret("YAHOO_REFRESH_TOKEN") or get_secret("YAHOO_ACCESS_TOKEN_SECRET")
+
+    redirect_uri = get_secret("YAHOO_REDIRECT_URI")
     missing = [
         key
         for key, value in [
@@ -51,7 +53,42 @@ def ensure_credentials() -> tuple[str, str, str, str, str]:
     ]
     if missing:
         raise RuntimeError(f"Missing Yahoo credentials: {', '.join(missing)}")
-    return app_id, client_id, client_secret, access_token, refresh_token
+    return app_id, client_id, client_secret, access_token, refresh_token, redirect_uri
+
+
+def _persist_refreshed_tokens(access_token: str, refresh_token: str) -> None:
+    secrets_path = Path("secrets.env")
+    if not secrets_path.exists():
+        return
+    updates = {
+        "YAHOO_ACCESS_TOKEN": access_token,
+        "YAHOO_REFRESH_TOKEN": refresh_token,
+    }
+    try:
+        lines = secrets_path.read_text(encoding="utf-8").splitlines()
+        seen: set[str] = set()
+        next_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
+                next_lines.append(line)
+                continue
+            key, _ = line.split("=", 1)
+            key = key.strip()
+            if key in updates:
+                next_lines.append(f"{key}={updates[key]}")
+                seen.add(key)
+            else:
+                next_lines.append(line)
+        missing = [key for key in updates if key not in seen]
+        if missing and next_lines and next_lines[-1].strip():
+            next_lines.append("")
+        for key in missing:
+            next_lines.append(f"{key}={updates[key]}")
+        secrets_path.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
+        logger.info("Persisted refreshed Yahoo OAuth token fields to secrets.env.")
+    except Exception as exc:
+        logger.warning("Failed to persist refreshed Yahoo OAuth token fields: %s", exc)
 
 
 class YahooClient:
@@ -63,7 +100,9 @@ class YahooClient:
         client_id: str,
         client_secret: str,
         access_token: str,
-        refresh_token: str,
+        refresh_token: str,
+
+        redirect_uri: Optional[str] = None,
         *,
         timeout: float = 20.0,
         retries: int = 4,
@@ -72,7 +111,9 @@ class YahooClient:
         self.client_id = client_id
         self.client_secret = client_secret
         self.access_token = access_token
-        self.refresh_token = refresh_token
+        self.refresh_token = refresh_token
+
+        self.redirect_uri = redirect_uri
         self.expires_at: Optional[float] = None
         self.timeout = timeout
         self.retries = retries
@@ -101,7 +142,11 @@ class YahooClient:
             "grant_type": "refresh_token",
             "refresh_token": self.refresh_token,
         }
-        response = requests.post(self.TOKEN_URL, data=payload, auth=auth, timeout=self.timeout)
+        if self.redirect_uri:
+
+            payload["redirect_uri"] = self.redirect_uri
+
+        response = requests.post(self.TOKEN_URL, data=payload, auth=auth, timeout=self.timeout)
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
@@ -112,8 +157,16 @@ class YahooClient:
                 detail = ""
             raise RuntimeError(f"Failed to refresh Yahoo access token: {exc}{detail}") from exc
         data = response.json()
-        self.access_token = data.get("access_token", self.access_token)
-        self.refresh_token = data.get("refresh_token", self.refresh_token)
+        previous_access_token = self.access_token
+
+        previous_refresh_token = self.refresh_token
+
+        self.access_token = data.get("access_token", self.access_token)
+        self.refresh_token = data.get("refresh_token", self.refresh_token)
+
+        if self.access_token != previous_access_token or self.refresh_token != previous_refresh_token:
+
+            _persist_refreshed_tokens(self.access_token, self.refresh_token)
         expires_in = data.get("expires_in")
         if expires_in:
             self.expires_at = time.time() + float(expires_in) - 30
@@ -308,10 +361,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-    _, client_id, client_secret, access_token, refresh_token = ensure_credentials()
+    _, client_id, client_secret, access_token, refresh_token, redirect_uri = ensure_credentials()
     if args.dry_run:
         logger.info("Dry-run mode: Yahoo requests will be skipped.")
         return
@@ -320,7 +373,9 @@ def main() -> None:
         client_id=client_id,
         client_secret=client_secret,
         access_token=access_token,
-        refresh_token=refresh_token,
+        refresh_token=refresh_token,
+
+        redirect_uri=redirect_uri,
     )
     feeds = list(dict.fromkeys(args.feeds))
     try:

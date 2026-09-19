@@ -28,7 +28,7 @@ import httpx
 from src.utils.http import SportradarClient
 from src.utils.secrets import get_secret
 from src.utils.io import RAW_DIR
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.checkpoints import get_last_timestamp, update_timestamp
 
 
@@ -418,7 +418,7 @@ def build_requests(
 
 def main() -> None:
     args = parse_args()
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
     key = ensure_api_key()

@@ -47,6 +47,7 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score
 
 from src.utils.io import read_df
+from src.utils.week_filter import filter_before_week
 
 
 
@@ -162,6 +163,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip generating Matplotlib plots (useful on headless systems).",
     )
+    parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from evaluation.")
+    parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from evaluation.")
     return parser.parse_args()
 
 
@@ -758,6 +761,8 @@ def main() -> None:
 
             preds = preds[preds['season'] <= args.end_season]
 
+    preds = filter_before_week(preds, args.exclude_from_season, args.exclude_from_week)
+
     logger.debug('Filtered predictions shape: %s', preds.shape)
 
     if preds.empty:
@@ -781,6 +786,8 @@ def main() -> None:
         if args.end_season is not None:
 
             actuals = actuals[actuals['season'] <= args.end_season]
+
+    actuals = filter_before_week(actuals, args.exclude_from_season, args.exclude_from_week)
 
     logger.debug('Filtered actuals shape: %s', actuals.shape)
 

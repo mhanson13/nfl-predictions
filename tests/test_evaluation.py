@@ -562,6 +562,55 @@ class TestCalibrationWorkflow:
         assert Path("predictions/evaluation/overall_metrics.csv").exists()
         assert Path("analysis/reliability_curve.png").exists()
 
+    def test_main_uses_threshold_from_volatility_dataset(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(calibrate_module, "MODELS_DIR", tmp_path / "models")
+        history_dir = tmp_path / "history"
+        history_dir.mkdir()
+        history = pd.DataFrame(
+            {
+                "game_id": [f"game_{i}" for i in range(8)],
+                "season": [2024] * 8,
+                "home_win_prob": [0.20, 0.30, 0.40, 0.45, 0.55, 0.65, 0.75, 0.85],
+                "actual_home_win": [0, 0, 0, 1, 0, 1, 1, 1],
+            }
+        )
+        history.to_csv(history_dir / "history_2024.csv", index=False)
+        volatility_path = tmp_path / "volatility.csv"
+        pd.DataFrame(
+            {
+                "game_id": ["game_4", "game_5", "game_6", "game_7"],
+                "volatility_prob": [0.31, 0.33, 0.35, 0.37],
+                "volatility_threshold": [0.34, 0.34, 0.34, 0.34],
+            }
+        ).to_csv(volatility_path, index=False)
+        output_path = tmp_path / "models" / "winprob_calibrator.pkl"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "calibrate_winprob",
+                "--history-dir",
+                str(history_dir),
+                "--seasons",
+                "2024",
+                "--min-games",
+                "8",
+                "--output",
+                str(output_path),
+                "--volatility-dataset",
+                str(volatility_path),
+                "--volatility-strength",
+                "0.25",
+            ],
+        )
+
+        calibrate_module.main()
+
+        artifact = joblib.load(output_path)
+        assert artifact["volatility_used"] is True
+        assert artifact["volatility_metadata"]["volatility_threshold"] == pytest.approx(0.34)
+
     def test_main_rejects_missing_history_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             sys,

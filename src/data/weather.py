@@ -26,7 +26,7 @@ import requests
 
 from src.utils.io import RAW_DIR, PROC_DIR, read_df, write_df
 from src.utils.pydantic_schemas import validate_dataframe
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from pathlib import Path
 from datetime import timedelta
 import uuid
@@ -846,7 +846,7 @@ def main():
     ap.add_argument("--debug", action="store_true", help="Enable verbose debug output")
     args = ap.parse_args()
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
     seasons = [int(s) for s in args.season]
     df = build_game_weather(seasons, api_key=args.api_key)

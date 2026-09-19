@@ -22,6 +22,7 @@ from src.features.build_features import (
     _mk_uid,
     _mk_uid_relaxed,
     _moneyline_to_prob,
+    _dedupe_schedule_games,
     _norm_colname,
     _normalize_schedule_columns,
     _resolve_sportradar_abbr,
@@ -494,6 +495,22 @@ class TestNormalizeScheduleColumns:
         }])
         result = _normalize_schedule_columns(df)
         assert "home_team" in result.columns
+
+    def test_roof_is_dome_derived_from_roof(self):
+        df = self._make_sched()
+        df["roof"] = "closed"
+        result = _normalize_schedule_columns(df)
+        assert result["roof_is_dome"].iloc[0] == 1
+
+
+def test_dedupe_schedule_games_keeps_one_row_per_game_id():
+    df = pd.DataFrame([
+        {"game_id": "2026_01_BAL_IND", "season": 2026, "week": 1, "home_team": "IND", "away_team": "BAL", "value": 1},
+        {"game_id": "2026_01_BAL_IND", "season": 2026, "week": 1, "home_team": "IND", "away_team": "BAL", "value": 2},
+    ])
+    result = _dedupe_schedule_games(df)
+    assert len(result) == 1
+    assert result["value"].iloc[0] == 2
 
 
 # ---------------------------------------------------------------------------

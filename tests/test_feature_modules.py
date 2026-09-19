@@ -423,12 +423,30 @@ class TestEngineerVolatilityInputs:
         result = engineer_volatility_inputs(df)
         assert (result["rest_diff"] == 4.0).all()
 
+    def test_prediction_confidence_features_computed(self):
+        df = _make_volatility_df()
+        df["home_win_prob"] = 0.80
+        df["pred_home_margin"] = -7.0
+        result = engineer_volatility_inputs(df)
+        assert result["model_confidence_abs"].iloc[0] == pytest.approx(0.30)
+        assert result["model_uncertainty"].iloc[0] == pytest.approx(0.40)
+        assert result["model_logit_abs"].iloc[0] == pytest.approx(np.log(4.0))
+        assert result["pred_margin_abs"].iloc[0] == pytest.approx(7.0)
+        assert result["pred_margin_confidence"].iloc[0] == pytest.approx(np.tanh(0.5))
+
     def test_indoor_game_flagged(self):
         df = _make_volatility_df()
         df["roof_is_dome"] = 1
         result = engineer_volatility_inputs(df)
         assert result["indoor_game"].all()
         assert not result["outdoor_game"].any()
+
+    def test_indoor_game_derived_from_roof(self):
+        df = _make_volatility_df().drop(columns=["roof_is_dome"])
+        df["roof"] = "dome"
+        result = engineer_volatility_inputs(df)
+        assert result["roof_is_dome"].eq(1).all()
+        assert result["indoor_game"].all()
 
 
 class TestBuildVolatilityFeatureMatrix:
@@ -459,6 +477,13 @@ class TestBuildVolatilityFeatureMatrix:
         df = _make_volatility_df()
         result = build_volatility_feature_matrix(df)
         assert not result.features.isnull().any().any()
+
+    def test_build_matrix_derives_roof_is_dome_from_roof(self):
+        df = _make_volatility_df().drop(columns=["roof_is_dome"])
+        df["roof"] = "closed"
+        result = build_volatility_feature_matrix(df)
+        assert "indoor_game" in result.features.columns
+        assert result.features["indoor_game"].eq(1.0).all()
 
 
 # ===========================================================================
@@ -580,3 +605,11 @@ class TestBuildQbHealthFeatures:
         sched = _make_sched_qb()
         df = build_qb_health_features(sched, _make_injuries_df(), pd.DataFrame(), [2023], _norm)
         assert (df["qb_recovery_score_rolling3"] >= 0).all()
+
+    def test_injury_feed_without_player_id_matches_by_name(self):
+        sched = _make_sched_qb()
+        injuries = _make_injuries_df().drop(columns=["player_id"])
+        df = build_qb_health_features(sched, injuries, pd.DataFrame(), [2023], _norm)
+        kc_week2 = df[(df["team"] == "KC") & (df["week"] == 2)]
+        assert not kc_week2.empty
+        assert kc_week2["qb_status_flag"].iloc[0] == 1.0
