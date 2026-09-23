@@ -82,22 +82,45 @@ def _load_runs(path: Path) -> pd.DataFrame:
         "rmse_margin": "rmse",
         "n_games": "n_samples",
         "samples": "n_samples",
+        "precision": "precision",
+        "recall": "recall",
+        "specificity": "specificity",
+        "f1": "f1",
+        "actual_positive_rate": "actual_positive_rate",
+        "pred_positive_rate": "pred_positive_rate",
     }
     for src, target in alias_map.items():
         if src in df.columns:
-            df[target] = pd.to_numeric(df[src], errors="coerce")
+            values = pd.to_numeric(df[src], errors="coerce")
+            if target in df.columns:
+                df[target] = df[target].combine_first(values)
+            else:
+                df[target] = values
     timestamp_cols = ["created_at", "run_timestamp", "timestamp"]
-    created = None
+    created = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
     for col in timestamp_cols:
         if col in df.columns:
-            ts = pd.to_datetime(df[col], errors="coerce")
+            ts = pd.to_datetime(df[col], errors="coerce", utc=True)
             if ts.notna().any():
-                created = ts
-                break
-    if created is None:
+                created = created.combine_first(ts)
+    if created.isna().all():
         created = pd.date_range("2000-01-01", periods=len(df), freq="h")
     df["created_at"] = created
-    numeric_cols = ["n_samples", "acc", "auc", "brier", "logloss", "mae", "rmse"]
+    numeric_cols = [
+        "n_samples",
+        "acc",
+        "auc",
+        "brier",
+        "logloss",
+        "mae",
+        "rmse",
+        "precision",
+        "recall",
+        "specificity",
+        "f1",
+        "actual_positive_rate",
+        "pred_positive_rate",
+    ]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -112,6 +135,20 @@ def _load_runs(path: Path) -> pd.DataFrame:
     return df
 
 
+def _current_evaluation_runs(df: pd.DataFrame) -> pd.DataFrame:
+    """Return current-schema full evaluation rows, excluding calibration snapshots and stale runs."""
+    mask = pd.Series(True, index=df.index)
+    if "stage" in df.columns:
+        mask &= df["stage"].isna()
+    for col in ("auc", "brier", "n_samples"):
+        if col in df.columns:
+            mask &= df[col].notna()
+    if "f1" in df.columns and df["f1"].notna().any():
+        mask &= df["f1"].notna()
+    filtered = df.loc[mask].copy()
+    return filtered if not filtered.empty else df.copy()
+
+
 def _best_run(df: pd.DataFrame) -> pd.Series:
     """Pick the run with highest AUC / lowest Brier / lowest LogLoss."""
     sort_columns: list[str] = []
@@ -124,6 +161,13 @@ def _best_run(df: pd.DataFrame) -> pd.Series:
         raise ValueError("overall_metrics.csv lacks auc/brier/logloss columns.")
     df_sorted = df.sort_values(by=sort_columns, ascending=ascending)
     return df_sorted.iloc[0]
+
+
+def _latest_run(df: pd.DataFrame) -> pd.Series:
+    """Pick the most recent run after metric filtering."""
+    if "created_at" not in df.columns:
+        raise ValueError("overall_metrics.csv lacks created_at/run_timestamp/timestamp columns.")
+    return df.sort_values("created_at").iloc[-1]
 
 
 def _baseline_run(df: pd.DataFrame, best_idx: int) -> Optional[pd.Series]:
@@ -159,28 +203,37 @@ def _build_metrics_table(best: pd.Series) -> str:
 
 
 def _compose_section(best: pd.Series, baseline: Optional[pd.Series]) -> str:
-    """Compose the full README section describing the best run."""
+    """Compose the full README section describing the current validated run."""
     best_date = best.get("created_at")
     best_date_str = best_date.strftime("%Y-%m-%d") if pd.notna(best_date) else "unknown date"
     summary = (
-        f"The current best win-probability run is **{best.get('model_name')} ({best.get('run_id')})** "
+        f"The latest validated win-probability evaluation run is **{best.get('model_name')} ({best.get('run_id')})** "
         f"from {best_date_str}. It logged AUC={_format_value(best.get('auc'))}, Brier={_format_value(best.get('brier'))}, "
         f"LogLoss={_format_value(best.get('logloss'))}, Accuracy={_format_value(best.get('acc'))}, "
+        f"F1={_format_value(best.get('f1'))}, "
         f"MAE={_format_value(best.get('mae'), digits=2)}, and RMSE={_format_value(best.get('rmse'), digits=2)}."
     )
     comparison = ""
     if baseline is not None:
         delta_auc = best.get("auc") - baseline.get("auc") if pd.notna(baseline.get("auc")) else None
-        delta_brier = baseline.get("brier") - best.get("brier") if pd.notna(baseline.get("brier")) else None
+        delta_brier = best.get("brier") - baseline.get("brier") if pd.notna(baseline.get("brier")) else None
         if delta_auc is not None and delta_brier is not None:
-            comparison = (
-                f" Compared to the early baseline ({baseline.get('model_name')} / {baseline.get('run_id')}), "
-                f"AUC improved by {delta_auc:+.3f} and Brier dropped by {delta_brier:+.3f}."
-            )
+            if abs(delta_auc) < 0.002 and abs(delta_brier) < 0.002:
+                comparison = (
+                    f" Compared to the earliest current-schema baseline "
+                    f"({baseline.get('model_name')} / {baseline.get('run_id')}), performance is essentially flat."
+                )
+            else:
+                comparison = (
+                    f" Compared to the earliest current-schema baseline "
+                    f"({baseline.get('model_name')} / {baseline.get('run_id')}), "
+                    f"AUC changed by {delta_auc:+.3f} and Brier changed by {delta_brier:+.3f} "
+                    "(lower Brier is better)."
+                )
     bullets = [
-        f"- **AUC ~{_format_value(best.get('auc'))}** - elite ranking of winners vs. losers for an NFL model.",
-        f"- **Brier ~{_format_value(best.get('brier'))}** - probabilities stay tightly calibrated.",
-        f"- **Accuracy ~{_format_value(best.get('acc'))}** - strong directional hit rate despite league parity.",
+        f"- **AUC ~{_format_value(best.get('auc'))}** - ranking quality for winners vs. losers.",
+        f"- **Brier ~{_format_value(best.get('brier'))}** - probability calibration/error for game winners.",
+        f"- **F1 ~{_format_value(best.get('f1'))}** - balance between precision and recall on home-win calls.",
     ]
     metrics_table = _build_metrics_table(best)
     shap_note = (
@@ -228,9 +281,10 @@ def main() -> None:
     except (FileNotFoundError, ValueError) as exc:
         print(f"[update_readme_metrics] {exc}")
         return
-    best = _best_run(df)
-    baseline = _baseline_run(df, best.name)
-    section = _compose_section(best, baseline)
+    current_runs = _current_evaluation_runs(df)
+    latest = _latest_run(current_runs)
+    baseline = _baseline_run(current_runs, latest.name)
+    section = _compose_section(latest, baseline)
     try:
         text = read_text_with_fallback(README_PATH)
     except FileNotFoundError as exc:
@@ -239,7 +293,8 @@ def main() -> None:
     new_text = _replace_section(text, section)
     write_text_with_fallback(README_PATH, new_text)
     print(
-        f"[update_readme_metrics] README updated with run {best.get('run_id')} (AUC={best.get('auc'):.3f}, Brier={best.get('brier'):.3f})."
+        f"[update_readme_metrics] README updated with latest valid run {latest.get('run_id')} "
+        f"(AUC={latest.get('auc'):.3f}, Brier={latest.get('brier'):.3f})."
     )
 
 

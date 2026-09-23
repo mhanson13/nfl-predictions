@@ -96,6 +96,34 @@ def test_fallback_restores_signal_when_stage_range_compresses():
     assert restored.tolist() == fallback.tolist()
 
 
+def test_fallback_restores_raw_signal_when_calibration_saturates():
+    candidate = pd.Series([0.78, 0.96, 0.97, 0.98, 0.979, 0.976, 0.974, 0.971])
+    fallback = pd.Series([0.54, 0.65, 0.66, 0.68, 0.67, 0.66, 0.65, 0.64])
+
+    restored, reason = _fallback_if_probability_collapsed(
+        candidate,
+        fallback,
+        stage="calibration",
+    )
+
+    assert reason == "calibration_saturated"
+    assert restored.tolist() == fallback.tolist()
+
+
+def test_fallback_allows_unsaturated_calibration_shift():
+    candidate = pd.Series([0.58, 0.62, 0.65, 0.69])
+    fallback = pd.Series([0.54, 0.58, 0.61, 0.64])
+
+    restored, reason = _fallback_if_probability_collapsed(
+        candidate,
+        fallback,
+        stage="calibration",
+    )
+
+    assert reason is None
+    assert restored.tolist() == candidate.tolist()
+
+
 def test_best_probability_signal_skips_collapsed_columns():
     df = pd.DataFrame(
         {

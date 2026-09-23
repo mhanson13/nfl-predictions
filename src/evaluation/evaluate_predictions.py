@@ -473,7 +473,7 @@ def compute_metrics(preds: pd.DataFrame, actuals: pd.DataFrame, min_games: int) 
 
 
 
-    auc_records: list[dict[str, float]] = []
+    metric_records: list[dict[str, float]] = []
 
     for (season, week), group in merged.groupby(["season", "week"], sort=False):
 
@@ -485,13 +485,15 @@ def compute_metrics(preds: pd.DataFrame, actuals: pd.DataFrame, min_games: int) 
 
             auc_value = float("nan")
 
-        auc_records.append({"season": season, "week": week, "auc": auc_value})
+        class_metrics = _classification_metrics(group)
+        class_metrics.update({"season": season, "week": week, "auc": auc_value})
+        metric_records.append(class_metrics)
 
-    auc_df = pd.DataFrame(auc_records)
+    metric_df = pd.DataFrame(metric_records)
 
-    if not auc_df.empty:
+    if not metric_df.empty:
 
-        weekly = weekly.merge(auc_df, on=["season", "week"], how="left")
+        weekly = weekly.merge(metric_df, on=["season", "week"], how="left")
 
     else:
 
@@ -504,6 +506,47 @@ def compute_metrics(preds: pd.DataFrame, actuals: pd.DataFrame, min_games: int) 
     weekly = weekly.sort_values("week_order")
 
     return merged, weekly
+
+
+
+def _classification_metrics(df: pd.DataFrame) -> dict[str, float]:
+    if df.empty:
+        return {
+            "precision": float("nan"),
+            "recall": float("nan"),
+            "specificity": float("nan"),
+            "f1": float("nan"),
+            "actual_positive_rate": float("nan"),
+            "pred_positive_rate": float("nan"),
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+        }
+
+    y_true = pd.to_numeric(df["actual_home_win"], errors="coerce").astype(int)
+    y_pred = pd.to_numeric(df["predicted_home_win"], errors="coerce").astype(int)
+    tp = int(((y_true == 1) & (y_pred == 1)).sum())
+    fp = int(((y_true == 0) & (y_pred == 1)).sum())
+    tn = int(((y_true == 0) & (y_pred == 0)).sum())
+    fn = int(((y_true == 1) & (y_pred == 0)).sum())
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) else 0.0
+    f1 = 2.0 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
+    return {
+        "precision": float(precision),
+        "recall": float(recall),
+        "specificity": float(specificity),
+        "f1": float(f1),
+        "actual_positive_rate": float(y_true.mean()) if len(y_true) else float("nan"),
+        "pred_positive_rate": float(y_pred.mean()) if len(y_pred) else float("nan"),
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+    }
 
 
 
@@ -526,6 +569,7 @@ def compute_overall_metrics(merged: pd.DataFrame) -> dict[str, float]:
     rmse = float(math.sqrt(merged["sq_margin_error"].mean())) if n_games else float("nan")
 
     auc = float(roc_auc_score(merged["actual_home_win"], merged["home_win_prob"])) if merged["actual_home_win"].nunique() == 2 else float("nan")
+    class_metrics = _classification_metrics(merged)
 
     return {
 
@@ -538,6 +582,8 @@ def compute_overall_metrics(merged: pd.DataFrame) -> dict[str, float]:
         "log_loss": log_loss_val,
 
         "auc": auc,
+
+        **class_metrics,
 
         "mae_margin": mae,
 
@@ -673,6 +719,8 @@ def plot_metrics(weekly: pd.DataFrame, output_dir: Path) -> bool:
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(x, weekly["accuracy"], marker="o", label="Accuracy")
+    if "f1" in weekly.columns:
+        ax.plot(x, weekly["f1"], marker="o", label="F1")
     ax.plot(x, weekly["brier"], marker="o", label="Brier (lower better)")
     ax.plot(x, weekly["log_loss"], marker="o", label="Log loss (lower better)")
     ax.set_title("Classification Metrics by Week")
@@ -862,7 +910,11 @@ def main() -> None:
 
             f"Overall: n={overall['n_games']}  ACC={overall['accuracy']:.3f}  "
 
-            f"AUC={auc_str}  Brier={overall['brier']:.3f}  LogLoss={overall['log_loss']:.3f}  "
+            f"F1={overall['f1']:.3f}  Precision={overall['precision']:.3f}  "
+
+            f"Recall={overall['recall']:.3f}  AUC={auc_str}  "
+
+            f"Brier={overall['brier']:.3f}  LogLoss={overall['log_loss']:.3f}  "
 
             f"MAE={overall['mae_margin']:.3f}  RMSE={overall['rmse_margin']:.3f}"
 

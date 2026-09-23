@@ -2799,7 +2799,14 @@ def build_matchup_features(schedule: pd.DataFrame, team_stats: pd.DataFrame) -> 
 
         feats["home_margin"] = feats["home_score"] - feats["away_score"]
 
-        feats["home_win"] = (feats["home_margin"] > 0).astype(int)
+        feats["home_win"] = np.select(
+            [
+                feats["home_margin"] > 0,
+                feats["home_margin"] < 0,
+            ],
+            [1.0, 0.0],
+            default=np.nan,
+        )
 
     else:
 
@@ -3901,32 +3908,39 @@ def _add_weekly_deltas(
 
 
     grouped = out.groupby(["season", "team"], group_keys=False)
+    derived_cols: dict[str, pd.Series] = {}
 
     for col in value_cols:
 
         prev = grouped[col].shift(1)
 
-        delta = grouped[col].diff()
+        prev2 = grouped[col].shift(2)
+
+        delta = prev - prev2
 
         with np.errstate(divide="ignore", invalid="ignore"):
 
-            pct_change = delta / prev.replace(0, np.nan)
+            pct_change = delta / prev2.replace(0, np.nan)
 
         pct_change = pct_change.replace([np.inf, -np.inf], np.nan)
 
-        out[f"{col}_prev"] = prev
+        derived_cols[f"{col}_prev"] = prev
 
-        out[f"{col}_delta"] = delta
+        derived_cols[f"{col}_delta"] = delta
 
-        out[f"{col}_pct_change"] = pct_change
+        derived_cols[f"{col}_pct_change"] = pct_change
 
         for window in rolling_windows:
 
-            out[f"{col}_rolling{window}"] = grouped[col].transform(
+            derived_cols[f"{col}_rolling{window}"] = grouped[col].transform(
 
-                lambda s, w=window: s.rolling(window=w, min_periods=1).mean()
+                lambda s, w=window: s.shift(1).rolling(window=w, min_periods=1).mean()
 
             )
+
+    if derived_cols:
+
+        out = pd.concat([out, pd.DataFrame(derived_cols, index=out.index)], axis=1).copy()
 
 
 

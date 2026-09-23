@@ -1,608 +1,352 @@
-## Model Performance Checklist
-
-### 1. Basic Metadata
-- [x] `n` = 2581 predictions - large, stable full-sample set (2002-2025)
-- [x] Forward holdout (2024-2025) `n` = 399 games tracked separately
-- [ ] Track `n` per season/run to ensure consistent evaluation size
-
----
-
-### 2. Winner Prediction (Binary Outcome)
-
-| Metric | Published Benchmark* | Current Value | Goal / Objective |
-|--------|----------------------|---------------|------------------|
-| Accuracy | ~0.65-0.70 (pregame models) | **0.651** | >= 0.70 full-season |
-| AUC | >= 0.70 strong; >= 0.75 excellent | **0.757** | >= 0.78 next tier |
-
----
-
-### 3. Probability Calibration
-
-| Metric | Published Benchmark* | Current Value | Goal / Objective |
-|--------|----------------------|---------------|------------------|
-| Brier Score | ~0.208 (e.g., FiveThirtyEight) | **0.197** | <= 0.20 |
-| LogLoss | Lower = better (no fixed public number) | **0.650** | <= 0.60 |
-
----
-
-### 4. Margin/Score Prediction
-
-| Metric | Context / Comparable | Current Value | Goal / Objective |
-|--------|----------------------|---------------|------------------|
-| MAE | ~10 pts typical NFL margin error | **10.11** | <= 9.5 |
-| RMSE | Highlights larger prediction errors | **13.05** | <= 12.5 |
-
----
-
-### 5. Forward Validation Snapshot (2024-2025 holdout)
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 0.714 |
-| AUC | 0.774 |
-| Brier Score | 0.215 |
-| LogLoss | 0.621 |
-| MAE | 10.04 |
-| RMSE | 13.21 |
-
----
-
-### 6. Evaluation Methodology
-
-- [x] Out-of-time (walk-forward) validation
-- [x] Compare predictions vs **market closing odds** (ROI analysis integrated)
-- [x] Calibration plots per probability bin
-- [x] Feature importance tracking after each new data feed (feature lift analysis)
-- [ ] Season-by-season metric table in README
-- [ ] Document major pipeline/data changes in changelog
-
----
-
-### 7. Improvement Actions
-
-- [x] Added new data feed - **AUC improved +0.012** and **Brier -0.005**
-- [x] Add volatility features (weather, injuries, travel, short rest)
-- [x] Apply probability calibration technique (weekly isotonic scaling)
-- [x] Build **market edge dashboard** (model vs implied odds)
-- [x] Promote Visual Crossing historical weather feed (NOAA + Tomorrow.io now act as fallbacks)
-- [x] Rebuilt Streamlit command center with pipeline controls, transparency dashboards, and performance retrospectives
-- [x] Replaced Sportradar-dependent aggregates with nflverse play-by-play derived features (`player_actuals` + PBP team seasonal stats)
-- [ ] Re-evaluate metrics after each feature addition and document change
-
----
-
-### 8. Feature & Market Insights
-
-- **Feature lift (`analysis/feature_lift.py`)**
-  - Win probability enriched vs baseline: AUC +0.018, Brier -0.006 (2016-2025 sample).
-  - Spread enriched vs baseline: MAE -0.28 pts, RMSE -0.41 pts.
-- **Forward validation (`analysis/forward_validation.py`)**
-  - Recent holdout (2024-2025) retains MAE 9.53; highlights need for additional contemporary features to regain AUC >=0.72 in future seasons.
-- **Market ROI (`analysis/market_roi.py`)**
-  - 2020-2023: Home moneyline EV>5% filter ROI **+8.0%** across 310 wagers; Away spread edge>2 pts ROI **+0.60** per unit over 319 bets.
-  - 2016-2025: Home EV>5% moneyline ROI **+2.8%**; Away edge>2 pts spread ROI **+0.61** per unit across 688 bets.
-- **Volatility diagnostics (`analysis/volatility_slices.py`)**
-  - High wind (>= 15 mph, 188 games) drives MAE **11.06** vs. 10.18 in calmer conditions.
-  - Long travel (>= 1500 miles, 454 games) lifts MAE to **10.44**; calibrated shrinkage now tempers those predictions.
-- **Weather coverage**
-  - Visual Crossing hourly history now supplies primary weather features back to 2002, with NOAA (recent obs) and Tomorrow.io archives acting as lower-priority fallbacks.
-- **Volatility classifier (`analysis/volatility_classifier.py`)**
-  - Calibrated logistic (80% decision threshold) AUC **0.98**, precision **1.00**, recall **0.85** on 2024-2025 holdout; travel/timezone and wind signals remain top drivers for shrinkage coverage (~15% of games).
-
----
-
-## Next-Generation Feature Roadmap
-
-### Newly Landed Feature Families
-- **QB availability ladder (injuries + roster depth)** – Surfaces `qb_status_flag`, `qb_status_delta_rolling3`, and `qb_missed_last_game` so the model tempers confidence when a starter trends toward OUT/DNP. This lowers LogLoss by preventing overconfident backup projections and tightens Brier because uncertainty now mirrors actual roster volatility.
-- **Passing EPA differentials** – Rolling league-adjusted dropback EPA (`pass_epa_per_db_*`) tracks whether an offense is surging or regressing relative to the field, sharpening AUC by separating elite passing attacks from replacement-level units.
-- **Opponent-adjusted efficiency (DVOA-lite)** – `off_adj_eff_raw` and `def_adj_eff_raw` subtract opponent priors, keeping calibration tied to true matchup difficulty and stabilising isotonic fits (Brier).
-- **Red-zone execution** – Rolling trip/TD rates for and against stabilise margin expectations, reducing tail risk that previously spiked LogLoss when teams traded field goals.
-- **Pressure & pass-block context** – Rolling pressure/sack rates (generated and allowed) connect OL/DL mismatches to volatility shrink logic, increasing rank-order separation (AUC) without overstating certainty.
-
-### Calibration & Modeling Goals
-- **Near term**
-  1. Refresh isotonic calibrators every two weeks using volatility-aware shrinkage windows to keep Brier drift under 0.01.
-  2. Blend calibrated win probabilities with margin-derived implied win rates to catch extreme spreads.
-  3. Publish a per-feature lift table after each pipeline run to quantify incremental AUC / LogLoss movement.
-- **Mid term**
-  1. Add drive-level scoring odds + situational pace factors for end-game shrinkage and overtime modeling.
-  2. Build pressure heat maps (edge vs. interior) once player tracking feeds stabilise.
-  3. Layer gradient-boosted ensembles (XGBoost + calibrated logistic + volatility classifier) with Bayesian uncertainty estimates.
-- **Long term**
-  1. Expand the volatility toolkit with probabilistic forecasts (Monte Carlo margin distributions, weather-accuracy deltas).
-  2. Integrate coverage/route data for opponent-specific mismatches and pass block win-rate proxies.
-  3. Maintain the automated documentation refresh (README + changelog) inside `tools/run_pipeline.py` so stakeholders always see live accuracy numbers.
-
-### Future Feature Concepts
-- Drive-level EPA momentum and opponent sequencing.
-- Injury recovery curves (return-to-play timelines) to smooth extremes in `qb_status_flag`.
-- Travel fatigue interactions (altitude × rest days) combined with weather-adjusted volatility scores.
-
-Every feature group is explicitly tied to one metric lever: roster-aware availability lowers LogLoss, play-level efficiencies improve Brier, and matchup-adjusted context improves AUC separation.
-
----
-
-## Live Validation Infrastructure Roadmap
-
-### Phase 1: Walk-Forward Validation Framework
-**Status:** ✅ COMPLETE | **Module:** `analysis/walk_forward_validation.py`
-
-- [x] Implement rolling N-year training windows (e.g., train 2016-2020 → test 2021)
-- [x] Test across multiple seasons (2021, 2022, 2023, 2024, 2025, 2026)
-
----
-
-## Phase 2A Goals (Foundation - 4 Weeks)
-
-### Infrastructure
-- [ ] Pipeline runtime: 2-3hr → <30min (6x faster)
-- [ ] Memory usage: 8GB → 4GB (50% reduction)
-- [x] Async pipeline operational with concurrent data fetching (`--use-async --max-parallel-data N`)
-- [x] Connection pooling integrated for HTTP requests (`httpx.AsyncClient` with `Limits`)
-- [x] Checkpoint/resume functionality for failed runs (`AsyncPipelineOrchestrator` + `pipeline_checkpoint.json`)
-
-### Data Quality
-- [x] Schema validation: 18 models covering all primary data sources
-- [x] Pydantic models for all 16+ data sources (NFLverse, ESPN, Sportradar, Weather, Yahoo, PlayerActuals, SportsDataIO)
-- [x] Automated data quality checks with field-level error reporting (`ValidationReport`)
-- [x] Validation metrics tracked (pass/fail rates, common errors via `field_error_counts`)
-- [x] Schema versioning and registry implemented (`SCHEMA_VERSIONS` / `SCHEMA_MODELS`)
-
-### Production Readiness
-- [ ] Monitoring dashboards live (4 Grafana dashboards)
-- [ ] Metrics collection operational (Prometheus)
-- [ ] Health check endpoints active (`/health`, `/health/ready`, `/health/detailed`)
-- [ ] Alerting rules configured for critical metrics
-- [ ] System observability: <5min incident detection
-
-### Testing & Quality
-- [ ] Code coverage: 55% → 70%+ (+15% increase)
-- [ ] Feature module tests complete (>85% coverage)
-- [ ] Data fetcher tests complete (>80% coverage)
-- [ ] Integration tests for async pipeline
-- [ ] All tests passing in <5 minutes
-
-### Week-by-Week Milestones
-
-**Week 1: Async Pipeline Architecture**
-- [x] `AsyncBaseDataFetcher` abstract class created
-- [x] Async pipeline orchestrator implemented
-- [x] 4-6x speedup achieved on data fetching (concurrent subprocesses via `--use-async`)
-- [x] Backward compatibility maintained (default path unchanged; `--use-async` opt-in)
-
-**Week 2: Schema Validation Framework**
-- [x] 18 Pydantic schema models created (16 original + `PlayerActualsRecord` + `SportsDataIORecord`)
-- [x] Schema validator and registry operational (`SCHEMA_VERSIONS`, `SCHEMA_MODELS`, `validate_record()`)
-- [x] `validate_dataframe()` with `ValidationReport` (pass rate, field-level error counts, warn threshold)
-- [x] Validation hooks added to 6 fetchers: `nflverse`, `noaa`, `visualcrossing`, `weather`, `espn_players`, `player_actuals`
-
-**Week 3: Monitoring & Observability**
-- [ ] Prometheus metrics collection live
-- [ ] 4 Grafana dashboards deployed
-- [ ] Health check endpoints operational
-- [ ] Real-time system visibility achieved
-
-**Week 4: Expand Test Coverage**
-- [ ] Feature engineering tests complete
-- [ ] Data fetcher tests complete
-- [ ] Async pipeline integration tests complete
-- [ ] 70%+ code coverage achieved
-
-### Success Criteria
-- ✅ All 10 Phase 2A GitHub issues completed
-- ✅ Pipeline runs in <30 minutes
-- ✅ 100% schema validation coverage
-- ✅ Monitoring dashboards operational
-- ✅ Code coverage >70%
-- ✅ Zero critical bugs in production
-- ✅ Documentation updated for all new features
-
-- [x] Generate per-season metrics with confidence intervals
-- [x] Analyze variance across test periods to detect overfitting
-- [x] Compare against single-split forward validation baseline
-- [x] Create comprehensive README with usage instructions
-- [x] Add unit tests for window generation and validation logic
-
-**Success Criteria:** Consistent performance (AUC ±0.03, Brier ±0.02) across 3+ test seasons
-
-**Usage:**
-```bash
-# Run with default settings (5-year windows, test 2021-2025)
-python -m analysis.walk_forward_validation
-
-# Custom configuration
-python -m analysis.walk_forward_validation --start-season 2016 --end-season 2025 --train-window-years 5
-
-# Run tests
-python test_walk_forward.py
-```
-
-**Outputs:**
-- `analysis/walk_forward_validation/walk_forward_summary.json` - Complete results with aggregated stats
-- `analysis/walk_forward_validation/winprob_by_window.csv` - Per-window win probability metrics
-- `analysis/walk_forward_validation/spread_by_window.csv` - Per-window spread metrics
-- `analysis/walk_forward_validation/winprob_train_*_test_*.csv` - Individual predictions per window
-- `analysis/walk_forward_validation/spread_train_*_test_*.csv` - Individual predictions per window
-
----
-
-### Phase 2: Live Prediction Tracking System
-**Status:** ✅ COMPLETE | **Module:** `analysis/live_tracking.py`
-
-- [x] Create `predictions_log/` directory structure for timestamped predictions
-- [x] Lock predictions before kickoff (no retroactive changes)
-- [x] Fetch actuals from `matchup_features.parquet` after games complete
-- [x] Calculate weekly accuracy, Brier score, calibration metrics
-- [x] Generate weekly validation reports with trend analysis
-- [x] Track prediction versions across model updates
-- [x] Add list-tracked command to view all logged weeks
-- [x] Create comprehensive README with workflow documentation
-- [x] Add unit tests for core functionality
-
-**Success Criteria:** 50+ weeks of locked predictions vs actuals with full audit trail
-
-**Usage:**
-```bash
-# Lock predictions before games (Thursday)
-python -m analysis.live_tracking --lock-predictions --season 2025 --week 10
-
-# Fetch actuals after games (Tuesday)
-python -m analysis.live_tracking --fetch-actuals --season 2025 --week 10
-
-# Calculate metrics and generate report
-python -m analysis.live_tracking --calculate-metrics --season 2025 --week 10
-python -m analysis.live_tracking --generate-report --season 2025 --week 10
-
-# Or run complete weekly cycle
-python -m analysis.live_tracking --weekly-cycle --season 2025 --week 10
-
-# List all tracked weeks
-python -m analysis.live_tracking --list-tracked
-
-# Run tests
-python test_live_tracking.py
-```
-
-**Outputs:**
-- `predictions_log/YYYY/week_NN_predictions.csv` - Locked predictions with timestamps
-- `predictions_log/YYYY/week_NN_actuals.csv` - Actual game results
-- `predictions_log/YYYY/week_NN_metrics.json` - Performance metrics
-- `predictions_log/YYYY/week_NN_report.md` - Weekly validation report
-
----
-
-### Phase 3: Closing Line Value (CLV) Analysis
-**Status:** ✅ COMPLETE | **Module:** `analysis/clv_tracker.py`
-
-- [x] Calculate CLV: `model_prob - closing_odds_implied_prob`
-- [x] Track CLV distribution by bet type (moneyline, spread, total)
-- [x] Measure hit rate when CLV > various thresholds (0%, 2%, 5%)
-- [x] Analyze market efficiency and optimal betting thresholds
-- [x] Generate CLV vs outcome correlation reports
-- [x] Create comprehensive README with CLV interpretation guide
-- [x] Add unit tests for CLV calculations
-- [x] Support weekly and full-season analysis
-
-**Success Criteria:** Demonstrate positive CLV (>52.4% break-even) over 100+ bets
-
-**Usage:**
-```bash
-# Calculate CLV for specific week
-python -m analysis.clv_tracker --season 2025 --week 10 --generate-report
-
-# Calculate CLV for full season
-python -m analysis.clv_tracker --season 2025 --generate-report
-
-# Run tests
-python test_clv_tracker.py
-```
-
-**Outputs:**
-- `analysis/clv_tracking/YYYY_moneyline_clv.csv` - Moneyline CLV data
-- `analysis/clv_tracking/YYYY_spread_clv.csv` - Spread CLV data
-- `analysis/clv_tracking/YYYY_clv_report.md` - CLV analysis report
-- `analysis/clv_tracking/YYYY_week_NN_*.csv` - Weekly CLV data
-
----
-
-### Phase 4: Paper Trading Simulator
-**Status:** ✅ COMPLETE | **Module:** `analysis/paper_trading.py`
-
-- [x] Implement Kelly criterion bet sizing based on edge
-- [x] Track multiple strategies (conservative, moderate, Kelly optimal, aggressive)
-- [x] Calculate ROI, Sharpe ratio, max drawdown over 100+ bets
-- [x] Generate bankroll curves and risk metrics
-- [x] Compare vs flat betting baseline
-- [x] Simulate different bankroll management approaches
-- [x] Create comprehensive README with strategy guide
-- [x] Add unit tests for Kelly calculations and simulator
-
-**Success Criteria:** Positive ROI over 100+ simulated bets with acceptable drawdown (<20%)
-
-**Usage:**
-```bash
-# Simulate single strategy
-python -m analysis.paper_trading --season 2025 --strategy moderate
-
-# Compare all strategies
-python -m analysis.paper_trading --season 2025 --compare-strategies
-
-# Generate full report
-python -m analysis.paper_trading --season 2025 --generate-report
-
-# Run tests
-python test_paper_trading.py
-```
-
-**Outputs:**
-- `analysis/paper_trading/YYYY_strategy_results.json` - Strategy performance metrics
-- `analysis/paper_trading/YYYY_strategy_bets.csv` - Individual bet history
-- `analysis/paper_trading/YYYY_comparison.json` - Multi-strategy comparison
-- `analysis/paper_trading/YYYY_report.md` - Paper trading analysis report
-
-**Strategies:**
-- **Conservative:** 10% Kelly, 3% min CLV, 2% max bet - Lowest risk, steady growth
-- **Moderate:** 25% Kelly, 2% min CLV, 5% max bet - Balanced risk/reward (recommended)
-- **Kelly Optimal:** 50% Kelly, 1% min CLV, 10% max bet - Higher variance, optimal growth
-- **Aggressive:** 100% Kelly, 0% min CLV, 15% max bet - Maximum risk, fastest growth/drawdown
-
----
-
-### Phase 5: Real-Time Calibration Monitoring
-**Status:** ✅ COMPLETE | **Module:** `analysis/calibration_monitor.py`
-
-- [x] Generate weekly reliability diagrams (predicted vs actual)
-- [x] Decompose Brier score (calibration + resolution + uncertainty components)
-- [x] Detect calibration drift and trigger recalibration alerts
-- [x] Track probability bin accuracy over time
-- [x] Calculate mean and max calibration error
-- [x] Support weekly and full-season monitoring
-- [x] Create comprehensive README with interpretation guide
-- [x] Add unit tests for all core functions
-
-**Success Criteria:** Maintain Brier drift <0.02 across season with automated recalibration
-
-**Usage:**
-```bash
-# Monitor single week
-python -m analysis.calibration_monitor --season 2025 --week 10 --generate-report
-
-# Monitor full season
-python -m analysis.calibration_monitor --season 2025 --generate-report
-
-# Check for drift
-python -m analysis.calibration_monitor --season 2025 --check-drift --threshold 0.02
-
-# Generate reliability diagram
-python -m analysis.calibration_monitor --season 2025 --plot-reliability
-
-# Run tests
-python test_calibration_monitor.py
-```
-
-**Outputs:**
-- `analysis/calibration_monitoring/YYYY_season_metrics.json` - Calibration metrics
-- `analysis/calibration_monitoring/YYYY_season_bins.json` - Probability bin statistics
-- `analysis/calibration_monitoring/YYYY_season_reliability.png` - Reliability diagram
-- `analysis/calibration_monitoring/YYYY_drift_alerts.json` - Drift alerts (if detected)
-- `analysis/calibration_monitoring/YYYY_season_report.md` - Comprehensive report
-
-**Key Metrics:**
-- **Brier Score:** Overall prediction accuracy (lower is better, 0.19-0.22 typical)
-- **Calibration Component:** Deviation from actual frequencies (lower is better)
-- **Resolution Component:** Ability to separate outcomes (higher is better)
-- **Calibration Error:** Mean absolute error across bins (<0.02 excellent, <0.05 good)
-- **Max Calibration Error:** Worst bin error (<0.10 acceptable)
-
----
-
-### Phase 6: Public Model Benchmark Comparison
-**Status:** ✅ COMPLETE | **Module:** `analysis/benchmark_comparison.py`
-
-- [x] Implement nfelo (FiveThirtyEight Elo) probability calculation
-- [x] Compare head-to-head accuracy vs nfelo
-- [x] Compare Brier score and AUC vs Vegas consensus
-- [x] Test against simple baselines (home favorite, spread-based)
-- [x] Run statistical significance tests (McNemar, DeLong, paired t-test)
-- [x] Generate comparative performance reports
-- [x] Create comprehensive README with interpretation guide
-- [x] Add unit tests for all benchmark calculations
-
-**Success Criteria:** Match or exceed nfelo accuracy and demonstrate statistical significance
-
-**Usage:**
-```bash
-# Compare single season
-python -m analysis.benchmark_comparison --season 2025 --generate-report
-
-# Compare multiple seasons
-python -m analysis.benchmark_comparison --start-season 2023 --end-season 2025 --generate-report
-
-# Run tests
-python test_benchmark_comparison.py
-```
-
-**Outputs:**
-- `analysis/benchmark_comparison/YYYY_comparison.json` - Complete comparison results
-- `analysis/benchmark_comparison/YYYY_report.md` - Markdown report with significance tests
-
-**Benchmarks:**
-- **nfelo:** FiveThirtyEight Elo ratings (~65 point home field advantage)
-- **Vegas Consensus:** Closing odds implied probabilities
-- **Spread Baseline:** Point spread to probability conversion (~3% per point)
-- **Home Favorite:** Always pick home team if favored (simplest baseline)
-
-**Statistical Tests:**
-- **McNemar Test:** Compares accuracy (paired binary classifier test)
-- **DeLong Test:** Compares AUC (ROC curve comparison)
-- **Paired T-Test:** Compares Brier score (calibration quality)
-- **Significance Level:** p < 0.05 indicates statistically significant difference
-
----
-
-### Phase 7: Streamlit Dashboard Integration
-**Status:** ✅ COMPLETE | **Enhancement:** `streamlit_app.py` - New "Live Validation" Tab
-
-- [x] Current season performance section (week-by-week metrics)
-- [x] Paper trading results display (strategy comparison table)
-- [x] Calibration health dashboard (reliability plots, drift alerts)
-- [x] Benchmark comparison charts (vs nfelo, Vegas, baselines)
-- [x] CLV tracking visualization (distribution, hit rates)
-- [x] Walk-forward validation results display
-- [x] Season selector and quick actions
-- [x] Integrated with all validation modules
-
-**Success Criteria:** Real-time dashboard showing all validation metrics with drill-down capability
-
-**Features:**
-- **Current Season Performance:** Weekly metrics, accuracy trends, Brier score tracking
-- **Calibration Health:** Brier decomposition, calibration error, drift alerts, reliability diagrams
-- **CLV Analysis:** Average CLV, positive CLV percentage, win rate vs break-even, high CLV games
-- **Paper Trading:** Strategy comparison table with ROI, Sharpe ratio, max drawdown
-- **Benchmark Comparison:** Model vs nfelo/Vegas/baselines with statistical significance
-- **Walk-Forward Validation:** Multi-season consistency metrics with per-window results
-- **Quick Actions:** Refresh metrics, generate reports, export data
-
-**Usage:**
-```bash
-# Start Streamlit app
-streamlit run streamlit_app.py
-
-# Navigate to "Live Validation" tab
-# Select season from dropdown
-# View all validation metrics in one place
-```
-
-**Dashboard Sections:**
-1. **Current Season Performance** - Weekly tracking with trend charts
-2. **Calibration Health** - Brier decomposition, drift detection, reliability plots
-3. **Closing Line Value (CLV)** - Market edge analysis with distribution charts
-4. **Paper Trading Results** - Strategy performance comparison
-5. **Benchmark Comparison** - Statistical significance testing vs public models
-6. **Walk-Forward Validation** - Multi-season consistency analysis
-7. **Quick Actions** - Refresh, report generation, data export
-
----
-
-### Phase 8: Automated Weekly Validation Pipeline
-**Status:** ✅ COMPLETE | **Script:** `run_validation.bat`
-
-- [x] Create smart Windows batch file with day-of-week detection
-- [x] Implement automatic task selection based on schedule
-- [x] Add comprehensive logging with timestamps
-- [x] Implement color-coded console output
-- [x] Add error handling and reporting
-- [x] Create Windows Task Scheduler integration guide
-- [x] Document complete automation workflow
-
-**Automation Schedule:**
-- **Thursday (pre-games):** Lock predictions with timestamps
-- **Tuesday (post-games):** Fetch actuals, calculate metrics, generate reports
-- **1st of Month:** Monthly calibration, CLV, paper trading, benchmark reports
-- **February:** Full walk-forward validation (end of season)
-
-**Usage:**
-```cmd
-# Automatic - runs appropriate tasks for today
-run_validation.bat
-
-# Force all tasks regardless of day
-run_validation.bat --force-all
-
-# Show help
-run_validation.bat --help
-```
-
-**Features:**
-- ✅ Intelligent day-of-week/month detection
-- ✅ Automatic task selection and execution
-- ✅ Complete logging with timestamped files
-- ✅ Color-coded console output
-- ✅ Error handling and summary reporting
-- ✅ Windows Task Scheduler integration
-- ✅ Manual override capability
-- ✅ Complete documentation (450 lines)
-
-**Documentation:** `docs/AUTOMATED_VALIDATION_GUIDE.md`
-
-**Success Criteria:** Fully automated weekly validation with zero manual intervention ✅
-
----
-
-### Phase 9: Validation Methodology Documentation
-**Status:** ✅ COMPLETE | **Document:** `docs/VALIDATION_METHODOLOGY.md`
-
-- [x] Document walk-forward validation approach and rationale
-- [x] Explain CLV calculation and interpretation
-- [x] Describe paper trading simulation methodology
-- [x] Provide reproducibility instructions for all validation steps
-- [x] Include interpretation guidelines for validation metrics
-- [x] Document best practices for live deployment
-- [x] Create comprehensive Streamlit user guide
-- [x] Document complete weekly/monthly/seasonal workflows
-
-**Success Criteria:** Complete documentation enabling independent validation reproduction
-
-**Deliverables:**
-- `docs/VALIDATION_METHODOLOGY.md` (1100 lines) - Complete validation methodology
-- `docs/STREAMLIT_USER_GUIDE.md` (900 lines) - Dashboard usage guide
-- Phase-specific documentation for all 7 validation modules
-- Module-specific READMEs with interpretation guides
-- Troubleshooting guides and best practices
-- Complete workflow documentation (weekly, monthly, seasonal)
-
----
-
-### Implementation Priority
-
-**High Priority (Immediate):**
-1. Walk-forward validation framework (prove model on unseen data)
-2. Live prediction tracking system (establish audit trail)
-3. CLV tracking module (measure true edge)
-
-**Medium Priority (Next Quarter):**
-4. Paper trading simulator (demonstrate betting viability)
-5. Calibration monitoring (maintain prediction quality)
-6. Dashboard integration (transparency and visibility)
-
-**Lower Priority (Future):**
-7. Public model comparison (competitive benchmarking)
-8. Automated pipeline (operational efficiency)
-9. Documentation (knowledge transfer)
-
----
-
-### Key Deliverables
-
-1. **Walk-Forward Validation Report** - Per-season metrics (2021-2026) with variance analysis
-2. **Live Tracking Dashboard** - Real-time accuracy, Brier trends, calibration health
-3. **CLV Analysis Report** - Distribution, hit rates, market efficiency insights
-4. **Paper Trading Results** - 100+ bet history, ROI by strategy, risk metrics
-5. **Benchmark Comparison** - Head-to-head vs nfelo, Vegas, baselines with significance tests
-6. **Validation Methodology Guide** - Complete documentation for reproducibility
-
----
-
-### Success Metrics
-
-**Validation infrastructure is successful when:**
-- ✅ Walk-forward validation shows consistent performance across 3+ test seasons
-- ✅ Live tracking demonstrates 50+ weeks of predictions vs actuals
-- ✅ CLV analysis shows positive edge vs closing lines (>52.4% break-even)
-- ✅ Paper trading achieves positive ROI over 100+ bets
-- ✅ Calibration remains stable (Brier drift <0.02)
-- ✅ Performance matches or exceeds public benchmarks (nfelo, Vegas)
-- ✅ All metrics transparently documented and independently reproducible
-
----
-
-\*Benchmarks based on publicly available research and models (e.g., FiveThirtyEight pre-game win probabilities, Kaggle ML comparisons, sports analytics calibration literature).
-
----
-
-### Instructions for Use
-- Update "Current Value" and checkboxes after each major run.
-- Record snapshot tables per season/year for historical progress tracking.
-- Treat "Goal / Objective" column as next-step performance targets.
-- Mark validation roadmap items as complete when implemented and tested.
+# NFL Predictions Goals
+
+Last reviewed: 2026-09-23
+
+This file is the live roadmap and status board for the NFL prediction pipeline. Keep it tied to current artifacts, not historical plans. Do not mark work complete unless the code, generated output, or documentation exists in the repo.
+
+## Maintenance Rules
+
+- Update this file after any production pipeline run that materially changes metrics, data sources, model behavior, publishing flow, or roadmap priority.
+- Use current artifact paths when marking a goal complete.
+- Keep historical implementation notes in `docs/`; keep this file focused on current goals and status.
+- Do not keep inactive phase labels. If a task is still worth doing, keep it on the roadmap. If not, remove it.
+
+## Latest Validated Run
+
+Source artifacts:
+
+- `predictions/evaluation/overall_metrics.csv`
+- `analysis/market_benchmark.csv`
+- `analysis/market_benchmark_summary.csv`
+- `analysis/market_disagreement_roi.csv`
+- `analysis/market_roi_spread.csv`
+- `analysis/market_roi_spread_edge_bins.csv`
+- `analysis/model_metrics_week_03.csv`
+- `data/processed/player_prop_labels.parquet`
+- `data/processed/player_prop_features_offense.parquet`
+- `data/processed/player_prop_features_defense.parquet`
+- `predictions/evaluation/player_props/baseline_metrics.csv`
+- `predictions/evaluation/player_props/baseline_predictions.csv`
+- `predictions/evaluation/player_props/model_metrics.csv`
+- `predictions/evaluation/player_props/model_predictions.csv`
+- `predictions/evaluation/player_props/model_vs_baseline.csv`
+- `predictions/evaluation/player_props/prop_quality_week_03.csv`
+- `predictions/evaluation/player_props/prop_quality_summary_week_03.csv`
+- `predictions/evaluation/player_props/prop_line_coverage_week_03.csv`
+- `predictions/player_props_qb.csv`
+- `predictions/player_props_offense.csv`
+- `predictions/player_props_defense.csv`
+- `predictions/player_props_novelty.csv`
+- `data/raw/propline_player_props_2026_wk03.parquet`
+- `data/processed/player_prop_historical_line_eval.parquet`
+- `data/processed/player_prop_over_probability_eval.parquet`
+- `predictions/evaluation/player_props/historical_line_join_summary.csv`
+- `predictions/evaluation/player_props/over_probability_metrics.csv`
+- `predictions/evaluation/player_props/over_probability_bins.csv`
+- `data/raw/espn_rosters_<season>_wkNN.parquet`
+- `data/raw/espn_depthcharts_<season>_wkNN.parquet`
+- `data/raw/espn_injuries_<season>_wkNN.parquet`
+- `data/processed/current_player_availability.parquet`
+- `analysis/run_comparisons/run_report.md`
+- `README.md`
+
+Latest full evaluation snapshot from 2026-09-21:
+
+| Metric | Current | Near-Term Goal |
+|---|---:|---:|
+| Games / samples | 2250 | Track per run |
+| Accuracy | 0.654 | >= 0.670 |
+| F1 | 0.696 | >= 0.710 |
+| AUC | 0.707 | >= 0.720 |
+| Brier | 0.218 | <= 0.210 |
+| LogLoss | 0.627 | <= 0.610 |
+| Margin MAE | 10.24 | <= 9.75 |
+| Margin RMSE | 13.27 | <= 12.75 |
+
+Current read: the model is usable but below the earlier aspirational AUC/Brier targets. Treat prior AUC values near 1.0 as invalid or stale unless backed by the current evaluation pipeline.
+
+## What Is In Place
+
+- Core pipeline command with async data ingestion, GPU training, live-week exclusion, evaluation, SHAP, run comparison, README refresh, and optional MTB publishing.
+- Current operational defaults: `--start-year 2017`, `--max-parallel-data 8`, `--data-start-delay 1`, `--live-run`, and `--publish-mtb` when exporting to the website repo.
+- NFLVerse, ESPN, NFL.com, NOAA/weather, Visual Crossing, BallDontLie, PropLine, Yahoo, SportsDataIO fallback, and local reference-data ingestion paths.
+- BallDontLie is the preferred commercial feed. SportsDataIO remains a fallback and should not run by default when BallDontLie is configured.
+- Current team prediction outputs:
+  - `predictions/predictions.csv`
+  - `predictions/predictions_full.csv`
+  - `predictions/history/*.csv`
+  - `predictions/evaluation/*.csv`
+- Current rate-based player projection outputs:
+  - `predictions/predictions_players_qb.csv`
+  - `predictions/predictions_players_offense.csv`
+  - `predictions/predictions_players_defense.csv`
+- First player-prop label table exists for QB passing yards, RB rushing yards, WR/TE receiving yards, and defensive player sacks:
+  - `data/processed/player_prop_labels.parquet`
+- Split player-prop feature tables exist so offensive and defensive player models do not share one mixed feature matrix:
+  - `data/processed/player_prop_features_offense.parquet`
+  - `data/processed/player_prop_features_defense.parquet`
+- First player-prop baseline evaluation exists for current rate-based projection CSVs:
+  - `predictions/evaluation/player_props/baseline_metrics.csv`
+  - `predictions/evaluation/player_props/baseline_predictions.csv`
+- First trained player-prop model evaluation exists for the first four markets:
+  - `predictions/evaluation/player_props/model_metrics.csv`
+  - `predictions/evaluation/player_props/model_predictions.csv`
+  - `predictions/evaluation/player_props/model_vs_baseline.csv`
+  - `models/player_props/offense/*_model.pkl`
+  - `models/player_props/defense/*_model.pkl`
+- Weekly player-prop quality reports exist for the live board:
+  - `predictions/evaluation/player_props/prop_quality_week_NN.csv`
+  - `predictions/evaluation/player_props/prop_quality_summary_week_NN.csv`
+  - `predictions/evaluation/player_props/prop_line_coverage_week_NN.csv`
+- Weekly trained-model player-prop prediction exports exist for the first four markets:
+  - `predictions/player_props_qb.csv`
+  - `predictions/player_props_offense.csv`
+  - `predictions/player_props_defense.csv`
+  - `predictions/player_props_novelty.csv` currently writes the target schema only; novelty markets are not modeled yet.
+- Player-prop line snapshots are available through PropLine:
+  - `data/raw/propline_player_props_<season>_wkNN.parquet`
+  - Week 3 currently matched 22 trained-model output rows with lines after sportsbook team aliases and safer player-name matching were added.
+- Manual historical player-prop odds backfill scaffolding exists through The Odds API:
+  - `src.data.odds_api_historical`
+  - event discovery outputs: `data/raw/oddsapi_historical_events_<snapshot>.parquet`
+  - event market discovery outputs: `data/raw/oddsapi_historical_event_markets_<season>_wkNN_<event>_<snapshot>.parquet`
+  - event player-prop outputs: `data/raw/oddsapi_historical_player_props_<season>_wkNN_<event>_<snapshot>.parquet`
+- Resumable Odds API historical player-prop backfill controller exists:
+  - `src.data.odds_api_backfill`
+  - manifest output: `data/processed/oddsapi_player_prop_backfill_manifest.parquet`
+  - aggregate events output: `data/raw/oddsapi_historical_events_backfill.parquet`
+  - aggregate event-market output: `data/raw/oddsapi_historical_event_markets_backfill.parquet`
+  - aggregate player-prop odds output: `data/raw/oddsapi_historical_player_props_backfill.parquet`
+  - normalized line output: `data/processed/oddsapi_historical_player_prop_lines.parquet`
+  - 2025-current backfill completed for 317 games and normalized 24,202 sportsbook line rows across DraftKings, FanDuel, and Hard Rock.
+- Historical prop-line join artifact exists:
+  - `data/processed/player_prop_historical_line_eval.parquet`
+  - `predictions/evaluation/player_props/historical_line_join_summary.csv`
+  - Current join matched 11,361 sportsbook line rows to walk-forward model predictions and actuals.
+- Per-market historical over-probability evaluation exists:
+  - `src.player_props.over_probability`
+  - `data/processed/player_prop_over_probability_eval.parquet`
+  - `predictions/evaluation/player_props/over_probability_metrics.csv`
+  - `predictions/evaluation/player_props/over_probability_bins.csv`
+  - Current first-pass residual-CDF probabilities are published for diagnostics, but market implied probabilities still beat them overall on Brier and LogLoss.
+- Weekly player-prop CSVs now include line-specific probability fields when historical calibration data and a matched line are available:
+  - `prob_over`
+  - `prob_over_raw`
+  - `prob_edge`
+  - `prob_over_method`
+  - `prob_over_sample_size`
+  - `over_break_even_probability`, `under_break_even_probability`, `over_ev`, `under_ev`, `edge_side`, `edge_odds`, `edge_break_even_probability`, and `edge_ev`
+  - Price-aware EV fields account for sportsbook vig, but remain diagnostic until over-probability calibration beats sportsbook implied probabilities.
+- Current-week ESPN roster, depth chart, and injury snapshots are now wired into the pipeline for explicit prediction weeks:
+  - `src.data.espn_rosters`
+  - `data/raw/espn_rosters_<season>_wkNN.parquet`
+  - `data/raw/espn_depthcharts_<season>_wkNN.parquet`
+  - `data/raw/espn_injuries_<season>_wkNN.parquet`
+- Unified current-player availability is now built from ESPN, nflverse, and BallDontLie sources:
+  - `src.player_availability`
+  - `data/processed/current_player_availability.parquet`
+- Weekly player-prop CSVs can now include roster validation fields:
+  - `current_team`
+  - `active_current_roster`
+  - `roster_validation_flag`
+  - `roster_validation_source`
+  - `availability_status`
+  - `depth_chart_position`
+  - `depth_chart_rank`
+- MattyTheBookie publishing flow:
+  - `tools.publish_mtb_csvs`
+  - `tools.import_mtb_predictions`
+  - `C:\Code\mtb\data\prediction-csvs\current\*.csv`
+  - `C:\Code\mtb\data\prediction-csvs\seasons\<season>\week_NN\*.csv`
+  - `C:\Code\mtb\data\predictions\current.json`
+  - `C:\Code\mtb\data\predictions\seasons\<season>\week_NN.json`
+- Schema models and validation framework exist in `src/utils/pydantic_schemas.py`, with validation hooks in several ingestion jobs.
+- Run comparison, market ROI, volatility classifier, calibration, evaluation, and SHAP tooling exist and are integrated into the pipeline where appropriate.
+- Market benchmark artifacts exist for model-vs-no-vig-Vegas comparison:
+  - `analysis/market_benchmark.csv`
+  - `analysis/market_benchmark_summary.csv`
+  - `analysis/market_disagreement_roi.csv`
+  - `analysis/market_roi_spread_edge_bins.csv`
+- Website-ready model metrics export exists for MattyTheBookie About-page consumption:
+  - `analysis/model_metrics_week_NN.csv`
+
+## Current Gaps
+
+- `GOALS.md` and some older docs previously contained stale metrics and completed-status claims. This file should now be the source of current roadmap truth.
+- Live tracking, CLV, paper trading, calibration monitoring, and benchmark modules exist, but their generated artifacts are not currently maintained as live weekly outputs.
+- Current measured coverage is low. Treat any old >70% coverage claim as stale until a fresh full-suite coverage run proves otherwise.
+- Player prop labels, split feature tables, baseline scoring, trained-model evaluation, weekly trained-model CSV exports, optional PropLine sportsbook ingestion, historical line joins, and first-pass over-probability diagnostics now exist for the first four markets. Remaining prop gaps are confidence-tier calibration, prop-line coverage expansion, edge backtesting, and true novelty-market models.
+- Current-week roster validation is newly integrated and needs Week 3/Week 4 production-output review for false positives, missing ESPN matches, and player-name/team alias mismatches.
+- Yahoo Fantasy remains blocked pending API access approval.
+- SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
+- Market benchmarking now publishes model-vs-Vegas probability comparisons and disagreement ROI. CLV is still not maintained as a live weekly artifact.
+- Corrected spread ROI no longer shows broad profitability. Treat the 3-to-5 point edge bucket as a research lead, not a production betting rule.
+
+## Operating Roadmap
+
+### 1. Metrics And Documentation Hygiene
+
+- [x] Auto-update README headline metrics from latest valid evaluation rows.
+- [x] Generate run-comparison report after pipeline runs.
+- [ ] Add season-by-season metric table to README or a dedicated evaluation doc.
+- [ ] Add a lightweight changelog for major pipeline/data/model changes.
+- [ ] Update `GOALS.md` after each meaningful pipeline run or roadmap change.
+- [ ] Reconcile old docs that still claim stale AUC/Brier/coverage values.
+
+### 2. Data Source Direction
+
+- [x] Prefer BallDontLie over SportsDataIO when `BALLDONTLIE_API_KEY` is present.
+- [x] Keep SportsDataIO disabled by default unless `--enable-sportsdataio` is passed.
+- [x] Document current datasource roles in `datasources.md`.
+- [ ] Verify BallDontLie coverage is sufficient for current-season player/team context.
+- [ ] Remove or downgrade SportsDataIO dependencies once BallDontLie replacements are proven.
+- [ ] Enable Yahoo Fantasy feeds only after API approval is confirmed.
+
+### 3. Team Model Improvement
+
+- [x] Use walk-forward historical predictions for calibration/evaluation.
+- [x] Exclude the live prediction week from training/calibration/evaluation during live runs.
+- [x] Apply volatility-aware calibration/shrinkage.
+- [ ] Improve current AUC from ~0.707 to >=0.720 without leakage.
+- [ ] Improve Brier from ~0.218 to <=0.210.
+- [ ] Improve margin MAE from ~10.24 to <=9.75.
+- [ ] Re-check feature lift after every material feature-family change.
+- [x] Rework volatility classifier to RF, log-loss-only labels, and 0.5 percentile default.
+- [ ] Add a separate spread/margin-volatility model instead of mixing margin-error labels into probability volatility.
+- [ ] Improve probability calibration, especially high-confidence picks where LogLoss/Brier penalties are largest.
+- [ ] Build calibration diagnostics by model confidence tier and identify overconfident ranges that need shrinkage or recalibration.
+
+### 4. Market Benchmarking And Betting Edge
+
+Current read from the Week 3 evaluation set:
+
+- SU model accuracy is 65.0% over 2250 games.
+- No-vig Vegas favorite accuracy is about 66.2% over the same games.
+- Model and Vegas favorite agree on about 87.0% of games.
+- In 293 favorite-disagreement games, the model is 45.4% SU and Vegas is 54.6%.
+- Overall model-side moneyline ROI is -3.1%; model-vs-Vegas disagreement ROI is -0.6% at threshold 0.00.
+- Corrected spread ROI is not broadly positive. The best current overall spread signals are home edge >3 points at +4.7% ROI and the 3-to-5 point absolute edge bucket at +7.5% ROI; larger edge buckets are mixed and have smaller samples.
+
+Roadmap:
+
+- [x] Add a `market_benchmark.csv` artifact comparing model probability to no-vig Vegas implied probability for every evaluated game.
+- [x] Publish model-vs-Vegas favorite agreement/disagreement metrics by season and overall.
+- [x] Add moneyline disagreement ROI by probability-edge threshold.
+- [x] Fix and test `analysis.market_roi` spread-line sign convention.
+- [x] Recompute spread ROI using corrected edge: `pred_home_margin - market_home_margin`.
+- [x] Add edge-bin ROI tables for corrected spread edges, including by season and minimum sample thresholds.
+- [ ] Compare model probability directly to no-vig Vegas probability by probability bin and publish the calibration/edge table.
+- [ ] Improve model performance in favorite-disagreement games versus Vegas before treating disagreements as actionable.
+- [ ] Build and backtest a market-aware blend or meta-model using model probability, no-vig moneyline probability, market spread, and current model features.
+- [ ] Track whether any market-aware blend adds genuine edge versus simply mirroring Vegas favorite picks.
+- [ ] Keep spread edge analysis as a separate betting-signal track from straight-up winner model accuracy.
+- [ ] Add closing-line movement / CLV fields to `market_benchmark.csv` when reliable opening and closing snapshots are available.
+- [ ] Promote CLV reports into the weekly validation flow before using ROI results as decision criteria.
+
+### 5. Player Prop Prediction Goals
+
+Current state: legacy player CSVs remain available as rate-based projections, and the first trained-model player prop CSVs now publish weekly for QB passing yards, RB rushing yards, WR/TE receiving yards, and defensive player sacks. PropLine line ingestion is wired through DraftKings, Hard Rock, and FanDuel when `PROPLINE_API_KEY` is configured, with line-consensus/variance diagnostics, injury quality controls, and current-roster validation included in the weekly prop CSVs. Goal: expand line availability reporting, calibrate confidence tiers, backtest prop edges, broaden markets, and score the outputs weekly.
+
+#### First Implementation Slice
+
+- [x] Build normalized player-game label table for the first four markets from historical weekly player stats: `data/processed/player_prop_labels.parquet`.
+- [x] Build split offensive and defensive player-prop feature tables:
+  - `data/processed/player_prop_features_offense.parquet`
+  - `data/processed/player_prop_features_defense.parquet`
+- [x] Score existing rate-based projections as baseline models: `predictions/evaluation/player_props/baseline_metrics.csv`.
+- [x] Train/evaluate first high-volume markets:
+  - [x] QB passing yards
+  - [x] RB rushing yards
+  - [x] WR/TE receiving yards
+  - [x] Defensive player sacks
+- [x] Publish baseline evaluation artifacts under `predictions/evaluation/player_props/`.
+- [x] Publish trained-model evaluation artifacts under `predictions/evaluation/player_props/`.
+- [x] Build weekly trained-model player prop prediction exports.
+- [x] Add optional PropLine player-prop line ingestion for `line`, `implied_probability`, and projection-vs-line `edge`.
+- [x] Add sportsbook line consensus/variance fields to prop exports.
+- [x] Add injury status, injury-exclusion, and bettable flags to prop exports.
+- [x] Add current-week ESPN roster/depthchart/injury snapshots for explicit prediction weeks.
+- [x] Build unified current-player availability from ESPN, nflverse, and BallDontLie.
+- [x] Add roster validation fields to prop exports and block confirmed roster mismatch, practice-squad, and inactive-roster rows from `bettable_flag`.
+- [x] Add weekly player-prop quality report artifacts for board usability review.
+- [x] Add roster validation counts to weekly player-prop quality reports.
+- [x] Report PropLine availability and match quality by week, sportsbook, market, and player naming.
+- [x] Add manual Odds API historical event/event-market/player-prop fetcher for backfill experiments.
+- [x] Build historical prop-line backfill manifest by season/week/game/snapshot time before running quota-heavy pulls.
+- [x] Add resumable Odds API historical backfill controller with paid-key confirmation, event discovery, market discovery, odds fetch, and normalized historical line output.
+- [ ] Calibrate player-prop confidence tiers before treating them as recommendations.
+- [x] Execute the paid one-time Odds API historical player-prop backfill in resumable batches.
+- [x] Join historical prop lines to walk-forward model predictions and actual player results.
+- [x] Add first-pass per-market residual-CDF over probabilities and publish model-vs-market calibration metrics.
+- [ ] Backtest player-prop edge thresholds before treating projection-vs-line deltas as betting signals.
+- [ ] Improve per-market over-probability calibration versus sportsbook implied probabilities before using `prob_edge` as a recommendation signal.
+
+#### Short-Term Roster Availability Plan
+
+- [ ] Review Week 3 and Week 4 player-prop outputs for `roster_validation_flag` false positives before surfacing the flag prominently on MattyTheBookie.
+- [ ] Audit unmatched `unknown` roster rows by player, team, market, and sportsbook line availability.
+- [ ] Add a small weekly exception list only if legitimate active players are repeatedly misclassified by source data.
+- [ ] Confirm ESPN roster/depthchart snapshots are refreshed before `src.player_availability` in every explicit-week pipeline run.
+- [ ] Publish roster-validation summary counts in the weekly debug review alongside PropLine coverage and injury exclusions.
+
+#### Long-Term Roster And Player Identity Plan
+
+- [ ] Build a durable cross-source player identity table linking GSIS, ESPN, BallDontLie, PropLine name keys, and sportsbook display names.
+- [ ] Add confidence scoring for player identity matches so initials/name collisions are visible before they affect bettable rows.
+- [ ] Track roster transitions by week so trades, signings, practice-squad elevations, and IR activations can be audited historically.
+- [ ] Use depth chart rank and active roster status as model features after enough weekly snapshots are collected.
+- [ ] Backtest whether depth chart rank, roster section, and late-week injury status improve prop-line edge calibration.
+
+#### Serious Prop Markets
+
+- [ ] QB: passing yards, passing TDs, interceptions, completions, attempts, rushing yards, rushing TD probability.
+- [ ] RB: rushing yards, carries, rushing TD probability, receiving yards, receptions, targets, total scrimmage yards, anytime TD probability.
+- [ ] WR/TE: receiving yards, receptions, targets, receiving TD probability, total yards, anytime TD probability.
+- [ ] Defense: sacks, QB hits, tackles for loss, total tackles, solo tackles, passes defended, interception probability, forced fumble probability.
+
+#### Fun Novelty Bets
+
+These should stay labeled as novelty longshot watchlists until backtests prove stable calibration:
+
+- [ ] WR/TE passing yards
+- [ ] Pick-six / interception touchdown probability
+- [ ] Defensive touchdown probability
+- [ ] Blocked punt probability
+- [ ] Blocked field goal / blocked kick probability
+- [ ] Return touchdown probability
+- [ ] Fumble recovery touchdown probability
+
+#### Planned Player Prop Outputs
+
+- [x] `predictions/player_props_qb.csv`
+- [x] `predictions/player_props_offense.csv`
+- [x] `predictions/player_props_defense.csv`
+- [x] `predictions/player_props_novelty.csv` schema placeholder.
+- [x] MattyTheBookie CSV publishing support for player prop files.
+- [ ] MattyTheBookie website/import consumption for player prop files, if needed by the MTB repo.
+
+Implementation details live in `docs/PLAYER_PROP_PREDICTION_PLAN.md`.
+
+### 6. Validation Operations
+
+- [x] Evaluation pipeline writes weekly and overall metrics.
+- [x] Run comparison pipeline writes leaderboard and metric trend charts.
+- [x] Live tracking module exists.
+- [x] CLV, paper trading, calibration monitoring, benchmark comparison modules exist.
+- [ ] Refresh live tracking artifacts for the active 2026 season.
+- [ ] Re-run CLV reports with current predictions and odds data.
+- [ ] Re-run paper trading reports after CLV artifacts are current.
+- [ ] Re-run benchmark comparison with current-schema predictions.
+- [ ] Decide whether validation outputs should be generated by the main weekly pipeline or a separate scheduled validation command.
+
+### 7. Testing And Quality
+
+- [x] Unit tests exist for data fetchers, schema validation, prediction helpers, pipeline helpers, publish/import helpers, and analysis utilities.
+- [ ] Run a fresh full test suite after the current Week 3 pipeline finishes.
+- [ ] Establish a realistic current coverage baseline from the full suite.
+- [x] Add focused tests for the first player-prop label builder.
+- [x] Add focused tests for the split player-prop feature builder.
+- [x] Add focused tests for the first player-prop baseline evaluator.
+- [x] Add focused tests for the first player-prop trained-model evaluator.
+- [x] Add focused tests for player-prop model outputs after those outputs exist.
+- [x] Add regression tests for MTB archive publishing.

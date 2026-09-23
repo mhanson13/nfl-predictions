@@ -19,8 +19,39 @@ from typing import Optional, Sequence
 
 import requests
 
+from src.utils.secrets import get_secret
+
 
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{sport}/odds/"
+ODDS_API_FREE_KEY_SECRET = "odds_api_free_key"
+ODDS_API_PAID_KEY_SECRET = "odds_api_paid_key"
+ODDS_API_FREE_KEY_ALIASES = (ODDS_API_FREE_KEY_SECRET, "ODDS_API_FREE_KEY")
+ODDS_API_PAID_KEY_ALIASES = (ODDS_API_PAID_KEY_SECRET, "ODDS_API_PAID_KEY")
+
+
+def _clean_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip().strip('"').strip("'")
+    return cleaned or None
+
+
+def _get_first_configured_secret(names: Sequence[str]) -> Optional[str]:
+    for name in names:
+        value = _clean_secret(get_secret(name))
+        if value:
+            return value
+    return None
+
+
+def get_odds_api_free_key() -> Optional[str]:
+    """Return the free Odds API key used only for non-historical endpoints."""
+    return _get_first_configured_secret(ODDS_API_FREE_KEY_ALIASES)
+
+
+def get_odds_api_paid_key() -> Optional[str]:
+    """Return the paid Odds API key used only for historical endpoints."""
+    return _get_first_configured_secret(ODDS_API_PAID_KEY_ALIASES)
 
 
 def american_to_decimal(odds: float) -> float:

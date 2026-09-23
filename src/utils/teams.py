@@ -83,6 +83,50 @@ TEAM_NAME_TO_ABBR: Dict[str, str] = {
     "Los Angeles Raiders": "LV",
 }
 
+TEAM_NAME_ALIASES_TO_ABBR: Dict[str, str] = {
+    "ARI Cardinals": "ARI",
+    "ATL Falcons": "ATL",
+    "BAL Ravens": "BAL",
+    "BUF Bills": "BUF",
+    "CAR Panthers": "CAR",
+    "CHI Bears": "CHI",
+    "CIN Bengals": "CIN",
+    "CLE Browns": "CLE",
+    "DAL Cowboys": "DAL",
+    "DEN Broncos": "DEN",
+    "DET Lions": "DET",
+    "GB Packers": "GB",
+    "GNB Packers": "GB",
+    "HOU Texans": "HOU",
+    "IND Colts": "IND",
+    "JAC Jaguars": "JAX",
+    "JAX Jaguars": "JAX",
+    "KC Chiefs": "KC",
+    "KAN Chiefs": "KC",
+    "LA Chargers": "LAC",
+    "LAC Chargers": "LAC",
+    "LA Rams": "LAR",
+    "LAR Rams": "LAR",
+    "LV Raiders": "LV",
+    "MIA Dolphins": "MIA",
+    "MIN Vikings": "MIN",
+    "NE Patriots": "NE",
+    "NO Saints": "NO",
+    "NY Giants": "NYG",
+    "NY Jets": "NYJ",
+    "NYG Giants": "NYG",
+    "NYJ Jets": "NYJ",
+    "PHI Eagles": "PHI",
+    "PIT Steelers": "PIT",
+    "SEA Seahawks": "SEA",
+    "SF 49ers": "SF",
+    "SFO 49ers": "SF",
+    "TB Buccaneers": "TB",
+    "TEN Titans": "TEN",
+    "WAS Commanders": "WAS",
+    "WSH Commanders": "WAS",
+}
+
 
 def normalize_team_abbr(val: Any, fallback_name: Any = None) -> Any:
     """
@@ -144,6 +188,6 @@ def get_team_abbr_from_name(team_name: str) -> Optional[str]:
         >>> get_team_abbr_from_name("Oakland Raiders")
         'LV'
     """
-    return TEAM_NAME_TO_ABBR.get(team_name)
+    return TEAM_NAME_TO_ABBR.get(team_name) or TEAM_NAME_ALIASES_TO_ABBR.get(team_name)
 
 # Made with Bob

@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from src.analysis.compare_runs import (
+    _current_evaluation_runs,
     _df_to_markdown,
     _fmt,
     _metric_table,
@@ -128,6 +129,39 @@ class TestLoadRuns:
         result = _load_runs(p)
         assert "model_name" in result.columns
 
+    def test_normalizes_current_evaluation_aliases(self, tmp_path):
+        p = tmp_path / "metrics.csv"
+        pd.DataFrame({
+            "accuracy": [0.65],
+            "log_loss": [0.63],
+            "n_games": [2235],
+            "auc": [0.70],
+            "brier": [0.22],
+        }).to_csv(p, index=False)
+
+        result = _load_runs(p)
+
+        assert result.loc[0, "acc"] == 0.65
+        assert result.loc[0, "logloss"] == 0.63
+        assert result.loc[0, "n_samples"] == 2235
+
+
+class TestCurrentEvaluationRuns:
+    def test_filters_to_current_schema_rows(self):
+        df = pd.DataFrame({
+            "run_id": ["old_leaky", "calibration", "current"],
+            "created_at": pd.to_datetime(["2026-09-20", "2026-09-21", "2026-09-22"]),
+            "stage": [None, "baseline", None],
+            "auc": [0.99, 0.72, 0.71],
+            "brier": [0.08, 0.21, 0.22],
+            "n_samples": [2235, 585, 2235],
+            "f1": [np.nan, np.nan, 0.69],
+        })
+
+        result = _current_evaluation_runs(df)
+
+        assert result["run_id"].tolist() == ["current"]
+
 
 # ---------------------------------------------------------------------------
 # generate_report (with a minimal DataFrame — touches most branches)
@@ -145,3 +179,21 @@ class TestGenerateReport:
         monkeypatch.setattr(cr, "OUTPUT_DIR", tmp_path)
         result = generate_report(_make_runs_df())
         assert "acc" in result.lower() or "accuracy" in result.lower() or isinstance(result, str)
+
+    def test_report_ignores_old_leaky_rows_when_current_schema_exists(self, tmp_path, monkeypatch):
+        import src.analysis.compare_runs as cr
+        monkeypatch.setattr(cr, "OUTPUT_DIR", tmp_path)
+        df = pd.DataFrame({
+            "run_id": ["old_leaky", "current"],
+            "model_name": ["model"] * 2,
+            "created_at": pd.to_datetime(["2026-09-20", "2026-09-21"]),
+            "auc": [0.99, 0.70],
+            "brier": [0.08, 0.22],
+            "n_samples": [2235, 2235],
+            "f1": [np.nan, 0.69],
+        })
+
+        result = generate_report(df)
+
+        assert "current" in result
+        assert "old_leaky" not in result

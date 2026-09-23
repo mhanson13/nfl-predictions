@@ -99,6 +99,11 @@ def _large_df(n: int = 100) -> pd.DataFrame:
     return pd.DataFrame({
         "epa_diff": rng.normal(0, 1, n),
         "completions_diff": rng.normal(0, 2, n),
+        "sched_spread_close_diff": rng.normal(0, 4, n),
+        "inj_out_diff": rng.normal(0, 1, n),
+        "pass_epa_per_db_rolling3_diff": rng.normal(0, 0.2, n),
+        "drive_epa_mean_rolling3_diff": rng.normal(0, 0.4, n),
+        "team_news_count7_post_diff": rng.normal(0, 1, n),
         "weather_temperature": rng.normal(55, 15, n),
         "roof_is_dome": rng.integers(0, 2, n).astype(float),
         "wx_wind_diff": rng.normal(0, 3, n),
@@ -118,8 +123,17 @@ class TestSelectFeatureColumns:
     def test_diff_columns_included(self):
         df = _large_df()
         result = select_feature_columns(df)
-        assert "epa_diff" in result
-        assert "completions_diff" in result
+        assert "sched_spread_close_diff" in result
+        assert "inj_out_diff" in result
+        assert "pass_epa_per_db_rolling3_diff" in result
+        assert "drive_epa_mean_rolling3_diff" in result
+
+    def test_raw_performance_columns_excluded(self):
+        df = _large_df()
+        result = select_feature_columns(df)
+        assert "epa_diff" not in result
+        assert "completions_diff" not in result
+        assert "team_news_count7_post_diff" not in result
 
     def test_weather_columns_included(self):
         df = _large_df()
@@ -151,35 +165,35 @@ class TestSelectFeatureColumns:
     def test_small_df_returns_empty_or_subset(self):
         """With < 50 rows no diff column should pass the support check."""
         rng = np.random.default_rng(7)
-        df = pd.DataFrame({"epa_diff": rng.normal(0, 1, 10)})
+        df = pd.DataFrame({"sched_spread_close_diff": rng.normal(0, 1, 10)})
         result = select_feature_columns(df)
         # Column with fewer than 50 non-NA values should NOT be selected.
-        assert "epa_diff" not in result
+        assert "sched_spread_close_diff" not in result
 
     def test_zero_variance_excluded(self):
         """Constant columns must not be selected."""
         rng = np.random.default_rng(7)
         n = 100
         df = pd.DataFrame({
-            "epa_diff": [1.0] * n,   # zero variance
-            "comp_diff": rng.normal(0, 2, n),
+            "sched_spread_close_diff": [1.0] * n,   # zero variance
+            "inj_out_diff": rng.normal(0, 2, n),
         })
         result = select_feature_columns(df)
-        assert "epa_diff" not in result
+        assert "sched_spread_close_diff" not in result
 
     def test_duplicate_columns_handled(self):
         """Duplicate column names must not raise."""
         rng = np.random.default_rng(7)
         n = 100
-        df = pd.DataFrame(np.random.randn(n, 2), columns=["epa_diff", "epa_diff"])
+        df = pd.DataFrame(np.random.randn(n, 2), columns=["sched_spread_close_diff", "sched_spread_close_diff"])
         result = select_feature_columns(df)
         assert isinstance(result, list)
 
     def test_all_nan_column_excluded(self):
         n = 100
-        df = pd.DataFrame({"epa_diff": [float("nan")] * n})
+        df = pd.DataFrame({"sched_spread_close_diff": [float("nan")] * n})
         result = select_feature_columns(df)
-        assert "epa_diff" not in result
+        assert "sched_spread_close_diff" not in result
 
     def test_leakage_patterns_constant(self):
         assert "win" in LEAKAGE_PATTERNS

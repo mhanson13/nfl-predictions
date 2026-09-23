@@ -2,23 +2,23 @@
 
 ## Model Performance
 
-The current best win-probability run is **winprob_model (run_192)** from 2026-09-19. It logged AUC=0.996, Brier=0.085, LogLoss=0.341, Accuracy=0.973, MAE=7.62, and RMSE=9.95. Compared to the early baseline (winprob_model / run_1), AUC improved by +0.289 and Brier dropped by +0.140.
+The latest validated win-probability evaluation run is **winprob_model (run_235)** from 2026-09-22. It logged AUC=0.709, Brier=0.218, LogLoss=0.625, Accuracy=0.651, F1=0.693, MAE=10.22, and RMSE=13.26. Compared to the earliest current-schema baseline (winprob_model / run_212), performance is essentially flat.
 
 ### Metrics Snapshot
 | Metric | Value |
 |--------|-------|
-| Accuracy | 0.973 |
-| AUC | 0.996 |
-| Brier | 0.085 |
-| LogLoss | 0.341 |
-| MAE | 7.62 |
-| RMSE | 9.95 |
-| n | - |
+| Accuracy | 0.651 |
+| AUC | 0.709 |
+| Brier | 0.218 |
+| LogLoss | 0.625 |
+| MAE | 10.22 |
+| RMSE | 13.26 |
+| n | 2251 |
 
 ### Why it matters
-- **AUC ~0.996** - elite ranking of winners vs. losers for an NFL model.
-- **Brier ~0.085** - probabilities stay tightly calibrated.
-- **Accuracy ~0.973** - strong directional hit rate despite league parity.
+- **AUC ~0.709** - ranking quality for winners vs. losers.
+- **Brier ~0.218** - probability calibration/error for game winners.
+- **F1 ~0.693** - balance between precision and recall on home-win calls.
 
 ### Explainability (GPU SHAP)
 We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm which engineered signals (QB availability deltas, passing EPA trends, opponent-adjusted efficiency, red-zone execution, and pressure metrics) drove these gains.
@@ -110,7 +110,7 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
 |-------|-------------|---------|
 | Win probability | XGBoost + optional isotonic calibration (--calibrate-winprob, models/winprob_gb.pkl) | src/models/train.py |
 | Spread / margin | Gradient boosting regressor with quantile heads (models/spread_gb.pkl) | src/models/train.py |
-| Volatility classifier | Logistic regression/XGB/RF labeling high-error games, thresholds tuned via percentile | nalysis/volatility_classifier.py |
+| Volatility classifier | Random forest labeling high-log-loss games by default, with optional margin-error labels for analysis | nalysis/volatility_classifier.py |
 | Calibration shrinker | src/evaluation/calibrate_winprob.py shrinks volatile games toward 0.5 and fits isotonic curves over a rolling window | models/isotonic_calibrator.pkl |
 
 ## 6. Running the Pipeline
@@ -122,11 +122,24 @@ flgpu env shown below)
    - Set API keys in secrets.env (BallDontLie, Yahoo, Visual Crossing, etc.).
 
 2. **Full run**
-   `powershell
-   python -m tools.run_pipeline      --start-year 2002      --train-start-year 2016      --max-parallel-data 8      --data-start-delay 1      --use-async      --use-gpu      --skip-logit      --prediction-week 1      --live-run      --debug
-   `
+   ```powershell
+   python -m tools.run_pipeline `
+     --start-year 2017 `
+     --train-start-year 2016 `
+     --max-parallel-data 8 `
+     --data-start-delay 1 `
+     --use-async `
+     --use-gpu `
+     --skip-logit `
+     --prediction-week 1 `
+     --live-run `
+     --publish-mtb `
+     --mtb-repo-dir C:\Code\mtb `
+     --debug
+   ```
    - Data fetchers run in parallel (respecting API quotas).
    - Use `--prediction-week 1 --live-run` to force Week 1 predictions and exclude that slate from training/calibration/evaluation.
+   - Use `--publish-mtb` to copy current prediction, evaluation, ROI, and volatility CSVs into the local MattyTheBookie repo and refresh its normalized JSON.
    - Sequential stage builds features, trains models, predicts history/upcoming, calibrates, evaluates, and runs post-analysis (compare runs + SHAP + README update).
    - Native Windows stack-overflow exit codes (0xC0000409) are tolerated for predict_upcoming if the outputs were written (due to a PyArrow teardown bug).
 
@@ -152,6 +165,8 @@ flgpu env shown below)
 | predictions/predictions_players_*.csv | Player-level projections (QB, offense, defense). |
 | predictions/history/*.csv | Historical win-probability predictions by season/week. |
 | predictions/evaluation/*.csv | Calibration bins, weekly metrics, team errors, etc. |
+| C:\Code\mtb\data\prediction-csvs\current\*.csv | Published CSV copies for the local MattyTheBookie site when `--publish-mtb` is used. |
+| C:\Code\mtb\data\predictions\current.json | Normalized MattyTheBookie prediction JSON refreshed after CSV publish unless `--skip-mtb-import` is used. |
 | nalysis/run_comparisons/* | Markdown report + metric trend PNGs for every logged run. |
 | nalysis/shap/* | SHAP numpy dumps and summary plots from GPU explainability. |
 
@@ -247,6 +262,7 @@ Key reference documents in [`docs/`](docs/):
 | [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) | End-to-end validation methodology |
 | [AUTOMATED_VALIDATION_GUIDE.md](docs/AUTOMATED_VALIDATION_GUIDE.md) | Running the automated validation suite |
 | [STREAMLIT_USER_GUIDE.md](docs/STREAMLIT_USER_GUIDE.md) | Using the Streamlit command-center dashboard |
+| [PLAYER_PROP_PREDICTION_PLAN.md](docs/PLAYER_PROP_PREDICTION_PLAN.md) | Player prop prediction goals, target markets, novelty bets, and implementation plan |
 | [PHASE_1_WALK_FORWARD_VALIDATION.md](docs/PHASE_1_WALK_FORWARD_VALIDATION.md) | Walk-forward validation design |
 | [PHASE_2_LIVE_TRACKING.md](docs/PHASE_2_LIVE_TRACKING.md) | Live prediction tracking |
 | [PHASE_3_BENCHMARK_COMPARISON.md](docs/PHASE_3_BENCHMARK_COMPARISON.md) | Benchmark comparison (nfelo, Vegas, baselines) |

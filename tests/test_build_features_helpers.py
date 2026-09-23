@@ -6,6 +6,7 @@ without needing file I/O or network access.
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -547,6 +548,54 @@ class TestBuildMatchupFeatures:
         result = build_matchup_features(pd.DataFrame(), self._make_team_stats())
         assert result.empty or isinstance(result, pd.DataFrame)
 
+    def test_home_win_is_nan_for_missing_scores_and_ties(self):
+        schedule = pd.DataFrame([
+            {
+                "home_team": "KC",
+                "away_team": "BUF",
+                "game_id": "2023_01_KC_BUF",
+                "season": 2023,
+                "week": 1,
+                "home_score": 27,
+                "away_score": 20,
+            },
+            {
+                "home_team": "BUF",
+                "away_team": "KC",
+                "game_id": "2023_02_BUF_KC",
+                "season": 2023,
+                "week": 2,
+                "home_score": 17,
+                "away_score": 24,
+            },
+            {
+                "home_team": "KC",
+                "away_team": "BUF",
+                "game_id": "2023_03_KC_BUF",
+                "season": 2023,
+                "week": 3,
+                "home_score": None,
+                "away_score": None,
+            },
+            {
+                "home_team": "KC",
+                "away_team": "BUF",
+                "game_id": "2023_04_KC_BUF",
+                "season": 2023,
+                "week": 4,
+                "home_score": 20,
+                "away_score": 20,
+            },
+        ])
+
+        result = build_matchup_features(schedule, self._make_team_stats())
+        by_game = result.set_index("game_id")
+
+        assert by_game.loc["2023_01_KC_BUF", "home_win"] == 1.0
+        assert by_game.loc["2023_02_BUF_KC", "home_win"] == 0.0
+        assert pd.isna(by_game.loc["2023_03_KC_BUF", "home_win"])
+        assert pd.isna(by_game.loc["2023_04_KC_BUF", "home_win"])
+
 
 # ---------------------------------------------------------------------------
 # _aggregate_team_week / _add_weekly_deltas
@@ -613,6 +662,29 @@ class TestAddWeeklyDeltas:
     def test_adds_rolling_column(self):
         result = _add_weekly_deltas(self._make_df(), value_cols=["epa"], rolling_windows=(3,))
         assert "epa_rolling3" in result.columns
+        assert np.isnan(result["epa_rolling3"].iloc[0])
+        assert result["epa_rolling3"].iloc[1:].tolist() == [1.0, 1.5]
+
+    def test_delta_uses_prior_rows_only(self):
+        result = _add_weekly_deltas(self._make_df(), value_cols=["epa"], rolling_windows=(3,))
+        assert np.isnan(result["epa_prev"].iloc[0])
+        assert result["epa_prev"].iloc[1:].tolist() == [1.0, 2.0]
+        assert np.isnan(result["epa_delta"].iloc[0])
+        assert np.isnan(result["epa_delta"].iloc[1])
+        assert result["epa_delta"].iloc[2] == 1.0
+
+    def test_many_delta_columns_do_not_fragment_frame(self):
+        df = self._make_df()
+        for idx in range(80):
+            df[f"metric_{idx}"] = [float(idx), float(idx + 1), float(idx + 2)]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", pd.errors.PerformanceWarning)
+            result = _add_weekly_deltas(df, rolling_windows=(2, 3))
+
+        performance_warnings = [w for w in caught if issubclass(w.category, pd.errors.PerformanceWarning)]
+        assert not performance_warnings
+        assert "metric_79_rolling3" in result.columns
 
     def test_missing_required_cols_returns_original(self):
         df = pd.DataFrame({"epa": [1.0, 2.0]})

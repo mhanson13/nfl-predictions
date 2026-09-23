@@ -48,6 +48,7 @@ class FeedConfig:
     paginated: bool = False
     team_ids_param: Optional[str] = None
     requires_team_ids: bool = False
+    requires_game_ids: bool = False
 
 
 class BallDontLieError(RuntimeError):
@@ -123,10 +124,10 @@ FEEDS: dict[str, FeedConfig] = {
         path="/team_stats",
         description="Game-level team stats.",
         requires_season=True,
-        season_param="seasons",
+        season_param="seasons[]",
         season_types_param="season_types[]",
         paginated=True,
-        team_ids_param="team_ids",
+        team_ids_param="team_ids[]",
     ),
     "team_season_stats": FeedConfig(
         path="/team_season_stats",
@@ -135,8 +136,14 @@ FEEDS: dict[str, FeedConfig] = {
         season_param="season",
         season_types_param="season_types[]",
         paginated=True,
-        team_ids_param="team_ids",
+        team_ids_param="team_ids[]",
         requires_team_ids=True,
+    ),
+    "player_props": FeedConfig(
+        path="/odds/player_props",
+        description="Live player prop lines and prices.",
+        requires_season=True,
+        requires_game_ids=True,
     ),
 }
 
@@ -152,6 +159,8 @@ DEFAULT_FEEDS = [
     "team_stats",
     "team_season_stats",
 ]
+
+DEFAULT_PLAYER_PROP_VENDOR = "draftkings"
 
 
 def _build_output_path(feed: str, season: Optional[int], week: Optional[int]) -> Path:
@@ -370,6 +379,93 @@ def _fetch_payload_records(
     return records
 
 
+def _game_ids_from_cache(season: int, week: Optional[int]) -> list[int]:
+    candidate_paths: list[Path] = []
+    if week is not None:
+        candidate_paths.append(_build_output_path("games", season, week))
+    candidate_paths.append(_build_output_path("games", season, None))
+
+    for path in candidate_paths:
+        if not path.exists():
+            continue
+        try:
+            games = read_df(path)
+        except Exception:
+            continue
+        if games.empty or "id" not in games.columns:
+            continue
+        if week is not None and "week" in games.columns:
+            games = games[pd.to_numeric(games["week"], errors="coerce").eq(int(week))]
+        ids = sorted({int(v) for v in pd.to_numeric(games["id"], errors="coerce").dropna().tolist()})
+        if ids:
+            return ids
+    return []
+
+
+def _fetch_game_ids(
+    session: requests.Session,
+    *,
+    season: int,
+    week: Optional[int],
+    season_types: list[int],
+    per_page: int,
+    retries: int,
+    sleep: float,
+    timeout: float,
+) -> list[int]:
+    cached = _game_ids_from_cache(season, week)
+    if cached:
+        return cached
+
+    games = FEEDS["games"]
+    params = _build_params(games, season=season, week=week, season_types=season_types, team_ids=[])
+    records = _fetch_payload_records(
+        session,
+        games,
+        params=params,
+        per_page=per_page,
+        retries=retries,
+        sleep=sleep,
+        timeout=timeout,
+    )
+    frame = _to_dataframe(records)
+    if frame.empty or "id" not in frame.columns:
+        return []
+    return sorted({int(v) for v in pd.to_numeric(frame["id"], errors="coerce").dropna().tolist()})
+
+
+def _fetch_player_prop_records(
+    session: requests.Session,
+    *,
+    game_ids: Iterable[int],
+    vendors: list[str],
+    prop_types: list[str],
+    retries: int,
+    sleep: float,
+    timeout: float,
+) -> list[Any]:
+    records: list[Any] = []
+    prop_type_values: list[Optional[str]] = prop_types or [None]
+    for game_id in game_ids:
+        for prop_type in prop_type_values:
+            params: list[tuple[str, Any]] = [("game_id", int(game_id))]
+            _add_repeated(params, "vendors[]", vendors)
+            if prop_type:
+                params.append(("prop_type", prop_type))
+            payload = _request_with_retry(
+                session,
+                FEEDS["player_props"].path,
+                params=params,
+                retries=retries,
+                sleep=sleep,
+                timeout=timeout,
+            )
+            records.extend(_response_records(payload))
+            if sleep > 0:
+                time.sleep(sleep)
+    return records
+
+
 def _fetch_feed(
     session: requests.Session,
     feed_name: str,
@@ -384,6 +480,8 @@ def _fetch_feed(
     retries: int,
     timeout: float,
     per_page: int,
+    vendors: list[str],
+    prop_types: list[str],
     dry_run: bool,
 ) -> Optional[Path]:
     output_path = _build_output_path(feed_name, season if feed.requires_season else None, week)
@@ -420,15 +518,42 @@ def _fetch_feed(
         return None
 
     try:
-        records = _fetch_payload_records(
-            session,
-            feed,
-            params=params,
-            per_page=per_page,
-            retries=retries,
-            sleep=sleep,
-            timeout=timeout,
-        )
+        if feed.requires_game_ids:
+            if season is None:
+                raise ValueError(f"Feed '{feed_name}' requires --seasons.")
+            game_ids = _fetch_game_ids(
+                session,
+                season=int(season),
+                week=week,
+                season_types=season_types,
+                per_page=per_page,
+                retries=retries,
+                sleep=sleep,
+                timeout=timeout,
+            )
+            if not game_ids:
+                logging.warning("No BallDontLie game IDs found for %s season=%s week=%s", feed_name, season, week)
+                records = []
+            else:
+                records = _fetch_player_prop_records(
+                    session,
+                    game_ids=game_ids,
+                    vendors=vendors,
+                    prop_types=prop_types,
+                    retries=retries,
+                    sleep=sleep,
+                    timeout=timeout,
+                )
+        else:
+            records = _fetch_payload_records(
+                session,
+                feed,
+                params=params,
+                per_page=per_page,
+                retries=retries,
+                sleep=sleep,
+                timeout=timeout,
+            )
     except BallDontLieError as exc:
         if exc.status_code in {401, 402, 403}:
             logging.warning(
@@ -474,7 +599,7 @@ def _resolve_jobs(
         if feed.requires_season and not season_list:
             raise ValueError(f"Feed '{feed_name}' requires --seasons.")
         seasons_to_use: list[Optional[int]] = season_list if feed.requires_season else [None]
-        if feed.week_param and week_list:
+        if (feed.week_param or feed.requires_game_ids) and week_list:
             weeks_to_use: list[Optional[int]] = week_list
         else:
             weeks_to_use = [None]
@@ -521,6 +646,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional BallDontLie team IDs for feeds that support team filtering.",
     )
+    parser.add_argument(
+        "--vendors",
+        nargs="+",
+        default=[DEFAULT_PLAYER_PROP_VENDOR],
+        help="Sportsbook vendor filters for player prop odds feeds.",
+    )
+    parser.add_argument(
+        "--prop-types",
+        nargs="+",
+        default=None,
+        help="Optional player prop type filters such as passing_yards rushing_yards receiving_yards.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Refetch even if cached files exist.")
     parser.add_argument("--sleep", type=float, default=DEFAULT_SLEEP, help="Seconds to sleep between API calls.")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retry attempts for failed requests.")
@@ -560,6 +697,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     retries = max(0, args.retries)
     season_types = sorted({int(v) for v in args.season_types})
     team_ids = sorted({int(v) for v in args.team_ids}) if args.team_ids else []
+    vendors = sorted({str(v).strip().lower() for v in args.vendors if str(v).strip()})
+    prop_types = sorted({str(v).strip().lower() for v in args.prop_types}) if args.prop_types else []
 
     for feed_name, season, week in pending_jobs:
         feed = FEEDS[feed_name]
@@ -577,6 +716,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                 retries=retries,
                 timeout=args.timeout,
                 per_page=per_page,
+                vendors=vendors,
+                prop_types=prop_types,
                 dry_run=args.dry_run,
             )
         finally:

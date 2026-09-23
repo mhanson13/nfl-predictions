@@ -603,8 +603,8 @@ if __name__ == "__main__":
     parser.add_argument("--end-season", type=int, default=None, help="Upper bound season for dataset.")
     parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from volatility training.")
     parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from volatility training.")
-    parser.add_argument(
-        "--train-end-season",
+    parser.add_argument(
+        "--train-end-season",
         type=int,
         default=2023,
         help="Last season used for training (inclusive).",
@@ -617,19 +617,19 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--disable-season-split",
-        action="store_true",
-        help="Use random train/test split instead of season-based split.",
+        action="store_true",
+        help="Use random train/test split instead of season-based split.",
     )
     parser.add_argument(
         "--percentile",
         type=float,
-        default=0.75,
-        help="Percentile for labeling high-error games (0.5 - 0.99).",
+        default=0.5,
+        help="Percentile for labeling high-log-loss games (0.5 - 0.99).",
     )
     parser.add_argument(
         "--model",
         choices=["xgb", "logreg", "rf"],
-        default="xgb",
+        default="rf",
         help="Base classifier to use.",
     )
     parser.add_argument(
@@ -643,11 +643,27 @@ if __name__ == "__main__":
         help="Exclude log-loss errors when labeling high-error games.",
     )
     parser.add_argument(
-        "--disable-margin",
+        "--disable-margin",
+
+        dest="disable_margin",
         action="store_true",
         help="Exclude margin errors when labeling high-error games.",
     )
-    parser.add_argument("--random-state", type=int, default=42, help="Random seed for splits/models.")
+    parser.add_argument(
+
+        "--include-margin",
+
+        dest="disable_margin",
+
+        action="store_false",
+
+        help="Include margin errors when labeling high-error games.",
+
+    )
+
+    parser.set_defaults(disable_margin=True)
+
+    parser.add_argument("--random-state", type=int, default=42, help="Random seed for splits/models.")
     parser.add_argument(
         "--decision-threshold",
         type=float,

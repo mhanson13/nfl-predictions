@@ -52,6 +52,30 @@ def _load_runs(path: Path) -> pd.DataFrame:
         raise ValueError("overall_metrics.csv is empty; no runs to compare.")
 
     df = df.copy()
+    alias_map = {
+        "accuracy": "acc",
+        "acc": "acc",
+        "brier": "brier",
+        "log_loss": "logloss",
+        "logloss": "logloss",
+        "mae": "mae",
+        "mae_margin": "mae",
+        "rmse": "rmse",
+        "rmse_margin": "rmse",
+        "n_games": "n_samples",
+        "samples": "n_samples",
+        "precision": "precision",
+        "recall": "recall",
+        "specificity": "specificity",
+        "f1": "f1",
+    }
+    for src, target in alias_map.items():
+        if src in df.columns:
+            values = pd.to_numeric(df[src], errors="coerce")
+            if target in df.columns:
+                df[target] = df[target].combine_first(values)
+            else:
+                df[target] = values
     numeric_cols = [
         "n_samples",
         "acc",
@@ -60,6 +84,10 @@ def _load_runs(path: Path) -> pd.DataFrame:
         "logloss",
         "mae",
         "rmse",
+        "precision",
+        "recall",
+        "specificity",
+        "f1",
         "pos_rate",
         "proba_min",
         "proba_max",
@@ -67,14 +95,13 @@ def _load_runs(path: Path) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    created = None
+    created = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
     for col in ("created_at", "run_timestamp", "timestamp"):
         if col in df.columns:
-            candidate = pd.to_datetime(df[col], errors="coerce")
+            candidate = pd.to_datetime(df[col], errors="coerce", utc=True)
             if candidate.notna().any():
-                created = candidate
-                break
-    if created is None:
+                created = created.combine_first(candidate)
+    if created.isna().all():
         created = pd.date_range("2000-01-01", periods=len(df), freq="h")
     else:
         created = created.ffill().bfill()
@@ -88,6 +115,20 @@ def _load_runs(path: Path) -> pd.DataFrame:
     else:
         df["model_name"] = df["model_name"].fillna("unknown_model")
     return df.sort_values("created_at").reset_index(drop=True)
+
+
+def _current_evaluation_runs(df: pd.DataFrame) -> pd.DataFrame:
+    """Prefer current-schema full evaluation rows over calibration snapshots and old leaky rows."""
+    mask = pd.Series(True, index=df.index)
+    if "stage" in df.columns:
+        mask &= df["stage"].isna()
+    for col in ("auc", "brier", "n_samples"):
+        if col in df.columns:
+            mask &= df[col].notna()
+    if "f1" in df.columns and df["f1"].notna().any():
+        mask &= df["f1"].notna()
+    filtered = df.loc[mask].copy()
+    return filtered if not filtered.empty else df.copy()
 
 
 def _save_line_plot(df: pd.DataFrame, metric: str, path: Path) -> None:
@@ -126,7 +167,9 @@ def _metric_table(df: pd.DataFrame, metric: str, ascending: bool) -> str | None:
 def generate_report(df: pd.DataFrame) -> str:
     """Create markdown report text plus save sidecar plots."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    df = df.copy()
+    raw_count = len(df)
+    df = _current_evaluation_runs(df.copy()).sort_values("created_at").reset_index(drop=True)
+    filtered_count = len(df)
     leaderboard_cols = [
         "run_id",
         "model_name",
@@ -211,6 +254,8 @@ def generate_report(df: pd.DataFrame) -> str:
         f"Generated: {pd.Timestamp.utcnow():%Y-%m-%d %H:%M:%S UTC}",
         "",
         "## Run Leaderboard",
+        f"_Using {filtered_count} current-schema evaluation runs from {raw_count} total metric rows._",
+        "",
         leaderboard_md,
         "",
         "## Metric Leaders",

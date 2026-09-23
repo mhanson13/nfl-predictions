@@ -132,8 +132,8 @@ def _coalesce(df: pd.DataFrame, columns: Iterable[str], default=np.nan) -> pd.Se
     if not cols:
         return pd.Series(default, index=df.index)
     data = df[cols].copy()
-    series = data.bfill(axis=1).iloc[:, 0].fillna(default)
-    return series.infer_objects(copy=False)
+    series = data.bfill(axis=1).iloc[:, 0].infer_objects(copy=False)
+    return series.fillna(default)
 
 
 def _ensure_roof_is_dome(df: pd.DataFrame) -> pd.DataFrame:

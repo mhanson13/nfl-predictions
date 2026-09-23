@@ -122,6 +122,9 @@ python -m src.data.nflcom --year 2024 2025
 python -m src.data.balldontlie --feeds teams players active_players games standings injuries stats season_stats team_stats team_season_stats \
   --seasons 2024 2025 --weeks 1 2 3
 
+# PropLine player prop lines (requires PROPLINE_API_KEY)
+python -m src.data.propline --season 2026 --week 3 --bookmakers draftkings hardrock fanduel
+
 # Legacy SportsDataIO fallback (requires SPORTSDATAIO_API_KEY; not run by default when BallDontLie is configured)
 python -m src.data.sportsdataio --feeds teams schedules player_season_projections dfs_slates \
   --seasons 2024 2025 --weeks 1 2 3
@@ -148,7 +151,7 @@ Use `tools/run_pipeline.py` for end-to-end runs or call stages individually.
 
 ```bash
 python -m tools.run_pipeline \
-  --start-year 2002 \
+  --start-year 2017 \
   --train-start-year 2016 \
   --max-parallel-data 8 \
   --data-start-delay 1 \
@@ -157,6 +160,8 @@ python -m tools.run_pipeline \
   --skip-logit \
   --prediction-week 1 \
   --live-run \
+  --publish-mtb \
+  --mtb-repo-dir C:\Code\mtb \
   --debug
 ```
 
@@ -165,6 +170,7 @@ Outputs:
 - Historical and upcoming predictions under `predictions/`
 - Evaluation CSVs/plots under `predictions/evaluation/`
 - SHAP summaries and run-comparison reports under `analysis/`
+- Published MattyTheBookie CSV copies under `C:\Code\mtb\data\prediction-csvs\` and refreshed `data\predictions\current.json` when `--publish-mtb` is used
 - Use `--prediction-week 1 --live-run` for an explicit Week 1 run that excludes that slate from training/calibration/evaluation, or leave the default `auto` for the current/next slate.
 
 ### Stage-by-stage workflow
@@ -182,7 +188,7 @@ python -m analysis.volatility_classifier --model logreg --percentile 0.6 --decis
 python -m src.analysis.shap_gpu
 
 # Generate predictions
-python -m src.predict.predict_history --seasons 2002 2024 --overwrite
+python -m src.predict.predict_history --seasons 2017 2024 --walk-forward --train-start-year 2016 --overwrite
 python -m src.predict.predict_upcoming --season 2025 --week auto --debug
 
 # Evaluate results

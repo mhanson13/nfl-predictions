@@ -261,7 +261,22 @@ class TestComputeMetrics:
     def test_weekly_has_expected_columns(self):
         preds, actuals = self._make_preds_actuals()
         _, weekly = compute_metrics(preds, actuals, min_games=1)
-        for col in ("accuracy", "brier", "log_loss", "mae_margin", "rmse_margin"):
+        for col in (
+            "accuracy",
+            "brier",
+            "log_loss",
+            "auc",
+            "precision",
+            "recall",
+            "specificity",
+            "f1",
+            "tp",
+            "fp",
+            "tn",
+            "fn",
+            "mae_margin",
+            "rmse_margin",
+        ):
             assert col in weekly.columns
 
     def test_empty_actuals_returns_empty(self):
@@ -288,7 +303,25 @@ class TestComputeOverallMetrics:
     def test_returns_expected_keys(self):
         merged = _make_pred_frame()
         result = compute_overall_metrics(merged)
-        for key in ("n_games", "accuracy", "brier", "log_loss", "mae_margin", "rmse_margin"):
+        for key in (
+            "n_games",
+            "accuracy",
+            "brier",
+            "log_loss",
+            "auc",
+            "precision",
+            "recall",
+            "specificity",
+            "f1",
+            "actual_positive_rate",
+            "pred_positive_rate",
+            "tp",
+            "fp",
+            "tn",
+            "fn",
+            "mae_margin",
+            "rmse_margin",
+        ):
             assert key in result
 
     def test_n_games_correct(self):
@@ -561,6 +594,45 @@ class TestCalibrationWorkflow:
         assert artifact["volatility_used"] is True
         assert Path("predictions/evaluation/overall_metrics.csv").exists()
         assert Path("analysis/reliability_curve.png").exists()
+
+    def test_main_prefers_raw_history_probabilities_for_calibration(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(calibrate_module, "MODELS_DIR", tmp_path / "models")
+        history_dir = tmp_path / "history"
+        history_dir.mkdir()
+        history = pd.DataFrame(
+            {
+                "game_id": [f"game_{i}" for i in range(8)],
+                "season": [2024] * 8,
+                "home_win_prob": [0.50] * 8,
+                "home_win_prob_raw": [0.10, 0.20, 0.30, 0.40, 0.60, 0.70, 0.80, 0.90],
+                "actual_home_win": [0, 0, 0, 0, 1, 1, 1, 1],
+            }
+        )
+        history.to_csv(history_dir / "history_2024.csv", index=False)
+        output_path = tmp_path / "models" / "winprob_calibrator.pkl"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "calibrate_winprob",
+                "--history-dir",
+                str(history_dir),
+                "--seasons",
+                "2024",
+                "--min-games",
+                "8",
+                "--output",
+                str(output_path),
+                "--disable-volatility",
+            ],
+        )
+
+        calibrate_module.main()
+
+        artifact = joblib.load(output_path)
+        assert artifact["probability_input_column"] == "home_win_prob_raw"
+        assert artifact["baseline_auc"] == pytest.approx(1.0)
 
     def test_main_uses_threshold_from_volatility_dataset(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

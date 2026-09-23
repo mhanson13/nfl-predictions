@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 import argparse
-import os
 import re
 import shutil
 import warnings
@@ -29,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from dateutil import tz
 from src.utils.io import RAW_DIR, PROC_DIR, read_df
 from src.utils.logging_config import setup_logging
-from src.utils.odds import fetch_odds
+from src.utils.odds import ODDS_API_FREE_KEY_SECRET, fetch_odds, get_odds_api_free_key
 from src.utils.teams import get_team_abbr_from_name
 from src.predict.utils import apply_probability_caps, moneyline_to_prob
 from src.predict.volatility import (
@@ -123,19 +122,29 @@ def _fallback_if_probability_collapsed(
     *,
     stage: str,
 ) -> tuple[pd.Series, str | None]:
-    """Use fallback probabilities when a stage destroys all slate-level ranking signal."""
+    """Use fallback probabilities when a stage destroys or overstates slate-level signal."""
     candidate_unique = _probability_unique_count(candidate)
     fallback_unique = _probability_unique_count(fallback)
     candidate_range = _probability_range(candidate)
     fallback_range = _probability_range(fallback)
     severe_compression = fallback_unique >= 8 and candidate_unique <= max(2, fallback_unique // 4)
     severe_range_compression = fallback_range >= 0.03 and candidate_range <= max(0.005, fallback_range * 0.25)
-    if fallback_unique > 1 and (candidate_unique <= 1 or severe_compression or severe_range_compression):
+    saturation = (
+        fallback_unique > 1
+        and _is_saturated_probability_signal(candidate)
+        and not _is_saturated_probability_signal(fallback)
+    )
+    reason = None
+    if candidate_unique <= 1 or severe_compression or severe_range_compression:
+        reason = f"{stage}_collapsed"
+    elif saturation:
+        reason = f"{stage}_saturated"
+    if fallback_unique > 1 and reason is not None:
         clipped = fallback.clip(0.02, 0.98)
         if _has_probability_signal(clipped):
-            return clipped, f"{stage}_collapsed"
+            return clipped, reason
         lightly_clipped = fallback.clip(0.001, 0.999)
-        return lightly_clipped, f"{stage}_collapsed"
+        return lightly_clipped, reason
     return candidate, None
 
 
@@ -811,46 +820,7 @@ def _normalize_team_name(name: Optional[str]) -> Optional[str]:
 
 
 def _load_odds_api_key() -> Optional[str]:
-
-    key = os.getenv("ODDS_API_KEY")
-
-    if key:
-
-        return key
-
-    secrets_path = Path(__file__).resolve().parents[2] / "secrets.env"
-
-    if not secrets_path.exists():
-
-        return None
-
-    try:
-
-        for line in secrets_path.read_text(encoding="utf-8").splitlines():
-
-            line = line.strip()
-
-            if not line or line.startswith("#") or "=" not in line:
-
-                continue
-
-            k, v = line.split("=", 1)
-
-            if k.strip() == "ODDS_API_KEY":
-
-                val = v.strip().strip('"').strip("'")
-
-                if val:
-
-                    os.environ.setdefault("ODDS_API_KEY", val)
-
-                    return val
-
-    except Exception:
-
-        return None
-
-    return os.getenv("ODDS_API_KEY")
+    return get_odds_api_free_key()
 
 
 
@@ -5018,7 +4988,7 @@ def main():
 
         elif args.debug:
 
-            print("[predict][odds] skipping odds integration: ODDS_API_KEY not configured")
+            print(f"[predict][odds] skipping odds integration: {ODDS_API_FREE_KEY_SECRET} not configured")
 
     except Exception as exc:
 

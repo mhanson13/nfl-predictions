@@ -33,6 +33,7 @@ from src.analysis.compare_runs import main as compare_runs_main
 from src.analysis.shap_gpu import main as shap_gpu_main
 from src.analysis.update_readme_metrics import main as update_readme_main
 from src.utils.secrets import get_secret
+from tools.publish_mtb_csvs import DEFAULT_MTB_CSV_DIR, DEFAULT_MTB_REPO_DIR
 
 # Ensure subprocesses use the same interpreter as the pipeline itself.
 PYTHON_EXECUTABLE = sys.executable or "python"
@@ -45,6 +46,7 @@ PREDICT_OUTPUTS = [
     Path("predictions/predictions_players_offense.csv"),
     Path("predictions/predictions_players_defense.csv"),
 ]
+DEFAULT_PROPLINE_BOOKMAKERS = ["draftkings", "hardrock", "fanduel"]
 # Pipeline stages overview:
 #   1. Concurrent data ingestion (NFLverse/ESPN/weather/etc.)
 #   2. Sequential transforms: reference refresh, features, training, predictions, calibration, evaluation.
@@ -124,6 +126,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip BallDontLie data fetch even if an API key is configured.",
     )
     parser.add_argument(
+        "--skip-propline",
+        action="store_true",
+        help="Skip PropLine player prop odds fetch even if PROPLINE_API_KEY is configured.",
+    )
+    parser.add_argument(
         "--skip-visualcrossing",
         action="store_true",
         help="Skip Visual Crossing weather fetch even if an API key is configured.",
@@ -192,14 +199,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--volatility-model",
         choices=["logreg", "xgb", "rf"],
-        default="logreg",
+        default="rf",
         help="Model to use for volatility classifier.",
     )
     parser.add_argument(
         "--volatility-percentile",
         type=float,
-        default=0.6,
-        help="Percentile for labeling high-error (volatile) games.",
+        default=0.5,
+        help="Percentile for labeling high-log-loss volatile games.",
+    )
+    parser.add_argument(
+        "--volatility-include-margin",
+        action="store_true",
+        help="Include margin error in volatility labels; default uses log-loss only.",
     )
     parser.add_argument(
         "--volatility-random-state",
@@ -254,6 +266,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override BallDontLie feeds (default: teams players active_players games standings injuries stats season_stats team_stats team_season_stats).",
     )
     parser.add_argument(
+        "--propline-bookmakers",
+        nargs="+",
+        default=DEFAULT_PROPLINE_BOOKMAKERS.copy(),
+        help="Bookmakers to request from PropLine player prop odds.",
+    )
+    parser.add_argument(
+        "--propline-markets",
+        nargs="+",
+        default=["player_pass_yds", "player_rush_yds", "player_reception_yds", "player_sacks"],
+        help="PropLine market keys to request for player prop odds.",
+    )
+    parser.add_argument(
         "--yahoo-feeds",
         nargs="+",
         default=None,
@@ -284,6 +308,38 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Log the planned commands without executing them.",
+    )
+    parser.add_argument(
+        "--publish-mtb",
+        action="store_true",
+        help="Copy selected CSV outputs into the local MattyTheBookie repo after prediction/evaluation jobs finish.",
+    )
+    parser.add_argument(
+        "--mtb-repo-dir",
+        type=Path,
+        default=DEFAULT_MTB_REPO_DIR,
+        help="Local MattyTheBookie repository path used by --publish-mtb.",
+    )
+    parser.add_argument(
+        "--mtb-csv-dir",
+        type=Path,
+        default=DEFAULT_MTB_CSV_DIR,
+        help="Destination directory inside the MattyTheBookie repo used by --publish-mtb.",
+    )
+    parser.add_argument(
+        "--mtb-current-only",
+        action="store_true",
+        help="When publishing to MattyTheBookie, copy only current prediction CSVs.",
+    )
+    parser.add_argument(
+        "--mtb-publish-strict",
+        action="store_true",
+        help="When publishing to MattyTheBookie, fail if any selected optional CSV is missing.",
+    )
+    parser.add_argument(
+        "--skip-mtb-import",
+        action="store_true",
+        help="When --publish-mtb is used, skip running the MattyTheBookie JSON importer after CSV publishing.",
     )
     return parser.parse_args(argv)
 
@@ -492,6 +548,10 @@ def build_data_jobs(
 
     balldontlie_feeds: list[str] | None,
 
+    include_propline: bool,
+    propline_bookmakers: list[str] | None,
+    propline_markets: list[str] | None,
+
     include_sportsdataio: bool,
 
     sportsdataio_feeds: list[str] | None,
@@ -569,6 +629,28 @@ def build_data_jobs(
 
     )
 
+    if prediction_week and str(prediction_week).lower() != "auto":
+        try:
+            espn_roster_week = int(prediction_week)
+        except ValueError:
+            espn_roster_week = None
+        if espn_roster_week is not None:
+            jobs.append(
+                Job(
+                    "espn_rosters",
+                    [
+                        "python",
+                        "-m",
+                        "src.data.espn_rosters",
+                        "--season",
+                        str(current_year),
+                        "--week",
+                        str(espn_roster_week),
+                        *debug,
+                    ],
+                )
+            )
+
     jobs.append(
 
         Job(
@@ -614,6 +696,38 @@ def build_data_jobs(
             balldontlie_cmd.extend(["--feeds", *balldontlie_feeds])
 
         jobs.append(Job("balldontlie", balldontlie_cmd))
+
+    if include_propline and prediction_week and str(prediction_week).lower() != "auto":
+
+        try:
+
+            propline_week = int(prediction_week)
+
+        except ValueError:
+
+            propline_week = None
+
+        if propline_week is not None:
+
+            propline_cmd = [
+                "python",
+                "-m",
+                "src.data.propline",
+                "--season",
+                str(current_year),
+                "--week",
+                str(propline_week),
+                *debug,
+            ]
+            if propline_bookmakers:
+
+                propline_cmd.extend(["--bookmakers", *propline_bookmakers])
+
+            if propline_markets:
+
+                propline_cmd.extend(["--markets", *propline_markets])
+
+            jobs.append(Job("propline_player_props", propline_cmd))
 
     if include_sportsdataio:
 
@@ -680,6 +794,7 @@ def build_sequential_jobs(
     cv_folds: int = 3,
     prediction_week: str = "auto",
     live_exclude: tuple[int, int] | None = None,
+    propline_bookmakers: list[str] | None = None,
 ) -> list[Job]:
     """Build the ordered list of feature/model/evaluation jobs that must run serially."""
     season_args = [str(y) for y in years]
@@ -721,6 +836,38 @@ def build_sequential_jobs(
         Job(
             "player_actuals",
             ["python", "-m", "src.data.player_actuals", "--seasons", *season_args, *debug],
+        )
+    )
+    try:
+        player_availability_week = int(prediction_week)
+    except (TypeError, ValueError):
+        player_availability_week = None
+    if player_availability_week is not None:
+        jobs.append(
+            Job(
+                "player_availability",
+                [
+                    "python",
+                    "-m",
+                    "src.player_availability",
+                    "--season",
+                    str(current_year),
+                    "--week",
+                    str(player_availability_week),
+                    *debug,
+                ],
+            )
+        )
+    jobs.append(
+        Job(
+            "player_prop_labels",
+            ["python", "-m", "src.player_props.labels", "--seasons", *season_args, *debug, *live_exclude_args],
+        )
+    )
+    jobs.append(
+        Job(
+            "player_prop_features",
+            ["python", "-m", "src.player_props.features", "--seasons", *season_args, *debug, *live_exclude_args],
         )
     )
     jobs.append(Job("build_features", ["python", "-m", "src.features.build_features", "--season", *season_args, *debug]))
@@ -934,6 +1081,11 @@ def build_sequential_jobs(
 
     )
 
+    history_years = [year for year in years if train_start_year is None or year > train_start_year]
+    history_seasons = history_years or years
+    history_season_args = [str(y) for y in history_seasons]
+    analysis_start_year = min(history_seasons) if history_seasons else train_start_year
+
     history_args = [
 
         "python",
@@ -944,17 +1096,32 @@ def build_sequential_jobs(
 
         "--seasons",
 
-        *season_args,
+        *history_season_args,
 
         "--output-dir",
 
         str(Path("predictions/history")),
+
+        "--walk-forward",
+
+        "--train-start-year",
+
+        str(train_start_year),
 
         "--overwrite",
 
         *debug,
 
     ]
+
+    if use_gpu:
+        history_args.append("--use-gpu")
+    if skip_logit:
+        history_args.append("--skip-logit")
+    if apply_winprob_config:
+        history_args.extend(["--winprob-param-config", str(winprob_config_path)])
+    if apply_spread_config:
+        history_args.extend(["--spread-param-config", str(spread_config_path)])
 
     jobs.append(Job("predict_history", history_args))
 
@@ -974,11 +1141,11 @@ def build_sequential_jobs(
 
             "--model",
 
-            str(vol_cfg.get("model", "logreg")),
+            str(vol_cfg.get("model", "rf")),
 
             "--percentile",
 
-            str(vol_cfg.get("percentile", 0.6)),
+            str(vol_cfg.get("percentile", 0.5)),
 
             "--random-state",
 
@@ -991,6 +1158,8 @@ def build_sequential_jobs(
             *debug,
 
         ]
+        if not vol_cfg.get("include_margin", False):
+            volatility_cmd.append("--disable-margin")
 
         volatility_cmd.extend(live_exclude_args)
         jobs.append(Job("volatility_classifier", volatility_cmd))
@@ -1040,6 +1209,117 @@ def build_sequential_jobs(
 
 
     if not skip_evaluation:
+        player_baseline_cmd = [
+            "python",
+            "-m",
+            "src.player_props.evaluate_baselines",
+            "--prediction-dir",
+            str(pred_dir),
+            "--output-dir",
+            str(pred_dir / "evaluation" / "player_props"),
+            *(["--start-season", str(analysis_start_year)] if analysis_start_year is not None else []),
+            *debug,
+            *live_exclude_args,
+        ]
+        jobs.append(Job("evaluate_player_prop_baselines", player_baseline_cmd))
+        player_model_cmd = [
+            "python",
+            "-m",
+            "src.player_props.train",
+            "--offense-features",
+            str(Path("data/processed/player_prop_features_offense.parquet")),
+            "--defense-features",
+            str(Path("data/processed/player_prop_features_defense.parquet")),
+            "--output-dir",
+            str(pred_dir / "evaluation" / "player_props"),
+            "--models-dir",
+            str(Path("models/player_props")),
+            "--baseline-metrics",
+            str(pred_dir / "evaluation" / "player_props" / "baseline_metrics.csv"),
+            "--baseline-predictions",
+            str(pred_dir / "evaluation" / "player_props" / "baseline_predictions.csv"),
+            *(["--start-season", str(analysis_start_year)] if analysis_start_year is not None else []),
+            *debug,
+            *live_exclude_args,
+        ]
+        jobs.append(Job("train_player_prop_models", player_model_cmd))
+        historical_line_cmd = [
+            "python",
+            "-m",
+            "src.player_props.historical_lines",
+            "--lines",
+            str(Path("data/processed/oddsapi_historical_player_prop_lines.parquet")),
+            "--model-predictions",
+            str(pred_dir / "evaluation" / "player_props" / "model_predictions.csv"),
+            "--output",
+            str(Path("data/processed/player_prop_historical_line_eval.parquet")),
+            "--summary-output",
+            str(pred_dir / "evaluation" / "player_props" / "historical_line_join_summary.csv"),
+            *debug,
+        ]
+        jobs.append(Job("join_historical_player_prop_lines", historical_line_cmd))
+        over_probability_cmd = [
+            "python",
+            "-m",
+            "src.player_props.over_probability",
+            "--input",
+            str(Path("data/processed/player_prop_historical_line_eval.parquet")),
+            "--output",
+            str(Path("data/processed/player_prop_over_probability_eval.parquet")),
+            "--metrics-output",
+            str(pred_dir / "evaluation" / "player_props" / "over_probability_metrics.csv"),
+            "--bins-output",
+            str(pred_dir / "evaluation" / "player_props" / "over_probability_bins.csv"),
+            *debug,
+        ]
+        jobs.append(Job("evaluate_player_prop_over_probability", over_probability_cmd))
+        try:
+            player_prop_week = int(prediction_week)
+        except (TypeError, ValueError):
+            player_prop_week = None
+        if player_prop_week is not None:
+            player_prop_predict_cmd = [
+                "python",
+                "-m",
+                "src.player_props.predict",
+                "--season",
+                str(current_year),
+                "--week",
+                str(player_prop_week),
+                "--prediction-dir",
+                str(pred_dir),
+                "--models-dir",
+                str(Path("models/player_props")),
+                "--qb-output",
+                str(pred_dir / "player_props_qb.csv"),
+                "--offense-output",
+                str(pred_dir / "player_props_offense.csv"),
+                "--defense-output",
+                str(pred_dir / "player_props_defense.csv"),
+                "--novelty-output",
+                str(pred_dir / "player_props_novelty.csv"),
+                "--availability",
+                str(Path("data/processed/current_player_availability.parquet")),
+                "--odds-vendor",
+                *(propline_bookmakers or DEFAULT_PROPLINE_BOOKMAKERS),
+                *debug,
+            ]
+            jobs.append(Job("predict_player_props", player_prop_predict_cmd))
+            player_prop_quality_cmd = [
+                "python",
+                "-m",
+                "src.player_props.quality_report",
+                "--season",
+                str(current_year),
+                "--week",
+                str(player_prop_week),
+                "--prediction-dir",
+                str(pred_dir),
+                "--output-dir",
+                str(pred_dir / "evaluation" / "player_props"),
+                *debug,
+            ]
+            jobs.append(Job("player_prop_quality_report", player_prop_quality_cmd))
 
         jobs.append(
 
@@ -1061,7 +1341,7 @@ def build_sequential_jobs(
 
                     "--skip-plots",
 
-                    *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
+                    *(["--start-season", str(analysis_start_year)] if analysis_start_year is not None else []),
 
                     *debug,
                     *live_exclude_args,
@@ -1083,7 +1363,7 @@ def build_sequential_jobs(
 
             "analysis.market_roi",
 
-            *(["--start-season", str(train_start_year)] if train_start_year is not None else []),
+            *(["--start-season", str(analysis_start_year)] if analysis_start_year is not None else []),
 
             *debug,
 
@@ -1091,6 +1371,25 @@ def build_sequential_jobs(
 
         roi_cmd.extend(live_exclude_args)
         jobs.append(Job("market_roi", roi_cmd))
+
+        try:
+            metrics_week = int(prediction_week)
+        except (TypeError, ValueError):
+            metrics_week = None
+
+        if metrics_week is not None:
+            metrics_cmd = [
+                "python",
+                "-m",
+                "analysis.model_metrics_export",
+                "--season",
+                str(current_year),
+                "--week",
+                str(metrics_week),
+                *(["--start-season", str(analysis_start_year)] if analysis_start_year is not None else []),
+                *live_exclude_args,
+            ]
+            jobs.append(Job("model_metrics_export", metrics_cmd))
 
 
     return jobs
@@ -1131,6 +1430,57 @@ def run_post_run_analysis() -> None:
             func()
         except Exception as exc:  # pragma: no cover - best effort
             print(f"[pipeline] Warning: post-run analysis '{name}' failed ({exc}).")
+
+
+def build_mtb_publish_job(
+    *,
+    repo_dir: Path,
+    dest_dir: Path,
+    current_year: int,
+    prediction_week: str,
+    current_only: bool,
+    strict: bool,
+) -> Job:
+    """Build the local MattyTheBookie CSV publishing command."""
+    command = [
+        "python",
+        "-m",
+        "tools.publish_mtb_csvs",
+        "--repo-dir",
+        str(repo_dir),
+        "--dest-dir",
+        str(dest_dir),
+        "--season",
+        str(current_year),
+    ]
+
+    try:
+        week = int(prediction_week)
+    except (TypeError, ValueError):
+        week = None
+
+    if week is not None:
+        command.extend(["--week", str(week)])
+    if current_only:
+        command.append("--current-only")
+    if strict:
+        command.append("--strict")
+
+    return Job("publish_mtb_csvs", command)
+
+
+def build_mtb_import_job(*, repo_dir: Path) -> Job:
+    """Build the local MattyTheBookie JSON import command."""
+    return Job(
+        "import_mtb_predictions",
+        [
+            "python",
+            "-m",
+            "tools.import_mtb_predictions",
+            "--repo-dir",
+            str(repo_dir),
+        ],
+    )
 
 
 
@@ -1208,6 +1558,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         "percentile": args.volatility_percentile,
 
+        "include_margin": args.volatility_include_margin,
+
         "random_state": args.volatility_random_state,
 
         "threshold": args.volatility_threshold,
@@ -1271,6 +1623,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("[pipeline] Visual Crossing API key not found; skipping Visual Crossing weather job.")
 
 
+    propline_key = get_secret("PROPLINE_API_KEY")
+
+    include_propline = bool(propline_key) and not args.skip_propline
+
+    if args.skip_propline:
+
+        print("[pipeline] PropLine player prop odds fetch skipped via flag.")
+
+    elif not propline_key:
+
+        print("[pipeline] PROPLINE_API_KEY not found; skipping PropLine player prop odds job.")
+
+    elif str(args.prediction_week).lower() == "auto":
+
+        include_propline = False
+        print("[pipeline] PropLine player prop odds fetch skipped because --prediction-week is auto.")
+
+
 
     yahoo_client_id = get_secret("YAHOO_CLIENT_ID")
 
@@ -1305,6 +1675,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         include_balldontlie=include_balldontlie,
 
         balldontlie_feeds=args.balldontlie_feeds,
+
+        include_propline=include_propline,
+
+        propline_bookmakers=args.propline_bookmakers,
+
+        propline_markets=args.propline_markets,
 
         include_sportsdataio=include_sportsdataio,
 
@@ -1359,7 +1735,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         cv_folds=args.cv_folds,
         prediction_week=args.prediction_week,
         live_exclude=live_exclude,
+        propline_bookmakers=args.propline_bookmakers,
     )
+    if args.publish_mtb:
+        sequential_jobs.append(
+            build_mtb_publish_job(
+                repo_dir=args.mtb_repo_dir,
+                dest_dir=args.mtb_csv_dir,
+                current_year=current_year,
+                prediction_week=args.prediction_week,
+                current_only=args.mtb_current_only,
+                strict=args.mtb_publish_strict,
+            )
+        )
+        if not args.skip_mtb_import:
+            sequential_jobs.append(build_mtb_import_job(repo_dir=args.mtb_repo_dir))
     print(f"[pipeline] Running {len(sequential_jobs)} sequential jobs")
     run_jobs_sequential(sequential_jobs, env=env, dry_run=args.dry_run)
 

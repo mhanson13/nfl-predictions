@@ -50,7 +50,7 @@ coverage.xml
 data/raw/
 data/interim/
 data/processed/
-models/
+/models/
 predictions/
 !data/README.md
 

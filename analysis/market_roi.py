@@ -32,6 +32,16 @@ ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 MERGED_PREDICTIONS_PATH = Path("predictions/evaluation/merged_predictions_actuals.csv")
 MATCHUP_FEATURES_PATH = Path("data/processed/matchup_features.parquet")
 
+SPREAD_EDGE_BINS = [
+    (0.0, 1.0),
+    (1.0, 2.0),
+    (2.0, 3.0),
+    (3.0, 5.0),
+    (5.0, 7.0),
+    (7.0, 10.0),
+    (10.0, np.inf),
+]
+
 
 def american_to_decimal(odds: float) -> float:
     if pd.isna(odds):
@@ -110,6 +120,8 @@ def prepare_dataset(pred_df: pd.DataFrame) -> pd.DataFrame:
         print(f"[market_roi] warning: dropping duplicate odds rows for game_id(s) {dupes[:5]!r}")
         odds_df = odds_df.drop_duplicates("game_id", keep="last")
     merged = pred_df.merge(odds_df, on="game_id", how="left", validate="one_to_one")
+    for col in ["home_moneyline", "away_moneyline", "spread_line", "home_spread_odds", "away_spread_odds"]:
+        merged[col] = pd.to_numeric(merged[col], errors="coerce")
     merged = merged.dropna(subset=["home_moneyline", "away_moneyline", "spread_line"])
 
     merged["away_win_prob"] = 1.0 - merged["home_win_prob"]
@@ -117,14 +129,28 @@ def prepare_dataset(pred_df: pd.DataFrame) -> pd.DataFrame:
     merged["away_decimal"] = merged["away_moneyline"].apply(american_to_decimal)
     merged["home_implied_prob"] = merged["home_moneyline"].apply(american_to_implied_prob)
     merged["away_implied_prob"] = merged["away_moneyline"].apply(american_to_implied_prob)
+    implied_sum = merged["home_implied_prob"] + merged["away_implied_prob"]
+    merged["home_implied_prob_novig"] = np.where(
+        implied_sum > 0.0,
+        merged["home_implied_prob"] / implied_sum,
+        np.nan,
+    )
+    merged["away_implied_prob_novig"] = np.where(
+        implied_sum > 0.0,
+        merged["away_implied_prob"] / implied_sum,
+        np.nan,
+    )
     merged["home_tie"] = merged["home_margin"] == 0.0
     merged["home_actual_win"] = (merged["home_margin"] > 0.0).astype(int)
     merged["away_actual_win"] = (merged["home_margin"] < 0.0).astype(int)
 
     merged["home_spread_decimal"] = merged["home_spread_odds"].apply(american_to_decimal)
     merged["away_spread_decimal"] = merged["away_spread_odds"].apply(american_to_decimal)
-    merged["spread_edge_points"] = merged["pred_home_margin"] + merged["spread_line"]
-    merged["spread_result_points"] = merged["home_margin"] + merged["spread_line"]
+    # matchup_features normalizes spread_line as market expected home margin:
+    # +6.5 means the home team is favored by 6.5, -3.0 means the away team is favored by 3.
+    merged["market_home_margin"] = merged["spread_line"]
+    merged["spread_edge_points"] = merged["pred_home_margin"] - merged["market_home_margin"]
+    merged["spread_result_points"] = merged["home_margin"] - merged["market_home_margin"]
     merged["home_cover"] = merged["spread_result_points"] > 0.0
     merged["away_cover"] = merged["spread_result_points"] < 0.0
     merged["spread_push"] = merged["spread_result_points"] == 0.0
@@ -210,6 +236,253 @@ def summarize_moneyline(df: pd.DataFrame, thresholds: Iterable[float]) -> pd.Dat
                     "roi": roi,
                 }
             )
+    return pd.DataFrame.from_records(records)
+
+
+def build_market_benchmark(df: pd.DataFrame) -> pd.DataFrame:
+    """Build per-game model-vs-market benchmark rows."""
+    benchmark = df.dropna(
+        subset=[
+            "home_win_prob",
+            "away_win_prob",
+            "home_implied_prob_novig",
+            "away_implied_prob_novig",
+            "home_decimal",
+            "away_decimal",
+            "home_margin",
+        ]
+    ).copy()
+    if benchmark.empty:
+        return benchmark
+
+    benchmark["model_home_pick"] = benchmark["home_win_prob"] >= 0.5
+    benchmark["vegas_home_pick"] = benchmark["home_implied_prob_novig"] >= 0.5
+    benchmark["favorite_agreement"] = benchmark["model_home_pick"] == benchmark["vegas_home_pick"]
+    benchmark["actual_home_win_bool"] = benchmark["home_margin"] > 0.0
+
+    benchmark["model_correct"] = np.where(
+        benchmark["home_tie"],
+        np.nan,
+        benchmark["model_home_pick"] == benchmark["actual_home_win_bool"],
+    )
+    benchmark["vegas_correct"] = np.where(
+        benchmark["home_tie"],
+        np.nan,
+        benchmark["vegas_home_pick"] == benchmark["actual_home_win_bool"],
+    )
+
+    benchmark["model_pick"] = np.where(
+        benchmark["model_home_pick"],
+        benchmark.get("home_team", "HOME"),
+        benchmark.get("away_team", "AWAY"),
+    )
+    benchmark["vegas_pick"] = np.where(
+        benchmark["vegas_home_pick"],
+        benchmark.get("home_team", "HOME"),
+        benchmark.get("away_team", "AWAY"),
+    )
+    benchmark["actual_winner"] = np.select(
+        [benchmark["home_margin"] > 0.0, benchmark["home_margin"] < 0.0],
+        [benchmark.get("home_team", "HOME"), benchmark.get("away_team", "AWAY")],
+        default="TIE",
+    )
+
+    benchmark["model_pick_prob"] = np.where(
+        benchmark["model_home_pick"],
+        benchmark["home_win_prob"],
+        benchmark["away_win_prob"],
+    )
+    benchmark["vegas_pick_prob"] = np.where(
+        benchmark["vegas_home_pick"],
+        benchmark["home_implied_prob_novig"],
+        benchmark["away_implied_prob_novig"],
+    )
+    benchmark["vegas_model_side_prob"] = np.where(
+        benchmark["model_home_pick"],
+        benchmark["home_implied_prob_novig"],
+        benchmark["away_implied_prob_novig"],
+    )
+    benchmark["prob_edge_model_side"] = benchmark["model_pick_prob"] - benchmark["vegas_model_side_prob"]
+
+    benchmark["model_side_moneyline"] = np.where(
+        benchmark["model_home_pick"],
+        benchmark["home_moneyline"],
+        benchmark["away_moneyline"],
+    )
+    benchmark["model_side_decimal"] = np.where(
+        benchmark["model_home_pick"],
+        benchmark["home_decimal"],
+        benchmark["away_decimal"],
+    )
+    benchmark["model_side_actual_win"] = np.where(
+        benchmark["model_home_pick"],
+        benchmark["home_actual_win"],
+        benchmark["away_actual_win"],
+    )
+    benchmark["model_side_profit"] = np.where(
+        benchmark["home_tie"],
+        0.0,
+        np.where(
+            benchmark["model_side_actual_win"] == 1,
+            benchmark["model_side_decimal"] - 1.0,
+            -1.0,
+        ),
+    )
+
+    benchmark["vegas_side_moneyline"] = np.where(
+        benchmark["vegas_home_pick"],
+        benchmark["home_moneyline"],
+        benchmark["away_moneyline"],
+    )
+    benchmark["vegas_side_decimal"] = np.where(
+        benchmark["vegas_home_pick"],
+        benchmark["home_decimal"],
+        benchmark["away_decimal"],
+    )
+    benchmark["vegas_side_actual_win"] = np.where(
+        benchmark["vegas_home_pick"],
+        benchmark["home_actual_win"],
+        benchmark["away_actual_win"],
+    )
+    benchmark["vegas_side_profit"] = np.where(
+        benchmark["home_tie"],
+        0.0,
+        np.where(
+            benchmark["vegas_side_actual_win"] == 1,
+            benchmark["vegas_side_decimal"] - 1.0,
+            -1.0,
+        ),
+    )
+    return benchmark
+
+
+def _benchmark_record(
+    *,
+    scope: str,
+    season: int | str,
+    segment: str,
+    selection: pd.DataFrame,
+) -> dict[str, float | int | str]:
+    n_games = int(len(selection))
+    if n_games == 0:
+        return {
+            "scope": scope,
+            "season": season,
+            "segment": segment,
+            "n_games": 0,
+            "model_accuracy": np.nan,
+            "vegas_accuracy": np.nan,
+            "favorite_agreement_rate": np.nan,
+            "model_side_roi": np.nan,
+            "vegas_side_roi": np.nan,
+            "avg_model_pick_prob": np.nan,
+            "avg_vegas_pick_prob": np.nan,
+            "avg_vegas_model_side_prob": np.nan,
+            "avg_prob_edge_model_side": np.nan,
+        }
+
+    return {
+        "scope": scope,
+        "season": season,
+        "segment": segment,
+        "n_games": n_games,
+        "model_accuracy": float(selection["model_correct"].mean()),
+        "vegas_accuracy": float(selection["vegas_correct"].mean()),
+        "favorite_agreement_rate": float(selection["favorite_agreement"].mean()),
+        "model_side_roi": float(selection["model_side_profit"].sum() / n_games),
+        "vegas_side_roi": float(selection["vegas_side_profit"].sum() / n_games),
+        "avg_model_pick_prob": float(selection["model_pick_prob"].mean()),
+        "avg_vegas_pick_prob": float(selection["vegas_pick_prob"].mean()),
+        "avg_vegas_model_side_prob": float(selection["vegas_model_side_prob"].mean()),
+        "avg_prob_edge_model_side": float(selection["prob_edge_model_side"].mean()),
+    }
+
+
+def summarize_market_benchmark(benchmark: pd.DataFrame) -> pd.DataFrame:
+    records: list[dict[str, float | int | str]] = []
+    if benchmark.empty:
+        return pd.DataFrame.from_records(records)
+
+    def add_group(scope: str, season: int | str, group: pd.DataFrame) -> None:
+        segments = [
+            ("all", group),
+            ("agree", group[group["favorite_agreement"]]),
+            ("disagree", group[~group["favorite_agreement"]]),
+        ]
+        for segment, selection in segments:
+            if not selection.empty:
+                records.append(
+                    _benchmark_record(
+                        scope=scope,
+                        season=season,
+                        segment=segment,
+                        selection=selection,
+                    )
+                )
+
+    add_group("overall", "all", benchmark)
+    for season, season_df in benchmark.groupby("season", sort=True):
+        add_group("season", int(season), season_df)
+
+    return pd.DataFrame.from_records(records)
+
+
+def summarize_disagreement_moneyline_roi(
+    benchmark: pd.DataFrame,
+    thresholds: Iterable[float],
+) -> pd.DataFrame:
+    records: list[dict[str, float | int | str]] = []
+    base = benchmark[(~benchmark["favorite_agreement"]) & benchmark["prob_edge_model_side"].notna()].copy()
+
+    for threshold in thresholds:
+        selection = base[base["prob_edge_model_side"] >= threshold]
+        n_bets = int(len(selection))
+        if n_bets == 0:
+            records.append(
+                {
+                    "bet_type": "moneyline_disagreement",
+                    "threshold": float(threshold),
+                    "n_bets": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "pushes": 0,
+                    "hit_rate": np.nan,
+                    "avg_prob_edge_model_side": np.nan,
+                    "avg_model_pick_prob": np.nan,
+                    "avg_vegas_model_side_prob": np.nan,
+                    "avg_odds_decimal": np.nan,
+                    "avg_odds_american": np.nan,
+                    "total_profit": 0.0,
+                    "roi": np.nan,
+                }
+            )
+            continue
+
+        pushes = int(selection["home_tie"].sum())
+        wins = int(selection.loc[~selection["home_tie"], "model_side_actual_win"].sum())
+        losses = n_bets - wins - pushes
+        total_profit = float(selection["model_side_profit"].sum())
+        denom = wins + losses
+
+        records.append(
+            {
+                "bet_type": "moneyline_disagreement",
+                "threshold": float(threshold),
+                "n_bets": n_bets,
+                "wins": wins,
+                "losses": losses,
+                "pushes": pushes,
+                "hit_rate": float(wins / denom) if denom > 0 else np.nan,
+                "avg_prob_edge_model_side": float(selection["prob_edge_model_side"].mean()),
+                "avg_model_pick_prob": float(selection["model_pick_prob"].mean()),
+                "avg_vegas_model_side_prob": float(selection["vegas_model_side_prob"].mean()),
+                "avg_odds_decimal": float(selection["model_side_decimal"].mean()),
+                "avg_odds_american": float(selection["model_side_moneyline"].mean()),
+                "total_profit": total_profit,
+                "roi": float(total_profit / n_bets),
+            }
+        )
+
     return pd.DataFrame.from_records(records)
 
 
@@ -332,6 +605,157 @@ def summarize_spread(
     return pd.DataFrame.from_records(records)
 
 
+def summarize_spread_edge_bins(
+    df: pd.DataFrame,
+    bins: Iterable[tuple[float, float]] = SPREAD_EDGE_BINS,
+) -> pd.DataFrame:
+    valid = df.dropna(
+        subset=[
+            "spread_edge_points",
+            "home_cover",
+            "away_cover",
+            "spread_push",
+            "home_spread_decimal",
+            "away_spread_decimal",
+            "home_spread_odds",
+            "away_spread_odds",
+        ]
+    ).copy()
+    if valid.empty:
+        return pd.DataFrame(
+            columns=[
+                "scope",
+                "season",
+                "edge_bin",
+                "min_edge",
+                "max_edge",
+                "n_bets",
+                "home_bets",
+                "away_bets",
+                "wins",
+                "losses",
+                "pushes",
+                "hit_rate",
+                "avg_abs_edge_points",
+                "avg_signed_edge_points",
+                "avg_odds_decimal",
+                "avg_odds_american",
+                "total_profit",
+                "roi",
+            ]
+        )
+
+    valid["abs_edge_points"] = valid["spread_edge_points"].abs()
+    valid["selected_side"] = np.where(valid["spread_edge_points"] >= 0.0, "home", "away")
+    valid["selected_cover"] = np.where(valid["selected_side"] == "home", valid["home_cover"], valid["away_cover"])
+    valid["selected_decimal"] = np.where(
+        valid["selected_side"] == "home",
+        valid["home_spread_decimal"],
+        valid["away_spread_decimal"],
+    )
+    valid["selected_odds"] = np.where(
+        valid["selected_side"] == "home",
+        valid["home_spread_odds"],
+        valid["away_spread_odds"],
+    )
+    valid["selected_profit"] = np.where(
+        valid["spread_push"],
+        0.0,
+        np.where(valid["selected_cover"], valid["selected_decimal"] - 1.0, -1.0),
+    )
+
+    records: list[dict[str, float | int | str]] = []
+
+    def add_rows(scope: str, season: int | str, group: pd.DataFrame) -> None:
+        for min_edge, max_edge in bins:
+            if np.isinf(max_edge):
+                selection = group[group["abs_edge_points"] >= min_edge]
+                edge_bin = f"{min_edge:g}+"
+                max_value = np.nan
+            else:
+                selection = group[(group["abs_edge_points"] >= min_edge) & (group["abs_edge_points"] < max_edge)]
+                edge_bin = f"{min_edge:g}-{max_edge:g}"
+                max_value = float(max_edge)
+
+            n_bets = int(len(selection))
+            if n_bets == 0:
+                records.append(
+                    {
+                        "scope": scope,
+                        "season": season,
+                        "edge_bin": edge_bin,
+                        "min_edge": float(min_edge),
+                        "max_edge": max_value,
+                        "n_bets": 0,
+                        "home_bets": 0,
+                        "away_bets": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "pushes": 0,
+                        "hit_rate": np.nan,
+                        "avg_abs_edge_points": np.nan,
+                        "avg_signed_edge_points": np.nan,
+                        "avg_odds_decimal": np.nan,
+                        "avg_odds_american": np.nan,
+                        "total_profit": 0.0,
+                        "roi": np.nan,
+                    }
+                )
+                continue
+
+            pushes = int(selection["spread_push"].sum())
+            wins = int(selection.loc[~selection["spread_push"], "selected_cover"].sum())
+            losses = n_bets - wins - pushes
+            denom = wins + losses
+            total_profit = float(selection["selected_profit"].sum())
+
+            records.append(
+                {
+                    "scope": scope,
+                    "season": season,
+                    "edge_bin": edge_bin,
+                    "min_edge": float(min_edge),
+                    "max_edge": max_value,
+                    "n_bets": n_bets,
+                    "home_bets": int((selection["selected_side"] == "home").sum()),
+                    "away_bets": int((selection["selected_side"] == "away").sum()),
+                    "wins": wins,
+                    "losses": losses,
+                    "pushes": pushes,
+                    "hit_rate": float(wins / denom) if denom > 0 else np.nan,
+                    "avg_abs_edge_points": float(selection["abs_edge_points"].mean()),
+                    "avg_signed_edge_points": float(selection["spread_edge_points"].mean()),
+                    "avg_odds_decimal": float(selection["selected_decimal"].mean()),
+                    "avg_odds_american": float(selection["selected_odds"].mean()),
+                    "total_profit": total_profit,
+                    "roi": float(total_profit / n_bets),
+                }
+            )
+
+    add_rows("overall", "all", valid)
+    for season, season_df in valid.groupby("season", sort=True):
+        add_rows("season", int(season), season_df)
+
+    return pd.DataFrame.from_records(records)
+
+
+def _json_safe_value(value: object) -> object:
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    if isinstance(value, np.bool_):
+        return bool(value)
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _json_safe_record(row: pd.Series) -> dict[str, object]:
+    return {key: _json_safe_value(value) for key, value in row.items()}
+
+
 def run(args: argparse.Namespace) -> None:
     predictions = load_predictions(
         args.start_season,
@@ -355,15 +779,65 @@ def run(args: argparse.Namespace) -> None:
 
     moneyline_df = summarize_moneyline(dataset, args.moneyline_thresholds)
     spread_df = summarize_spread(dataset, args.spread_thresholds, sigma)
+    benchmark_df = build_market_benchmark(dataset)
+    benchmark_summary_df = summarize_market_benchmark(benchmark_df)
+    disagreement_roi_df = summarize_disagreement_moneyline_roi(benchmark_df, args.benchmark_edge_thresholds)
+    spread_edge_bins_df = summarize_spread_edge_bins(dataset)
 
     moneyline_path = ANALYSIS_DIR / "market_roi_moneyline.csv"
     spread_path = ANALYSIS_DIR / "market_roi_spread.csv"
+    benchmark_path = ANALYSIS_DIR / "market_benchmark.csv"
+    benchmark_summary_path = ANALYSIS_DIR / "market_benchmark_summary.csv"
+    disagreement_roi_path = ANALYSIS_DIR / "market_disagreement_roi.csv"
+    spread_edge_bins_path = ANALYSIS_DIR / "market_roi_spread_edge_bins.csv"
     summary_path = ANALYSIS_DIR / "market_roi_summary.json"
 
     moneyline_df.sort_values(["bet_side", "threshold"]).to_csv(moneyline_path, index=False)
     spread_df.sort_values(["bet_side", "threshold"]).to_csv(spread_path, index=False)
 
-    summary: dict[str, dict[str, float | str]] = {
+    benchmark_columns = [
+        "season",
+        "week",
+        "game_id",
+        "home_team",
+        "away_team",
+        "home_win_prob",
+        "away_win_prob",
+        "home_implied_prob",
+        "away_implied_prob",
+        "home_implied_prob_novig",
+        "away_implied_prob_novig",
+        "home_moneyline",
+        "away_moneyline",
+        "model_home_pick",
+        "vegas_home_pick",
+        "favorite_agreement",
+        "model_pick",
+        "vegas_pick",
+        "actual_winner",
+        "model_correct",
+        "vegas_correct",
+        "model_pick_prob",
+        "vegas_pick_prob",
+        "vegas_model_side_prob",
+        "prob_edge_model_side",
+        "model_side_moneyline",
+        "model_side_profit",
+        "vegas_side_moneyline",
+        "vegas_side_profit",
+        "pred_home_margin",
+        "market_home_margin",
+        "spread_edge_points",
+        "home_margin",
+        "spread_result_points",
+    ]
+    benchmark_columns = [col for col in benchmark_columns if col in benchmark_df.columns]
+    benchmark_df.sort_values(["season", "week", "game_id"])[benchmark_columns].to_csv(benchmark_path, index=False)
+    benchmark_summary_df.to_csv(benchmark_summary_path, index=False)
+    disagreement_roi_df.sort_values(["threshold"]).to_csv(disagreement_roi_path, index=False)
+    spread_edge_bins_df.to_csv(spread_edge_bins_path, index=False)
+
+    summary: dict[str, object] = {
         "settings": {
             "start_season": args.start_season,
             "end_season": args.end_season,
@@ -371,25 +845,73 @@ def run(args: argparse.Namespace) -> None:
             "exclude_from_week": args.exclude_from_week,
             "moneyline_thresholds": list(map(float, args.moneyline_thresholds)),
             "spread_thresholds": list(map(float, args.spread_thresholds)),
+            "benchmark_edge_thresholds": list(map(float, args.benchmark_edge_thresholds)),
             "margin_error_sigma": float(sigma),
+            "spread_line_convention": "market_home_margin",
         },
         "moneyline_best": {},
         "spread_best": {},
+        "market_benchmark_overall": {},
+        "market_benchmark_disagreement": {},
+        "moneyline_disagreement_best": {},
+        "spread_edge_bin_best": {},
     }
     valid_ml = moneyline_df[(moneyline_df["n_bets"] > 0) & moneyline_df["roi"].notna()]
     if not valid_ml.empty:
         best_ml = valid_ml.loc[valid_ml["roi"].idxmax()]
-        summary["moneyline_best"] = {
-            k: (float(v) if isinstance(v, (np.floating, np.integer)) else v) for k, v in best_ml.items()
-        }
+        summary["moneyline_best"] = _json_safe_record(best_ml)
     valid_spread = spread_df[(spread_df["n_bets"] > 0) & spread_df["roi"].notna()]
     if not valid_spread.empty:
         best_spread = valid_spread.loc[valid_spread["roi"].idxmax()]
-        summary["spread_best"] = {
-            k: (float(v) if isinstance(v, (np.floating, np.integer)) else v) for k, v in best_spread.items()
-        }
+        summary["spread_best"] = _json_safe_record(best_spread)
+    if not benchmark_summary_df.empty:
+        overall = benchmark_summary_df[
+            (benchmark_summary_df["scope"] == "overall") & (benchmark_summary_df["segment"] == "all")
+        ]
+        if not overall.empty:
+            summary["market_benchmark_overall"] = _json_safe_record(overall.iloc[0])
+        disagreement = benchmark_summary_df[
+            (benchmark_summary_df["scope"] == "overall") & (benchmark_summary_df["segment"] == "disagree")
+        ]
+        if not disagreement.empty:
+            summary["market_benchmark_disagreement"] = _json_safe_record(disagreement.iloc[0])
+    valid_disagreement = disagreement_roi_df[
+        (disagreement_roi_df["n_bets"] > 0) & disagreement_roi_df["roi"].notna()
+    ]
+    if not valid_disagreement.empty:
+        best_disagreement = valid_disagreement.loc[valid_disagreement["roi"].idxmax()]
+        summary["moneyline_disagreement_best"] = _json_safe_record(best_disagreement)
+    valid_edge_bins = spread_edge_bins_df[
+        (spread_edge_bins_df["scope"] == "overall")
+        & (spread_edge_bins_df["n_bets"] >= args.min_spread_edge_bin_bets)
+        & spread_edge_bins_df["roi"].notna()
+    ]
+    if not valid_edge_bins.empty:
+        best_edge_bin = valid_edge_bins.loc[valid_edge_bins["roi"].idxmax()]
+        summary["spread_edge_bin_best"] = _json_safe_record(best_edge_bin)
 
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    print("=== Model vs Vegas benchmark ===")
+    if benchmark_summary_df.empty:
+        print("No benchmark rows matched the criteria.")
+    else:
+        display_cols = [
+            "scope",
+            "season",
+            "segment",
+            "n_games",
+            "model_accuracy",
+            "vegas_accuracy",
+            "favorite_agreement_rate",
+            "model_side_roi",
+            "avg_prob_edge_model_side",
+        ]
+        display = benchmark_summary_df[
+            (benchmark_summary_df["scope"] == "overall")
+            | ((benchmark_summary_df["scope"] == "season") & (benchmark_summary_df["segment"] == "all"))
+        ]
+        print(display[display_cols].to_string(index=False))
 
     print("=== Moneyline ROI summary ===")
     if moneyline_df.empty:
@@ -409,6 +931,22 @@ def run(args: argparse.Namespace) -> None:
         ]
         print(moneyline_df[display_cols].sort_values(["bet_side", "threshold"]).to_string(index=False))
 
+    print("\n=== Moneyline disagreement ROI summary ===")
+    if disagreement_roi_df.empty:
+        print("No disagreement moneyline bets matched the criteria.")
+    else:
+        display_cols = [
+            "threshold",
+            "n_bets",
+            "wins",
+            "losses",
+            "pushes",
+            "roi",
+            "hit_rate",
+            "avg_prob_edge_model_side",
+        ]
+        print(disagreement_roi_df[display_cols].sort_values(["threshold"]).to_string(index=False))
+
     print("\n=== Spread ROI summary ===")
     if spread_df.empty:
         print("No spread bets matched the criteria.")
@@ -427,8 +965,30 @@ def run(args: argparse.Namespace) -> None:
         ]
         print(spread_df[display_cols].sort_values(["bet_side", "threshold"]).to_string(index=False))
 
+    print("\n=== Spread edge-bin ROI summary ===")
+    if spread_edge_bins_df.empty:
+        print("No spread edge-bin bets matched the criteria.")
+    else:
+        display_cols = [
+            "scope",
+            "season",
+            "edge_bin",
+            "n_bets",
+            "home_bets",
+            "away_bets",
+            "roi",
+            "hit_rate",
+            "avg_abs_edge_points",
+        ]
+        display = spread_edge_bins_df[spread_edge_bins_df["scope"] == "overall"]
+        print(display[display_cols].to_string(index=False))
+
+    print(f"\nBenchmark rows written to {benchmark_path.resolve()}")
+    print(f"Benchmark summary written to {benchmark_summary_path.resolve()}")
+    print(f"Disagreement ROI results written to {disagreement_roi_path.resolve()}")
     print(f"\nMoneyline results written to {moneyline_path.resolve()}")
     print(f"Spread results written to {spread_path.resolve()}")
+    print(f"Spread edge-bin results written to {spread_edge_bins_path.resolve()}")
     print(f"Summary written to {summary_path.resolve()}")
 
 
@@ -450,8 +1010,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--spread-thresholds",
         type=float,
         nargs="+",
-        default=[0.0, 1.0, 2.0],
+        default=[0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0],
         help="Predicted margin edge thresholds (points) for spread bets.",
+    )
+    parser.add_argument(
+        "--benchmark-edge-thresholds",
+        type=float,
+        nargs="+",
+        default=[0.0, 0.02, 0.05, 0.08, 0.10, 0.15],
+        help="Model-vs-no-vig-Vegas probability edge thresholds for disagreement moneyline ROI.",
+    )
+    parser.add_argument(
+        "--min-spread-edge-bin-bets",
+        type=int,
+        default=50,
+        help="Minimum overall bets required before a spread edge bin can be selected as best in the JSON summary.",
     )
     return parser
 

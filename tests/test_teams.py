@@ -114,6 +114,20 @@ class TestGetTeamAbbrFromName:
         assert get_team_abbr_from_name("kansas city chiefs") is None
         assert get_team_abbr_from_name("KANSAS CITY CHIEFS") is None
 
+    def test_sportsbook_abbreviated_team_names(self):
+        """Test common sportsbook/vendor team labels resolve correctly."""
+        test_cases = {
+            "ATL Falcons": "ATL",
+            "GB Packers": "GB",
+            "BUF Bills": "BUF",
+            "LA Chargers": "LAC",
+            "LA Rams": "LAR",
+            "NY Giants": "NYG",
+            "NY Jets": "NYJ",
+        }
+        for name, expected_abbr in test_cases.items():
+            assert get_team_abbr_from_name(name) == expected_abbr
+
 
 class TestTeamNameToAbbrDict:
     """Tests for TEAM_NAME_TO_ABBR dictionary."""

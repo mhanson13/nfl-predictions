@@ -75,7 +75,20 @@ def _load_history(paths: Iterable[Path]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
-    return combined
+    return combined
+
+
+def _select_probability_input(history: pd.DataFrame) -> tuple[pd.Series, str]:
+    """Select probabilities before downstream calibration/volatility adjustments."""
+    for column in ("home_win_prob_raw", "home_win_prob_model_raw", "home_win_prob"):
+        if column not in history.columns:
+            continue
+        values = pd.to_numeric(history[column], errors="coerce")
+        if values.notna().any():
+            return pd.Series(values, index=history.index, name="pred"), column
+    raise RuntimeError(
+        "History files must include home_win_prob_raw, home_win_prob_model_raw, or home_win_prob column"
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -118,8 +131,6 @@ def main() -> None:
     if history.empty:
         raise RuntimeError("No prediction history found")
 
-    if "home_win_prob" not in history.columns:
-        raise RuntimeError("History files must include home_win_prob column")
 
     if "home_margin" not in history.columns and "actual_home_win" not in history.columns:
         raise RuntimeError("History files must include home_margin or actual_home_win column")
@@ -150,17 +161,15 @@ def main() -> None:
         seasons = sorted(set(args.seasons))
     else:
         seasons = sorted(history["season"].unique())[-args.season_window:]
-    history = history[history["season"].isin(seasons)].copy()
+    history = history[history["season"].isin(seasons)].copy()
+    preds, probability_input_column = _select_probability_input(history)
 
     if "actual_home_win" in history.columns:
         actual = pd.to_numeric(history["actual_home_win"], errors="coerce")
     else:
         margin = pd.to_numeric(history["home_margin"], errors="coerce")
         actual = pd.Series(np.where(margin > 0, 1, np.where(margin < 0, 0, np.nan)), index=history.index, name="actual")
-    preds = pd.to_numeric(history["home_win_prob"], errors="coerce")
-
     actual = pd.Series(actual, index=history.index, name="actual")
-    preds = pd.Series(preds, index=history.index, name="pred")
 
     mask = preds.notna() & actual.notna()
     preds = preds[mask]
@@ -227,6 +236,8 @@ def main() -> None:
     before_brier = brier_score_loss(actual, preds)
     before_auc = roc_auc_score(actual, preds)
     print(f"[calibrate] samples={len(preds)} seasons={seasons}  baseline Brier={before_brier:.4f} AUC={before_auc:.3f}")
+    if args.debug:
+        print(f"[calibrate] probability input column={probability_input_column}")
 
     calibrated = preds.copy()
     calibrator: IsotonicRegression | None = None
@@ -257,6 +268,7 @@ def main() -> None:
         "method": "isotonic" if args.apply_isotonic else "none",
         "sample_count": int(len(preds)),
         "seasons": seasons,
+        "probability_input_column": probability_input_column,
         "created_at": datetime.utcnow().isoformat() + "Z",
         "baseline_brier": float(before_brier),
         "calibrated_brier": float(after_brier),

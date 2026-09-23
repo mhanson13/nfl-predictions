@@ -12,7 +12,9 @@ from src.analysis.update_readme_metrics import (
     _best_run,
     _build_metrics_table,
     _compose_section,
+    _current_evaluation_runs,
     _format_value,
+    _latest_run,
     _load_runs,
     _replace_section,
     read_text_with_fallback,
@@ -96,6 +98,39 @@ class TestBestRun:
         df = pd.DataFrame({"run_id": ["r1"], "model_name": ["m"]})
         with pytest.raises(ValueError):
             _best_run(df)
+
+
+class TestCurrentEvaluationRuns:
+    def test_filters_calibration_and_old_rows_when_current_schema_exists(self):
+        df = pd.DataFrame({
+            "run_id": ["old_leaky", "baseline", "latest_valid"],
+            "created_at": pd.to_datetime(["2026-09-20", "2026-09-21", "2026-09-22"]),
+            "stage": [None, "baseline", None],
+            "auc": [0.99, 0.72, 0.71],
+            "brier": [0.08, 0.21, 0.22],
+            "n_samples": [2200, 585, 2235],
+            "f1": [float("nan"), float("nan"), 0.69],
+        })
+
+        result = _current_evaluation_runs(df)
+
+        assert result["run_id"].tolist() == ["latest_valid"]
+
+    def test_falls_back_when_no_current_schema_rows_exist(self):
+        df = _make_runs()
+
+        result = _current_evaluation_runs(df)
+
+        assert len(result) == len(df)
+
+
+class TestLatestRun:
+    def test_picks_latest_created_at(self):
+        df = _make_runs()
+
+        result = _latest_run(df)
+
+        assert result["run_id"] == "r2"
 
 
 # ---------------------------------------------------------------------------
