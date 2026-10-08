@@ -54,6 +54,23 @@ data/processed/
 predictions/
 !data/README.md
 
+# Generated analysis outputs
+analysis/*.csv
+analysis/**/*.csv
+analysis/*.json
+analysis/**/*.json
+analysis/*.png
+analysis/**/*.png
+analysis/*.pkl
+analysis/**/*.pkl
+analysis/*.parquet
+analysis/**/*.parquet
+analysis/*.npy
+analysis/**/*.npy
+analysis/*.txt
+analysis/**/*.txt
+analysis/run_comparisons/*.md
+
 # Secrets
 secrets.env
 yahoo_temp.py

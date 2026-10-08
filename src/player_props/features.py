@@ -7,7 +7,10 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from src.player_props.labels import DEFAULT_OUTPUT_PATH as DEFAULT_LABELS_PATH
+from src.player_props.labels import (
+    DEFAULT_NOVELTY_TD_OUTPUT_PATH as DEFAULT_NOVELTY_LABELS_PATH,
+    DEFAULT_OUTPUT_PATH as DEFAULT_LABELS_PATH,
+)
 from src.utils.io import PROC_DIR, read_df, write_df
 from src.utils.teams import normalize_team_abbr
 from src.utils.week_filter import filter_before_week
@@ -15,9 +18,27 @@ from src.utils.week_filter import filter_before_week
 
 DEFAULT_OFFENSE_OUTPUT_PATH = PROC_DIR / "player_prop_features_offense.parquet"
 DEFAULT_DEFENSE_OUTPUT_PATH = PROC_DIR / "player_prop_features_defense.parquet"
+DEFAULT_NOVELTY_OUTPUT_PATH = PROC_DIR / "player_prop_features_novelty.parquet"
 
-OFFENSE_MARKETS = frozenset({"qb_passing_yards", "rb_rushing_yards", "wrte_receiving_yards"})
+OFFENSE_MARKETS = frozenset(
+    {
+        "qb_passing_yards",
+        "qb_passing_tds",
+        "rb_rushing_yards",
+        "rb_rushing_tds",
+        "wrte_receiving_yards",
+        "wrte_receiving_tds",
+        "anytime_td",
+    }
+)
 DEFENSE_MARKETS = frozenset({"def_sacks"})
+NOVELTY_MARKETS = frozenset({"first_td", "last_td", "two_plus_tds", "three_plus_tds"})
+ALL_MARKETS = OFFENSE_MARKETS | DEFENSE_MARKETS | NOVELTY_MARKETS
+COUNT_MARKETS = (
+    frozenset({"qb_passing_tds", "rb_rushing_tds", "wrte_receiving_tds", "anytime_td"})
+    | DEFENSE_MARKETS
+    | NOVELTY_MARKETS
+)
 
 ID_COLUMNS = [
     "season",
@@ -34,6 +55,36 @@ ID_COLUMNS = [
 ]
 
 TARGET_COLUMNS = ["actual_value", "actual_over_zero"]
+
+
+def _market_debug_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty or "market" not in frame.columns:
+        return pd.DataFrame(columns=["market", "rows", "positives", "positive_rate", "avg_actual"])
+    out = frame.copy()
+    if "actual_over_zero" not in out.columns:
+        out["actual_over_zero"] = False
+    if "actual_value" not in out.columns:
+        out["actual_value"] = np.nan
+    summary = (
+        out.groupby("market", as_index=False)
+        .agg(
+            rows=("market", "size"),
+            positives=("actual_over_zero", "sum"),
+            avg_actual=("actual_value", "mean"),
+        )
+        .sort_values("market")
+    )
+    summary["positive_rate"] = summary["positives"] / summary["rows"]
+    return summary[["market", "rows", "positives", "positive_rate", "avg_actual"]]
+
+
+def _market_family(market: object) -> str:
+    market_text = str(market).strip().lower()
+    if market_text in DEFENSE_MARKETS:
+        return "defense"
+    if market_text in NOVELTY_MARKETS:
+        return "novelty"
+    return "offense"
 
 
 def _clean_team(value: object) -> str | None:
@@ -58,6 +109,7 @@ def _prepare_labels(
     seasons: Sequence[int] | None = None,
     exclude_from_season: int | None = None,
     exclude_from_week: int | None = None,
+    market_universe: frozenset[str] | set[str] | None = None,
 ) -> pd.DataFrame:
     required = {
         "season",
@@ -99,10 +151,11 @@ def _prepare_labels(
     else:
         out["actual_over_zero"] = out["actual_over_zero"].astype(bool)
 
-    out = out[out["market"].isin(OFFENSE_MARKETS | DEFENSE_MARKETS)]
+    markets = market_universe or ALL_MARKETS
+    out = out[out["market"].isin(markets)]
     out = out.dropna(subset=["season", "week", "game_id", "team", "opponent", "player_id", "market"])
     out = out[out["team"] != out["opponent"]]
-    out["market_family"] = out["market"].map(lambda market: "defense" if market in DEFENSE_MARKETS else "offense")
+    out["market_family"] = out["market"].map(_market_family)
     out = out.drop_duplicates(subset=["season", "week", "game_id", "team", "player_id", "market"], keep="last")
     return out.sort_values(["season", "week", "game_id", "team", "market", "player_id"]).reset_index(drop=True)
 
@@ -192,7 +245,11 @@ def _add_game_features(labels: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _prepare_prediction_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
+def _prepare_prediction_candidates(
+    candidates: pd.DataFrame,
+    *,
+    market_universe: frozenset[str] | set[str] | None = None,
+) -> pd.DataFrame:
     required = {
         "season",
         "week",
@@ -219,38 +276,40 @@ def _prepare_prediction_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
     out["market"] = out["market"].str.lower()
     out["team"] = out["team"].apply(_clean_team)
     out["opponent"] = out["opponent"].apply(_clean_team)
-    out = out[out["market"].isin(OFFENSE_MARKETS | DEFENSE_MARKETS)]
+    markets = market_universe or ALL_MARKETS
+    out = out[out["market"].isin(markets)]
     out = out.dropna(subset=["season", "week", "game_id", "team", "opponent", "player_id", "market"])
     out = out[out["team"] != out["opponent"]]
-    out["market_family"] = out["market"].map(lambda market: "defense" if market in DEFENSE_MARKETS else "offense")
+    out["market_family"] = out["market"].map(_market_family)
     out["actual_value"] = np.nan
     out["actual_over_zero"] = False
     out["played_flag"] = False
     out["active_flag"] = True
-    out["value_type"] = out["market"].map(lambda market: "count" if market in DEFENSE_MARKETS else "yards")
+    out["value_type"] = out["market"].map(lambda market: "count" if market in COUNT_MARKETS else "yards")
     out["source"] = "prediction_candidate"
     out["_prediction_row"] = True
     return out.drop_duplicates(subset=["season", "week", "game_id", "team", "player_id", "market"], keep="last")
 
 
-def build_player_prop_prediction_features(
+def _build_player_prop_prediction_features_for_markets(
     labels: pd.DataFrame,
     candidates: pd.DataFrame,
     *,
+    market_universe: frozenset[str] | set[str],
     seasons: Sequence[int] | None = None,
     exclude_from_season: int | None = None,
     exclude_from_week: int | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> pd.DataFrame:
     history = _prepare_labels(
         labels,
         seasons=seasons,
         exclude_from_season=exclude_from_season,
         exclude_from_week=exclude_from_week,
+        market_universe=market_universe,
     )
-    candidates_prepared = _prepare_prediction_candidates(candidates)
+    candidates_prepared = _prepare_prediction_candidates(candidates, market_universe=market_universe)
     if candidates_prepared.empty:
-        empty = pd.DataFrame(columns=ID_COLUMNS)
-        return empty.copy(), empty.copy()
+        return pd.DataFrame(columns=ID_COLUMNS)
 
     history = history.copy()
     history["_prediction_row"] = False
@@ -264,9 +323,47 @@ def build_player_prop_prediction_features(
     prediction_features = prediction_features.sort_values(
         ["season", "week", "game_id", "team", "market", "player_id"]
     ).reset_index(drop=True)
+    return prediction_features
+
+
+def build_player_prop_prediction_features(
+    labels: pd.DataFrame,
+    candidates: pd.DataFrame,
+    *,
+    seasons: Sequence[int] | None = None,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    prediction_features = _build_player_prop_prediction_features_for_markets(
+        labels,
+        candidates,
+        market_universe=OFFENSE_MARKETS | DEFENSE_MARKETS,
+        seasons=seasons,
+        exclude_from_season=exclude_from_season,
+        exclude_from_week=exclude_from_week,
+    )
     offense = prediction_features[prediction_features["market_family"].eq("offense")].copy()
     defense = prediction_features[prediction_features["market_family"].eq("defense")].copy()
     return offense, defense
+
+
+def build_player_prop_novelty_prediction_features(
+    labels: pd.DataFrame,
+    candidates: pd.DataFrame,
+    *,
+    seasons: Sequence[int] | None = None,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
+) -> pd.DataFrame:
+    prediction_features = _build_player_prop_prediction_features_for_markets(
+        labels,
+        candidates,
+        market_universe=NOVELTY_MARKETS,
+        seasons=seasons,
+        exclude_from_season=exclude_from_season,
+        exclude_from_week=exclude_from_week,
+    )
+    return prediction_features[prediction_features["market_family"].eq("novelty")].copy()
 
 
 def build_player_prop_features(
@@ -296,6 +393,30 @@ def build_player_prop_features(
     return offense, defense
 
 
+def build_player_prop_novelty_features(
+    labels: pd.DataFrame,
+    *,
+    seasons: Sequence[int] | None = None,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
+) -> pd.DataFrame:
+    prepared = _prepare_labels(
+        labels,
+        seasons=seasons,
+        exclude_from_season=exclude_from_season,
+        exclude_from_week=exclude_from_week,
+        market_universe=NOVELTY_MARKETS,
+    )
+    if prepared.empty:
+        return pd.DataFrame(columns=ID_COLUMNS + TARGET_COLUMNS)
+
+    features = _add_player_history_features(prepared)
+    features = _add_context_features(features)
+    features = _add_game_features(features)
+    features = features.sort_values(["season", "week", "game_id", "team", "market", "player_id"]).reset_index(drop=True)
+    return features[features["market_family"].eq("novelty")].copy()
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build split offensive and defensive player prop feature tables.",
@@ -305,6 +426,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seasons", type=int, nargs="+", default=None, help="Seasons to include.")
     parser.add_argument("--offense-output", type=Path, default=DEFAULT_OFFENSE_OUTPUT_PATH, help="Offense feature output.")
     parser.add_argument("--defense-output", type=Path, default=DEFAULT_DEFENSE_OUTPUT_PATH, help="Defense feature output.")
+    parser.add_argument("--novelty-labels", type=Path, default=DEFAULT_NOVELTY_LABELS_PATH, help="Novelty TD label parquet/csv.")
+    parser.add_argument("--novelty-output", type=Path, default=DEFAULT_NOVELTY_OUTPUT_PATH, help="Novelty TD feature output.")
+    parser.add_argument("--include-novelty", action="store_true", help="Also build first/last/2+/3+ TD feature table.")
     parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows.")
     parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows.")
     parser.add_argument("--debug", action="store_true", help="Print feature row counts.")
@@ -326,20 +450,39 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     offense_path = write_df(offense, args.offense_output)
     defense_path = write_df(defense, args.defense_output)
+    novelty = pd.DataFrame(columns=ID_COLUMNS + TARGET_COLUMNS)
+    novelty_path = None
+    if args.include_novelty:
+        if args.novelty_labels.exists():
+            novelty_labels = read_df(args.novelty_labels)
+            novelty = build_player_prop_novelty_features(
+                novelty_labels,
+                seasons=args.seasons,
+                exclude_from_season=args.exclude_from_season,
+                exclude_from_week=args.exclude_from_week,
+            )
+        novelty_path = write_df(novelty, args.novelty_output)
 
     if args.debug:
         print("[player_props.features] row counts:")
         print(f"  offense: {len(offense)}")
         print(f"  defense: {len(defense)}")
+        if args.include_novelty:
+            print(f"  novelty: {len(novelty)}")
         if not offense.empty:
             print("[player_props.features] offense markets:")
-            print(offense.groupby("market").size().sort_index().to_string())
+            print(_market_debug_summary(offense).to_string(index=False))
         if not defense.empty:
             print("[player_props.features] defense markets:")
-            print(defense.groupby("market").size().sort_index().to_string())
+            print(_market_debug_summary(defense).to_string(index=False))
+        if args.include_novelty and not novelty.empty:
+            print("[player_props.features] novelty markets:")
+            print(_market_debug_summary(novelty).to_string(index=False))
 
     print(f"[player_props.features] wrote offense rows={len(offense)} -> {offense_path.resolve()}")
     print(f"[player_props.features] wrote defense rows={len(defense)} -> {defense_path.resolve()}")
+    if novelty_path is not None:
+        print(f"[player_props.features] wrote novelty rows={len(novelty)} -> {novelty_path.resolve()}")
     return 0
 
 

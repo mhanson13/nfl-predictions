@@ -37,6 +37,32 @@ AVAILABILITY_COLUMNS = [
     "availability_priority",
 ]
 
+TEXT_AVAILABILITY_COLUMNS = {
+    "player_id",
+    "espn_player_id",
+    "player_name",
+    "player_name_key",
+    "team",
+    "current_team",
+    "position",
+    "position_group",
+    "jersey_number",
+    "injury_status",
+    "depth_chart_position",
+    "availability_source",
+}
+
+BOOL_AVAILABILITY_COLUMNS = {
+    "active_roster_flag",
+    "practice_squad_flag",
+    "injured_reserve_flag",
+    "injury_reported",
+    "depth_chart_flag",
+}
+
+INT_AVAILABILITY_COLUMNS = {"season", "week", "availability_priority"}
+FLOAT_AVAILABILITY_COLUMNS = {"depth_chart_rank"}
+
 ROSTER_VALIDATION_COLUMNS = [
     "current_team",
     "active_current_roster",
@@ -58,6 +84,19 @@ def _as_text(series: pd.Series) -> pd.Series:
     return series.astype("string").str.strip()
 
 
+def _finalize_availability_types(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.reindex(columns=AVAILABILITY_COLUMNS).copy()
+    for col in TEXT_AVAILABILITY_COLUMNS:
+        out[col] = out[col].astype("string")
+    for col in BOOL_AVAILABILITY_COLUMNS:
+        out[col] = out[col].astype("boolean").fillna(False)
+    for col in INT_AVAILABILITY_COLUMNS:
+        out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+    for col in FLOAT_AVAILABILITY_COLUMNS:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
+
+
 def _clean_text(value: object) -> str | None:
     if value is None or pd.isna(value):
         return None
@@ -65,6 +104,14 @@ def _clean_text(value: object) -> str | None:
     if not text or text.upper() in {"NONE", "NAN", "NA", "<NA>", "NULL"}:
         return None
     return text
+
+
+def _team_compare_key(value: object) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    team = normalize_team_abbr(text)
+    return "LA" if team == "LAR" else team
 
 
 def _player_name_parts(value: object) -> list[str]:
@@ -313,7 +360,7 @@ def _bdl_availability(active_players: pd.DataFrame, *, season: int, week: int) -
 
 def _deduplicate_availability(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
-        return frame.reindex(columns=AVAILABILITY_COLUMNS)
+        return _finalize_availability_types(frame)
     out = frame.copy()
     out["availability_priority"] = pd.to_numeric(out["availability_priority"], errors="coerce").fillna(0)
     out["depth_chart_rank"] = pd.to_numeric(out["depth_chart_rank"], errors="coerce")
@@ -325,7 +372,7 @@ def _deduplicate_availability(frame: pd.DataFrame) -> pd.DataFrame:
     with_id = out.dropna(subset=["player_id"]).drop_duplicates("player_id", keep="first")
     without_id = out[out["player_id"].isna()].drop_duplicates(["player_name_key", "current_team"], keep="first")
     combined = pd.concat([with_id, without_id], ignore_index=True, sort=False)
-    return combined.reindex(columns=AVAILABILITY_COLUMNS)
+    return _finalize_availability_types(combined)
 
 
 def build_current_player_availability(
@@ -357,9 +404,9 @@ def build_current_player_availability(
         _nflverse_availability(nfl_rosters, season=season, week=week),
         _bdl_availability(_read_if_exists(balldontlie_active_players_path), season=season, week=week),
     ]
-    frames = [frame for frame in frames if not frame.empty]
+    frames = [frame.loc[:, frame.notna().any(axis=0)] for frame in frames if not frame.empty]
     if not frames:
-        return pd.DataFrame(columns=AVAILABILITY_COLUMNS)
+        return _finalize_availability_types(pd.DataFrame(columns=AVAILABILITY_COLUMNS))
     availability = pd.concat(frames, ignore_index=True, sort=False)
     return _deduplicate_availability(availability)
 
@@ -409,9 +456,7 @@ def attach_player_availability(predictions: pd.DataFrame, availability: pd.DataF
             avail[col] = pd.NA
     avail["availability_priority"] = pd.to_numeric(avail["availability_priority"], errors="coerce").fillna(0)
     out["_player_name_key_availability"] = out.get("player_name", pd.Series(pd.NA, index=out.index)).apply(_player_name_key)
-    out["_team_key_availability"] = out.get("team", pd.Series(pd.NA, index=out.index)).apply(
-        lambda value: normalize_team_abbr(str(value)) if _clean_text(value) else None
-    )
+    out["_team_key_availability"] = out.get("team", pd.Series(pd.NA, index=out.index)).apply(_team_compare_key)
 
     id_lookup = avail.dropna(subset=["player_id"]).drop_duplicates("player_id", keep="first")
     if not id_lookup.empty and "player_id" in out.columns:
@@ -463,9 +508,10 @@ def attach_player_availability(predictions: pd.DataFrame, availability: pd.DataF
 
     current_team = out.get("current_team", pd.Series(pd.NA, index=out.index))
     current_team_clean = current_team.apply(lambda value: normalize_team_abbr(str(value)) if _clean_text(value) else None)
+    current_team_compare = current_team.apply(_team_compare_key)
     predicted_team = out["_team_key_availability"]
-    matched = current_team_clean.notna()
-    same_team = matched & predicted_team.eq(current_team_clean)
+    matched = current_team_compare.notna()
+    same_team = matched & predicted_team.eq(current_team_compare)
     active = out.get("_availability_active", pd.Series(pd.NA, index=out.index)).astype("boolean")
     practice = out.get("_availability_practice", pd.Series(False, index=out.index)).astype("boolean").fillna(False)
     injured_reserve = out.get("_availability_ir", pd.Series(False, index=out.index)).astype("boolean").fillna(False)

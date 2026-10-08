@@ -115,6 +115,24 @@ class TestParseArgs:
         assert args.propline_bookmakers == ["draftkings", "hardrock", "fanduel"]
         assert args.propline_markets == ["player_pass_yds", "player_sacks"]
 
+    def test_propline_default_markets_include_touchdown_props(self):
+        args = self.rp.parse_args([])
+
+        assert args.propline_markets == [
+            "player_pass_yds",
+            "player_pass_tds",
+            "player_rush_yds",
+            "player_rush_tds",
+            "player_reception_yds",
+            "player_reception_tds",
+            "player_anytime_td",
+            "player_1st_td",
+            "player_last_td",
+            "player_2plus_td",
+            "player_3plus_td",
+            "player_sacks",
+        ]
+
     def test_mtb_publish_flags_parse(self):
         args = self.rp.parse_args([
             "--publish-mtb",
@@ -192,8 +210,25 @@ class TestBuildDataJobs:
             prediction_week="3",
         )
 
-        balldontlie = next(job for job in jobs if job.name == "balldontlie")
-        assert "--feeds" not in balldontlie.command
+        balldontlie_static = next(job for job in jobs if job.name == "balldontlie_static")
+        assert balldontlie_static.command[balldontlie_static.command.index("--feeds") + 1 :] == ["teams", "players"]
+        assert "--overwrite" not in balldontlie_static.command
+
+        balldontlie_live = next(job for job in jobs if job.name == "balldontlie_live")
+        assert "--overwrite" in balldontlie_live.command
+        assert balldontlie_live.command[balldontlie_live.command.index("--weeks") + 1] == "3"
+        live_feeds = balldontlie_live.command[balldontlie_live.command.index("--feeds") + 1 :]
+        live_feeds = [feed for feed in live_feeds if feed != "--overwrite"]
+        assert live_feeds == [
+            "active_players",
+            "games",
+            "standings",
+            "injuries",
+            "stats",
+            "season_stats",
+            "team_stats",
+            "team_season_stats",
+        ]
 
         propline = next(job for job in jobs if job.name == "propline_player_props")
         assert propline.command[propline.command.index("--season") + 1] == "2026"
@@ -223,8 +258,12 @@ class TestBuildDataJobs:
             prediction_week="auto",
         )
 
-        job = next(job for job in jobs if job.name == "balldontlie")
-        assert "--feeds" not in job.command
+        static_job = next(job for job in jobs if job.name == "balldontlie_static")
+        assert static_job.command[static_job.command.index("--feeds") + 1 :] == ["teams", "players"]
+
+        live_job = next(job for job in jobs if job.name == "balldontlie_live")
+        assert "--overwrite" in live_job.command
+        assert "--weeks" not in live_job.command
         assert not any(job.name == "propline_player_props" for job in jobs)
         assert not any(job.name == "espn_rosters" for job in jobs)
 
@@ -249,6 +288,32 @@ class TestBuildDataJobs:
         espn_rosters = next(job for job in jobs if job.name == "espn_rosters")
         assert espn_rosters.command[espn_rosters.command.index("--season") + 1] == "2026"
         assert espn_rosters.command[espn_rosters.command.index("--week") + 1] == "3"
+
+    def test_balldontlie_custom_feeds_split_static_and_live_refresh(self):
+        jobs = self.rp.build_data_jobs(
+            years=[2026],
+            current_year=2026,
+            debug_flag=[],
+            include_balldontlie=True,
+            balldontlie_feeds=["teams", "games", "injuries"],
+            include_propline=False,
+            propline_bookmakers=None,
+            propline_markets=None,
+            include_sportsdataio=False,
+            sportsdataio_feeds=None,
+            include_yahoo=False,
+            yahoo_feeds=None,
+            yahoo_season=None,
+            prediction_week="4",
+        )
+
+        static_job = next(job for job in jobs if job.name == "balldontlie_static")
+        assert static_job.command[static_job.command.index("--feeds") + 1 :] == ["teams"]
+        assert "--overwrite" not in static_job.command
+
+        live_job = next(job for job in jobs if job.name == "balldontlie_live")
+        assert live_job.command[live_job.command.index("--feeds") + 1 : -1] == ["games", "injuries"]
+        assert live_job.command[-1] == "--overwrite"
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +348,7 @@ class TestBuildSequentialJobs:
         predict_job = next(job for job in jobs if job.name == "predict_upcoming")
         week_arg_index = predict_job.command.index("--week")
         assert predict_job.command[week_arg_index + 1] == "1"
+        assert "--exclude-started" not in predict_job.command
 
     def test_live_exclude_is_passed_to_training_and_analysis_jobs(self, tmp_path):
         jobs = self.rp.build_sequential_jobs(
@@ -309,6 +375,7 @@ class TestBuildSequentialJobs:
         for name in [
             "train_win_prob",
             "train_spread",
+            "feature_family_ablation",
             "volatility_classifier",
             "calibrate_winprob",
             "evaluate_predictions",
@@ -327,6 +394,7 @@ class TestBuildSequentialJobs:
 
         predict_job = next(job for job in jobs if job.name == "predict_upcoming")
         assert "--exclude-from-season" not in predict_job.command
+        assert "--exclude-started" in predict_job.command
 
         calibrate_job = next(job for job in jobs if job.name == "calibrate_winprob")
         assert "--volatility-threshold" not in calibrate_job.command
@@ -359,30 +427,58 @@ class TestBuildSequentialJobs:
         )
 
         names = [job.name for job in jobs]
+        assert names.index("train_spread") < names.index("feature_family_ablation")
+        assert names.index("feature_family_ablation") < names.index("predict_history")
         assert names.index("predict_history") < names.index("volatility_classifier")
         assert names.index("volatility_classifier") < names.index("calibrate_winprob")
         assert names.index("calibrate_winprob") < names.index("predict_upcoming")
         assert names.index("predict_upcoming") < names.index("evaluate_player_prop_baselines")
         assert names.index("evaluate_player_prop_baselines") < names.index("train_player_prop_models")
         assert names.index("train_player_prop_models") < names.index("join_historical_player_prop_lines")
+        assert names.index("join_historical_player_prop_lines") < names.index("evaluate_player_prop_confidence_tiers")
+        assert names.index("evaluate_player_prop_confidence_tiers") < names.index("evaluate_player_prop_over_probability")
         assert names.index("join_historical_player_prop_lines") < names.index("evaluate_player_prop_over_probability")
-        assert names.index("evaluate_player_prop_over_probability") < names.index("predict_player_props")
+        assert names.index("evaluate_player_prop_over_probability") < names.index("backtest_player_prop_edges")
+        assert names.index("backtest_player_prop_edges") < names.index("predict_player_props")
         assert names.index("train_player_prop_models") < names.index("predict_player_props")
         assert names.index("predict_player_props") < names.index("player_prop_quality_report")
         assert names.index("player_prop_quality_report") < names.index("evaluate_predictions")
         assert names.index("predict_player_props") < names.index("evaluate_predictions")
         assert names.index("evaluate_player_prop_baselines") < names.index("evaluate_predictions")
         assert names.index("predict_upcoming") < names.index("evaluate_predictions")
-        assert names.index("market_roi") < names.index("model_metrics_export")
+        assert names.index("market_clv") < names.index("market_roi")
+        assert names.index("market_roi") < names.index("market_blend")
+        assert names.index("market_clv") < names.index("model_metrics_export")
+        assert names.index("market_blend") < names.index("model_metrics_export")
         assert names.index("player_actuals") < names.index("player_prop_labels")
+        assert names.index("nfl_reference_refresh") < names.index("player_identity")
+        assert names.index("player_identity") < names.index("weather")
+        assert names.index("player_identity") < names.index("player_actuals")
+        assert names.index("player_identity") < names.index("player_availability")
+        assert names.index("player_identity") < names.index("player_prop_labels")
         assert names.index("player_actuals") < names.index("player_availability")
         assert names.index("player_availability") < names.index("predict_player_props")
         assert names.index("player_prop_labels") < names.index("player_prop_features")
         assert names.index("player_prop_features") < names.index("build_features")
 
+        labels_job = next(job for job in jobs if job.name == "player_prop_labels")
+        assert "--include-novelty-td-labels" in labels_job.command
+
+        features_job = next(job for job in jobs if job.name == "player_prop_features")
+        assert "--include-novelty" in features_job.command
+        assert "--novelty-labels" in features_job.command
+        assert "--novelty-output" in features_job.command
+
+        train_props_job = next(job for job in jobs if job.name == "train_player_prop_models")
+        assert "--novelty-features" in train_props_job.command
+
         metrics_job = next(job for job in jobs if job.name == "model_metrics_export")
         assert metrics_job.command[metrics_job.command.index("--season") + 1] == "2026"
         assert metrics_job.command[metrics_job.command.index("--week") + 1] == "2"
+
+        market_clv_job = next(job for job in jobs if job.name == "market_clv")
+        assert market_clv_job.command[market_clv_job.command.index("--season") + 1] == "2026"
+        assert market_clv_job.command[market_clv_job.command.index("--week") + 1] == "2"
 
         player_props_job = next(job for job in jobs if job.name == "predict_player_props")
         assert player_props_job.command[player_props_job.command.index("--season") + 1] == "2026"
@@ -397,6 +493,7 @@ class TestBuildSequentialJobs:
         assert Path(player_props_job.command[availability_index + 1]) == Path(
             "data/processed/current_player_availability.parquet"
         )
+        assert "--novelty-labels" in player_props_job.command
         assert str(tmp_path / "predictions" / "player_props_qb.csv") in player_props_job.command
 
         prop_quality_job = next(job for job in jobs if job.name == "player_prop_quality_report")

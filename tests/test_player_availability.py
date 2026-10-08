@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.player_availability import attach_player_availability, build_current_player_availability
+from src.utils.io import read_df, write_df
 
 
 def test_build_current_player_availability_bridges_espn_roster_to_gsis_ids(tmp_path):
@@ -72,7 +73,17 @@ def test_build_current_player_availability_bridges_espn_roster_to_gsis_ids(tmp_p
             {"season": 2026, "week": 3, "gsis_id": "dl-1", "espn_id": 300, "team": "CAR"},
         ]
     ).to_parquet(nfl_rosters_path, index=False)
-    pd.DataFrame().to_parquet(bdl_players_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "first_name": "Future",
+                "last_name": "Player",
+                "team.abbreviation": "ATL",
+                "position_abbreviation": "WR",
+                "jersey_number": 12.0,
+            }
+        ]
+    ).to_parquet(bdl_players_path, index=False)
 
     availability = build_current_player_availability(
         season=2026,
@@ -95,6 +106,11 @@ def test_build_current_player_availability_bridges_espn_roster_to_gsis_ids(tmp_p
     assert bool(rb["active_roster_flag"]) is False
     assert bool(dl["injured_reserve_flag"]) is True
     assert dl["injury_status"] == "Out"
+
+    output = write_df(availability, tmp_path / "availability.parquet")
+    loaded = read_df(output)
+    assert output.suffix == ".parquet"
+    assert len(loaded) == len(availability)
 
 
 def test_attach_player_availability_marks_roster_validation_flags():
@@ -151,3 +167,30 @@ def test_attach_player_availability_marks_roster_validation_flags():
     assert bool(active["qb-1"]) is True
     assert bool(active["rb-1"]) is False
     assert bool(active["dl-1"]) is False
+
+
+def test_attach_player_availability_treats_la_and_lar_as_same_team():
+    predictions = pd.DataFrame(
+        [
+            {"player_id": "edge-1", "player_name": "Byron Young", "team": "LA"},
+        ]
+    )
+    availability = pd.DataFrame(
+        [
+            {
+                "player_id": "edge-1",
+                "player_name_key": "b:young",
+                "current_team": "LAR",
+                "active_roster_flag": True,
+                "practice_squad_flag": False,
+                "injured_reserve_flag": False,
+                "availability_source": "espn",
+            },
+        ]
+    )
+
+    attached = attach_player_availability(predictions, availability)
+
+    row = attached.iloc[0]
+    assert row["roster_validation_flag"] == "ok"
+    assert bool(row["active_current_roster"]) is True

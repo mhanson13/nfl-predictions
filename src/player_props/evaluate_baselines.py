@@ -32,8 +32,13 @@ class ProjectionSpec:
 
 PROJECTION_SPECS: tuple[ProjectionSpec, ...] = (
     ProjectionSpec("qb", "qb_passing_yards", "projected_passing_yards"),
+    ProjectionSpec("qb", "qb_passing_tds", "projected_passing_tds"),
+    ProjectionSpec("qb", "anytime_td", "projected_rushing_tds"),
     ProjectionSpec("offense", "rb_rushing_yards", "projected_rushing_yards"),
+    ProjectionSpec("offense", "rb_rushing_tds", "projected_rushing_tds"),
     ProjectionSpec("offense", "wrte_receiving_yards", "projected_receiving_yards"),
+    ProjectionSpec("offense", "wrte_receiving_tds", "projected_receiving_tds"),
+    ProjectionSpec("offense", "anytime_td", "projected_total_tds"),
     ProjectionSpec("defense", "def_sacks", "projected_sacks"),
 )
 
@@ -330,8 +335,13 @@ def join_labels_to_projections(
     joined["abs_error"] = joined["error"].abs()
     joined["squared_error"] = joined["error"] ** 2
     joined["prob_over_zero"] = np.nan
-    sack_mask = joined["market"].eq("def_sacks") & joined["baseline_projection"].notna()
-    joined.loc[sack_mask, "prob_over_zero"] = 1.0 - np.exp(-joined.loc[sack_mask, "baseline_projection"].clip(lower=0))
+    count_mask = (
+        joined["market"].isin({"qb_passing_tds", "rb_rushing_tds", "wrte_receiving_tds", "anytime_td", "def_sacks"})
+        & joined["baseline_projection"].notna()
+    )
+    joined.loc[count_mask, "prob_over_zero"] = 1.0 - np.exp(
+        -joined.loc[count_mask, "baseline_projection"].clip(lower=0)
+    )
 
     output_cols = [col for col in PREDICTION_COLUMNS if col in joined.columns]
     return joined[output_cols], labels_for_eval

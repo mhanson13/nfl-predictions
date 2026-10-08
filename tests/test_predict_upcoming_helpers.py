@@ -6,12 +6,16 @@ from src.predict.predict_upcoming import (
     _apply_probability_calibrator,
     _best_probability_signal,
     _cleanup_prediction_columns,
+    _attach_market_policy_fields,
+    _attach_odds_spreads,
     _fallback_if_probability_collapsed,
+    _filter_unstarted_games,
     _has_probability_signal,
     _is_collapsed_probability,
     _is_saturated_probability_signal,
     _player_qb_predictions,
     _should_skip_volatility_shrinkage,
+    _stabilize_volatility_threshold_for_slate,
     _volatility_artifact_skip_reason,
 )
 
@@ -139,6 +143,21 @@ def test_best_probability_signal_skips_collapsed_columns():
     assert signal.tolist() == [0.41, 0.52, 0.63]
 
 
+def test_best_probability_signal_prefers_usable_capped_probabilities():
+    df = pd.DataFrame(
+        {
+            "home_win_prob_capped": [0.15, 0.23, 0.57],
+            "home_win_prob_calibrated": [0.00, 0.035, 0.571],
+            "home_win_prob_model_raw": [0.17, 0.18, 0.54],
+        }
+    )
+
+    signal, source = _best_probability_signal(df, df.index)
+
+    assert source == "home_win_prob_capped"
+    assert signal.tolist() == [0.15, 0.23, 0.57]
+
+
 def test_best_probability_signal_prefers_widest_available_range():
     df = pd.DataFrame(
         {
@@ -169,6 +188,32 @@ def test_should_skip_volatility_shrinkage_when_coverage_is_extreme():
 
     assert not skip
     assert coverage == 0.25
+
+
+def test_stabilize_volatility_threshold_floors_sparse_slate_coverage():
+    threshold, coverage, reason = _stabilize_volatility_threshold_for_slate(
+        pd.Series([0.61, 0.48, 0.42, 0.31, 0.20, 0.10]),
+        0.60,
+        min_coverage=0.30,
+        max_coverage=0.80,
+    )
+
+    assert threshold == 0.48
+    assert coverage == 2 / 6
+    assert reason == "coverage_floor"
+
+
+def test_stabilize_volatility_threshold_keeps_explicitly_usable_threshold():
+    threshold, coverage, reason = _stabilize_volatility_threshold_for_slate(
+        pd.Series([0.61, 0.58, 0.42, 0.31]),
+        0.50,
+        min_coverage=0.25,
+        max_coverage=0.75,
+    )
+
+    assert threshold == 0.50
+    assert coverage == 0.50
+    assert reason is None
 
 
 def test_cleanup_preserves_zero_volatility_diagnostics():
@@ -213,6 +258,65 @@ def test_apply_probability_calibrator_uses_predict_proba_when_available():
     result = _apply_probability_calibrator(FakeClassifier(), pd.Series([0.2, 0.8]))
 
     assert result.tolist() == [0.2, 0.8]
+
+
+def test_filter_unstarted_games_drops_started_kickoffs_and_keeps_unknowns():
+    games = pd.DataFrame(
+        [
+            {"game_id": "started", "kickoff": "2026-09-25T00:15:00Z"},
+            {"game_id": "future", "kickoff": "2026-09-27T17:00:00Z"},
+            {"game_id": "unknown", "kickoff": None},
+        ]
+    )
+
+    result = _filter_unstarted_games(
+        games,
+        now=pd.Timestamp("2026-09-26T12:00:00Z"),
+    )
+
+    assert result["game_id"].tolist() == ["future", "unknown"]
+
+
+def test_filter_unstarted_games_treats_date_only_as_end_of_day():
+    games = pd.DataFrame(
+        [
+            {"game_id": "thursday", "date": "2026-09-24"},
+            {"game_id": "sunday", "date": "2026-09-27"},
+        ]
+    )
+
+    result = _filter_unstarted_games(
+        games,
+        now=pd.Timestamp("2026-09-27T15:00:00Z"),
+    )
+
+    assert result["game_id"].tolist() == ["sunday"]
+
+
+def test_filter_unstarted_games_prefers_gameday_gametime_over_stale_kickoff():
+    games = pd.DataFrame(
+        [
+            {
+                "game_id": "started",
+                "gameday": "2026-10-04",
+                "gametime": "13:00",
+                "kickoff": "2026-10-04T23:00:00Z",
+            },
+            {
+                "game_id": "future",
+                "gameday": "2026-10-04",
+                "gametime": "20:20",
+                "kickoff": "2026-10-04T23:00:00Z",
+            },
+        ]
+    )
+
+    result = _filter_unstarted_games(
+        games,
+        now=pd.Timestamp("2026-10-04T19:12:00Z"),
+    )
+
+    assert result["game_id"].tolist() == ["future"]
 
 
 def test_qb_projection_writes_empty_current_file_when_no_rows_survive(tmp_path):
@@ -304,3 +408,196 @@ def test_load_player_stats_frame_accepts_release_team_and_reg_season_type(tmp_pa
 
     assert result["player_id"].tolist() == ["00-test"]
     assert result["recent_team"].tolist() == ["DEN"]
+
+
+def test_attach_odds_spreads_includes_moneyline_columns():
+    preds = pd.DataFrame(
+        [
+            {
+                "home_team": "DAL",
+                "away_team": "TB",
+            }
+        ]
+    )
+    odds = [
+        {
+            "home_team": "Dallas Cowboys",
+            "away_team": "Tampa Bay Buccaneers",
+            "commence_time": "2026-10-09T00:15:00Z",
+            "bookmakers": [
+                {
+                    "key": "draftkings",
+                    "last_update": "2026-10-06T22:00:00Z",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": "Dallas Cowboys", "price": -130},
+                                {"name": "Tampa Bay Buccaneers", "price": 110},
+                            ],
+                        },
+                        {
+                            "key": "spreads",
+                            "outcomes": [
+                                {"name": "Dallas Cowboys", "point": -2.5, "price": -110},
+                                {"name": "Tampa Bay Buccaneers", "point": 2.5, "price": -110},
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+
+    columns = _attach_odds_spreads(preds, odds)
+
+    assert "odds_draftkings_home_moneyline" in columns
+    assert "odds_draftkings_away_moneyline" in columns
+    assert preds.loc[0, "odds_draftkings_home_moneyline"] == -130
+    assert preds.loc[0, "odds_draftkings_away_moneyline"] == 110
+
+
+def test_attach_market_policy_fields_marks_moneyline_and_blocks_spread(tmp_path):
+    policy_path = tmp_path / "market_edge_policy.csv"
+    pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": True,
+                "recommendation_tier": "strong",
+                "threshold": 0.02,
+            },
+            {
+                "signal": "spread_threshold",
+                "recommended": False,
+                "recommendation_tier": "no_bet",
+                "threshold": 2.0,
+            },
+            {
+                "signal": "spread_edge_bin",
+                "recommended": True,
+                "recommendation_tier": "lean",
+                "edge_bin": "2-3",
+            },
+        ]
+    ).to_csv(policy_path, index=False)
+    preds = pd.DataFrame(
+        [
+            {
+                    "home_team": "DAL",
+                    "away_team": "TB",
+                    "home_win_prob": 0.52,
+                "pred_home_margin": 6.0,
+                "odds_draftkings_home_moneyline": 120,
+                "odds_draftkings_away_moneyline": -140,
+                "odds_draftkings_home_spread": 1.0,
+                "odds_draftkings_away_spread": -1.0,
+            },
+                {
+                    "home_team": "JAX",
+                    "away_team": "PHI",
+                    "home_win_prob": 0.51,
+                    "pred_home_margin": 1.0,
+                    "odds_draftkings_home_moneyline": -105,
+                    "odds_draftkings_away_moneyline": -105,
+                    "odds_draftkings_home_spread": -3.5,
+                    "odds_draftkings_away_spread": 3.5,
+                },
+                {
+                    "home_team": "DEN",
+                    "away_team": "KC",
+                    "home_win_prob": 0.49,
+                    "pred_home_margin": -12.0,
+                    "odds_draftkings_home_moneyline": 200,
+                    "odds_draftkings_away_moneyline": -230,
+                    "odds_draftkings_home_spread": 6.0,
+                "odds_draftkings_away_spread": -6.0,
+            },
+        ]
+    )
+
+    columns = _attach_market_policy_fields(preds, policy_path=policy_path)
+
+    assert "market_policy_status" in columns
+    assert bool(preds.loc[0, "market_moneyline_policy_recommendation_flag"]) is True
+    assert preds.loc[0, "market_moneyline_policy_status"] == "strong_moneyline_disagreement"
+    assert preds.loc[0, "market_policy_primary_signal"] == "moneyline_disagreement"
+    assert bool(preds.loc[1, "market_spread_policy_recommendation_flag"]) is True
+    assert preds.loc[1, "market_spread_policy_status"] == "lean_spread_research"
+    assert preds.loc[1, "market_policy_primary_signal"] == "spread_edge_bin"
+    assert bool(preds.loc[2, "market_spread_policy_recommendation_flag"]) is False
+    assert preds.loc[2, "market_spread_policy_status"] == "blocked_overconfident_spread_edge"
+    assert preds.loc[2, "market_policy_tier"] == "blocked"
+
+
+def test_attach_market_policy_fields_surfaces_clv_blocked_moneyline_policy(tmp_path):
+    policy_path = tmp_path / "market_edge_policy.csv"
+    pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": False,
+                "recommendation_tier": "review",
+                "threshold": 0.02,
+                "clv_status": "insufficient_tracked_games",
+            },
+        ]
+    ).to_csv(policy_path, index=False)
+    preds = pd.DataFrame(
+        [
+            {
+                "home_team": "DAL",
+                "away_team": "TB",
+                "home_win_prob": 0.52,
+                "pred_home_margin": 6.0,
+                "odds_draftkings_home_moneyline": 120,
+                "odds_draftkings_away_moneyline": -140,
+                "odds_draftkings_home_spread": 1.0,
+                "odds_draftkings_away_spread": -1.0,
+            },
+        ]
+    )
+
+    _attach_market_policy_fields(preds, policy_path=policy_path)
+
+    assert bool(preds.loc[0, "market_moneyline_policy_recommendation_flag"]) is False
+    assert preds.loc[0, "market_moneyline_policy_tier"] == "review"
+    assert preds.loc[0, "market_moneyline_policy_status"] == "insufficient_tracked_games"
+    assert preds.loc[0, "market_policy_primary_signal"] == "moneyline_review"
+    assert preds.loc[0, "market_policy_status"] == "insufficient_tracked_games"
+
+
+def test_attach_market_policy_fields_blocks_spread_when_calibration_policy_fails(tmp_path):
+    policy_path = tmp_path / "market_edge_policy.csv"
+    pd.DataFrame(
+        [
+            {
+                "signal": "spread_edge_bin",
+                "recommended": False,
+                "recommendation_tier": "review",
+                "edge_bin": "2-3",
+                "spread_cover_calibration_status": "blocked_spread_cover_overconfidence",
+            }
+        ]
+    ).to_csv(policy_path, index=False)
+    preds = pd.DataFrame(
+        [
+            {
+                "home_team": "JAX",
+                "away_team": "PHI",
+                "home_win_prob": 0.51,
+                "pred_home_margin": 1.0,
+                "odds_draftkings_home_moneyline": -105,
+                "odds_draftkings_away_moneyline": -105,
+                "odds_draftkings_home_spread": -3.5,
+                "odds_draftkings_away_spread": 3.5,
+            },
+        ]
+    )
+
+    _attach_market_policy_fields(preds, policy_path=policy_path)
+
+    assert bool(preds.loc[0, "market_spread_policy_recommendation_flag"]) is False
+    assert preds.loc[0, "market_spread_policy_tier"] == "review"
+    assert preds.loc[0, "market_spread_policy_status"] == "blocked_spread_cover_overconfidence"
+    assert preds.loc[0, "market_policy_primary_signal"] == "blocked_spread"

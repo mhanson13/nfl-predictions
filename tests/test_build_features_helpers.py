@@ -12,8 +12,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import src.features.build_features as build_features_module
 from src.features.build_features import (
     EARTH_RADIUS_KM,
+    _build_schedule_kickoff_utc,
     _clean_numeric_value,
     _coalesce,
     _consecutive_counts,
@@ -35,6 +37,81 @@ from src.features.build_features import (
     team_season_agg_from_pbp,
     team_season_def_allowed_from_pbp,
 )
+
+
+def test_load_weather_sources_prefers_visualcrossing_over_tomorrow_and_noaa(tmp_path, monkeypatch):
+    proc_dir = tmp_path / "processed"
+    proc_dir.mkdir()
+    for name in ("visualcrossing_weather.parquet", "weather_games.parquet", "noaa_weather.parquet"):
+        (proc_dir / name).touch()
+
+    frames = {
+        "visualcrossing_weather.parquet": pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_03_CAR_ATL",
+                    "season": 2026,
+                    "week": 3,
+                    "home_team": "ATL",
+                    "away_team": "CAR",
+                    "weather_source": "visualcrossing",
+                    "weather_temp_f": 64.0,
+                }
+            ]
+        ),
+        "weather_games.parquet": pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_03_CAR_ATL",
+                    "season": 2026,
+                    "week": 3,
+                    "home_team": "ATL",
+                    "away_team": "CAR",
+                    "weather_temp_f": 61.0,
+                }
+            ]
+        ),
+        "noaa_weather.parquet": pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_03_CAR_ATL",
+                    "season": 2026,
+                    "week": 3,
+                    "home_team": "ATL",
+                    "away_team": "CAR",
+                    "noaa_temp_f": 58.0,
+                }
+            ]
+        ),
+    }
+
+    def fake_read_df(path, *args, **kwargs):
+        return frames[path.name].copy()
+
+    monkeypatch.setattr(build_features_module, "PROC_DIR", proc_dir)
+    monkeypatch.setattr(build_features_module, "read_df", fake_read_df)
+
+    weather = build_features_module._load_weather_sources()
+
+    assert len(weather) == 1
+    row = weather.iloc[0]
+    assert row["weather_source"] == "visualcrossing"
+    assert row["weather_temp_f"] == 64.0
+
+
+def test_has_weather_signal_accepts_live_temp_wind_or_precip_columns():
+    frame = pd.DataFrame(
+        [
+            {"weather_temp_f": 64.0},
+            {"weather_wind_mph": 12.0},
+            {"weather_precip_mm": 0.2},
+            {"weather_precip_prob": np.nan, "weather_wind_mph": np.nan},
+        ]
+    )
+
+    signal = build_features_module._has_weather_signal(frame)
+
+    assert signal.tolist() == [True, True, True, False]
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +579,62 @@ class TestNormalizeScheduleColumns:
         df["roof"] = "closed"
         result = _normalize_schedule_columns(df)
         assert result["roof_is_dome"].iloc[0] == 1
+
+    def test_kickoff_built_from_gameday_gametime_as_eastern_time(self):
+        df = self._make_sched()
+        df["gameday"] = "2026-10-04"
+        df["gametime"] = "13:00"
+
+        result = _normalize_schedule_columns(df)
+
+        assert result["kickoff"].iloc[0] == pd.Timestamp("2026-10-04T17:00:00Z")
+
+
+def test_build_schedule_kickoff_utc_ignores_date_only_values():
+    df = pd.DataFrame(
+        [
+            {"gameday": "2026-10-04", "gametime": "13:00"},
+            {"gameday": "2026-10-04", "gametime": None, "date": "2026-10-04"},
+        ]
+    )
+
+    result = _build_schedule_kickoff_utc(df)
+
+    assert result.iloc[0] == pd.Timestamp("2026-10-04T17:00:00Z")
+    assert pd.isna(result.iloc[1])
+
+
+def test_merge_weather_features_does_not_overwrite_schedule_kickoff():
+    feats = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_04_TEN_BAL",
+                "season": 2026,
+                "week": 4,
+                "home_team": "BAL",
+                "away_team": "TEN",
+                "kickoff": pd.Timestamp("2026-10-04T17:00:00Z"),
+            }
+        ]
+    )
+    weather = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_04_TEN_BAL",
+                "season": 2026,
+                "week": 4,
+                "home_team": "BAL",
+                "away_team": "TEN",
+                "kickoff": pd.Timestamp("2026-10-04T23:00:00Z"),
+                "weather_temp_f": 68.0,
+            }
+        ]
+    )
+
+    result = build_features_module._merge_weather_features(feats, weather)
+
+    assert result["kickoff"].iloc[0] == pd.Timestamp("2026-10-04T17:00:00Z")
+    assert result["weather_temp_f"].iloc[0] == 68.0
 
 
 def test_dedupe_schedule_games_keeps_one_row_per_game_id():

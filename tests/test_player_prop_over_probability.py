@@ -107,6 +107,73 @@ def test_over_probability_metrics_and_bins_are_written_shape():
     assert bins["n"].sum() >= len(scored)
 
 
+def test_walk_forward_over_probabilities_blend_toward_market_when_market_wins_prior():
+    rows = []
+    for idx in range(2):
+        rows.append(
+            {
+                "season": 2025,
+                "week": 1,
+                "game_id": f"2025_01_GAME_{idx}",
+                "market": "qb_passing_yards",
+                "sportsbook": "draftkings",
+                "player_id": f"seed-{idx}",
+                "model_player_name": f"Seed {idx}",
+                "line": 49.5,
+                "model_projection": 50.0,
+                "actual_value": 70.0,
+                "implied_probability": 0.5,
+            }
+        )
+    for idx in range(2):
+        rows.append(
+            {
+                "season": 2025,
+                "week": 2,
+                "game_id": f"2025_02_GAME_{idx}",
+                "market": "qb_passing_yards",
+                "sportsbook": "draftkings",
+                "player_id": f"prior-{idx}",
+                "model_player_name": f"Prior {idx}",
+                "line": 55.5,
+                "model_projection": 60.0,
+                "actual_value": 40.0,
+                "implied_probability": 0.2,
+            }
+        )
+    rows.append(
+        {
+            "season": 2025,
+            "week": 3,
+            "game_id": "2025_03_GAME_0",
+            "market": "qb_passing_yards",
+            "sportsbook": "draftkings",
+            "player_id": "target",
+            "model_player_name": "Target",
+            "line": 55.5,
+            "model_projection": 60.0,
+            "actual_value": 40.0,
+            "implied_probability": 0.25,
+        }
+    )
+
+    scored = add_walk_forward_over_probabilities(
+        pd.DataFrame(rows),
+        min_samples=2,
+        shrinkage=0,
+        probability_cap=1.0,
+        market_blend_min_samples=2,
+    )
+
+    week3 = scored[scored["week"].eq(3)].iloc[0]
+
+    assert week3["calibration_method"] == "market_residual_blend"
+    assert week3["prob_over_residual"] > week3["prob_over_market"]
+    assert week3["market_blend_weight"] > 0.9
+    assert week3["prob_over_model"] < week3["prob_over_residual"]
+    assert week3["prob_over_model"] > week3["prob_over_market"]
+
+
 def test_attach_current_over_probabilities_updates_lined_rows_only():
     current = pd.DataFrame(
         [

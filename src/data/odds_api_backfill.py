@@ -45,10 +45,20 @@ API_MODES = {"discover-events", "discover-markets", "fetch-odds", "all"}
 
 ODDSAPI_MARKET_TO_MODEL_MARKET = {
     "player_pass_yds": "qb_passing_yards",
+    "player_pass_tds": "qb_passing_tds",
     "player_rush_yds": "rb_rushing_yards",
+    "player_rush_tds": "rb_rushing_tds",
     "player_reception_yds": "wrte_receiving_yards",
+    "player_reception_tds": "wrte_receiving_tds",
+    "player_anytime_td": "anytime_td",
+    "player_1st_td": "first_td",
+    "player_last_td": "last_td",
     "player_sacks": "def_sacks",
 }
+
+TOUCHDOWN_SCORER_MARKETS = frozenset({"player_anytime_td", "player_1st_td", "player_last_td"})
+TOUCHDOWN_MILESTONE_MARKETS = frozenset({"player_tds", "player_tds_over"})
+BINARY_TOUCHDOWN_MARKETS = TOUCHDOWN_SCORER_MARKETS | TOUCHDOWN_MILESTONE_MARKETS
 
 MANIFEST_COLUMNS = [
     "season",
@@ -224,6 +234,25 @@ def _line_balance_distance(frame: pd.DataFrame) -> pd.Series:
         frame["under_odds"], errors="coerce"
     ).notna()
     return pd.Series(np.where(has_two_way, np.abs(implied - 0.5), np.inf), index=frame.index)
+
+
+def _touchdown_milestone_from_outcome(series: pd.Series) -> pd.Series:
+    text = series.astype("string").str.extract(r"(\d+)\s*\+", expand=False)
+    return pd.to_numeric(text, errors="coerce")
+
+
+def _touchdown_milestone_market(market_key: pd.Series, point: pd.Series, outcome_name: pd.Series) -> pd.Series:
+    key = market_key.astype("string")
+    source_point = pd.to_numeric(point, errors="coerce")
+    parsed_milestone = _touchdown_milestone_from_outcome(outcome_name)
+    implied_milestone = source_point + 0.5
+    milestone = parsed_milestone.where(parsed_milestone.notna(), implied_milestone)
+    market = key.map(ODDSAPI_MARKET_TO_MODEL_MARKET)
+    milestone_mask = key.isin(TOUCHDOWN_MILESTONE_MARKETS)
+    market = market.where(~(milestone_mask & milestone.ge(2.5)), "three_plus_tds")
+    market = market.where(~(milestone_mask & milestone.ge(1.5) & milestone.lt(2.5)), "two_plus_tds")
+    market = market.where(~(milestone_mask & milestone.lt(1.5)), "anytime_td")
+    return market
 
 
 def _first_present(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
@@ -449,10 +478,20 @@ def update_odds_status(manifest: pd.DataFrame, odds: pd.DataFrame) -> pd.DataFra
     out["event_odds_status"] = "pending"
     out.loc[out["oddsapi_event_id"].isna(), "event_odds_status"] = "missing_event"
     out.loc[out["event_markets_status"].eq("no_target_markets"), "event_odds_status"] = "no_target_markets"
-    if odds.empty or "event_id" not in odds.columns:
+    if odds.empty or not {"event_id", "requested_date", "market_key"}.issubset(odds.columns):
         return out[MANIFEST_COLUMNS]
-    done_events = set(odds["event_id"].dropna().astype(str))
-    out.loc[out["oddsapi_event_id"].astype("string").isin(done_events), "event_odds_status"] = "done"
+    odds_markets = (
+        odds.dropna(subset=["event_id", "requested_date"])
+        .groupby(["event_id", "requested_date"])["market_key"]
+        .agg(lambda values: set(values.dropna().astype(str)))
+    )
+    for idx, row in out[out["oddsapi_event_id"].notna()].iterrows():
+        key = (str(row["oddsapi_event_id"]), str(row["snapshot_time_utc"]))
+        if key not in odds_markets:
+            continue
+        target_markets = set(_json_list(row.get("target_markets")))
+        if target_markets and target_markets.issubset(odds_markets[key]):
+            out.loc[idx, "event_odds_status"] = "done"
     return out[MANIFEST_COLUMNS]
 
 
@@ -601,6 +640,26 @@ def _available_target_markets(manifest_row: pd.Series, markets: pd.DataFrame) ->
     return sorted(target & available)
 
 
+def _existing_event_markets(odds: pd.DataFrame) -> dict[tuple[str, str], set[str]]:
+    if odds.empty or not {"event_id", "requested_date", "market_key"}.issubset(odds.columns):
+        return {}
+    grouped = (
+        odds.dropna(subset=["event_id", "requested_date"])
+        .groupby(["event_id", "requested_date"])["market_key"]
+        .agg(lambda values: set(values.dropna().astype(str)))
+    )
+    return {(str(event_id), str(requested_date)): set(markets) for (event_id, requested_date), markets in grouped.items()}
+
+
+def _missing_event_markets(row: pd.Series, existing_markets: dict[tuple[str, str], set[str]]) -> list[str]:
+    available = list(row.get("_available_markets") or [])
+    if not available:
+        return []
+    key = (str(row["oddsapi_event_id"]), str(row["snapshot_time_utc"]))
+    done = existing_markets.get(key, set())
+    return [market for market in available if market not in done]
+
+
 def fetch_event_odds(
     manifest: pd.DataFrame,
     markets: pd.DataFrame,
@@ -625,18 +684,18 @@ def fetch_event_odds(
         return update_odds_status(manifest, existing), existing, 0, 0
     jobs["_available_markets"] = jobs.apply(lambda row: _available_target_markets(row, markets), axis=1)
     jobs = jobs[jobs["_available_markets"].map(bool)].copy()
+    if jobs.empty:
+        return update_odds_status(manifest, existing), existing, 0, 0
 
-    if resume and not existing.empty and {"event_id", "requested_date"}.issubset(existing.columns):
-        done = {
-            (str(event_id), str(requested_date))
-            for event_id, requested_date in existing[["event_id", "requested_date"]].dropna().itertuples(index=False)
-        }
-        jobs = jobs[
-            ~jobs.apply(lambda row: (str(row["oddsapi_event_id"]), str(row["snapshot_time_utc"])) in done, axis=1)
-        ]
+    if resume:
+        existing_markets = _existing_event_markets(existing)
+        jobs["_request_markets"] = jobs.apply(lambda row: _missing_event_markets(row, existing_markets), axis=1)
+        jobs = jobs[jobs["_request_markets"].map(bool)].copy()
+    else:
+        jobs["_request_markets"] = jobs["_available_markets"]
     if max_requests is not None:
         jobs = jobs.head(max(0, int(max_requests)))
-    estimated_credits = int(sum(len(markets_for_event) * 10 for markets_for_event in jobs["_available_markets"]))
+    estimated_credits = int(sum(len(markets_for_event) * 10 for markets_for_event in jobs["_request_markets"]))
     if dry_run:
         return update_odds_status(manifest, existing), existing, int(len(jobs)), estimated_credits
 
@@ -646,13 +705,13 @@ def fetch_event_odds(
     new_frames: list[pd.DataFrame] = []
     for _, row in jobs.iterrows():
         bookmakers = _json_list(row["target_bookmakers"])
-        available_markets = list(row["_available_markets"])
+        request_markets = list(row["_request_markets"])
         frame = fetch_historical_event_odds(
             api_key=api_key,
             event_id=str(row["oddsapi_event_id"]),
             date=str(row["snapshot_time_utc"]),
             sport_key=sport_key,
-            markets=available_markets,
+            markets=request_markets,
             bookmakers=bookmakers,
             regions=regions,
             odds_format=odds_format,
@@ -734,13 +793,17 @@ def normalize_historical_player_prop_lines(
     vendor_set = {str(vendor).strip().lower() for vendor in vendors if str(vendor).strip()}
     if vendor_set:
         out = out[out["sportsbook"].isin(vendor_set)]
-    out["market"] = out["market_key"].map(ODDSAPI_MARKET_TO_MODEL_MARKET)
+    out["market"] = _touchdown_milestone_market(out["market_key"], out["point"], out["outcome_name"])
     out = out[out["market"].notna()]
     out["player_name_key"] = out["player_name"].apply(_player_name_key)
     out["player_name_prefix_key"] = out["player_name"].apply(_player_name_prefix_key)
     out["line"] = pd.to_numeric(out["point"], errors="coerce")
     out["price"] = pd.to_numeric(out["price"], errors="coerce")
     out["outcome_side"] = out["outcome_name"].astype("string").str.lower()
+    binary_td_mask = out["market_key"].isin(BINARY_TOUCHDOWN_MARKETS)
+    out.loc[binary_td_mask, "line"] = 0.5
+    out.loc[binary_td_mask & ~out["outcome_side"].str.contains("under|no", na=False), "outcome_side"] = "over"
+    out.loc[binary_td_mask & out["outcome_side"].str.contains("under|no", na=False), "outcome_side"] = "under"
     out = out.dropna(subset=["season", "week", "game_id", "market", "player_name_key", "line", "price"])
     if out.empty:
         return pd.DataFrame(columns=NORMALIZED_LINE_COLUMNS)
@@ -807,9 +870,24 @@ def _write_manifest(manifest: pd.DataFrame, path: Path) -> Path:
     return write_df(manifest[MANIFEST_COLUMNS], path)
 
 
+def _manifest_target_markets(manifest: pd.DataFrame, fallback: Sequence[str]) -> list[str]:
+    if manifest.empty or "target_markets" not in manifest.columns:
+        return list(fallback)
+    markets: list[str] = []
+    seen: set[str] = set()
+    for value in manifest["target_markets"].dropna():
+        for market in _json_list(value):
+            if market not in seen:
+                markets.append(market)
+                seen.add(market)
+    return markets or list(fallback)
+
+
 def _print_quota(manifest: pd.DataFrame, markets: Sequence[str]) -> None:
-    quota = estimate_quota(manifest, markets=markets)
+    quota_markets = _manifest_target_markets(manifest, markets)
+    quota = estimate_quota(manifest, markets=quota_markets)
     print("[oddsapi.backfill] manifest rows:", len(manifest))
+    print("[oddsapi.backfill] target markets:", ",".join(quota_markets))
     print("[oddsapi.backfill] events requests:", quota["events_requests"])
     print("[oddsapi.backfill] event-markets requests:", quota["event_markets_requests"])
     print("[oddsapi.backfill] discovery requests:", quota["discovery_requests"])

@@ -24,8 +24,34 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     _write_csv(source_root / "predictions" / "player_props_defense.csv", "player_id,projection\ndl,0.5\n")
     _write_csv(source_root / "predictions" / "player_props_novelty.csv", "player_id,projection\n")
     _write_csv(source_root / "predictions" / "evaluation" / "overall_metrics.csv", "metric,value\nauc,0.7\n")
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "feature_family_ablation.csv",
+        "target,feature_set,primary_value\nwin_prob,baseline_plus_bdl,0.7\n",
+    )
     _write_csv(source_root / "analysis" / "market_roi_spread.csv", "market,roi\nspread,0.1\n")
     _write_csv(source_root / "analysis" / "market_benchmark_summary.csv", "segment,n_games\nall,10\n")
+    _write_csv(source_root / "analysis" / "market_clv_detail.csv", "game_id,moneyline_clv_prob_delta\nabc,0.01\n")
+    _write_csv(source_root / "analysis" / "market_clv_summary.csv", "scope,segment,n_games\noverall,all,1\n")
+    _write_csv(source_root / "analysis" / "market_disagreement_edge_bins.csv", "edge_bin,roi\n2-5%,0.1\n")
+    _write_csv(
+        source_root / "analysis" / "market_disagreement_season_stability.csv",
+        "threshold,stability_pass\n0.02,true\n",
+    )
+    _write_csv(
+        source_root / "analysis" / "market_probability_edge_calibration.csv",
+        "bin_family,bin_label,model_brier,vegas_brier\nall,all,0.22,0.21\n",
+    )
+    _write_csv(source_root / "analysis" / "market_blend_backtest.csv", "game_id,blend_home_win_prob\nabc,0.55\n")
+    _write_csv(source_root / "analysis" / "market_blend_summary.csv", "scope,segment,blend_brier\noverall,all,0.21\n")
+    _write_csv(source_root / "analysis" / "market_blend_policy.csv", "signal,recommended\nmarket_blend_probability,false\n")
+    _write_csv(source_root / "analysis" / "market_spread_key_numbers.csv", "key_number,edge_bucket,roi\n3,2-3,0.01\n")
+    _write_csv(source_root / "analysis" / "market_spread_calibration.csv", "cover_prob_bin,calibration_error\n80%+,0.8\n")
+    _write_csv(
+        source_root / "analysis" / "market_spread_cover_recalibration.csv",
+        "cover_prob_bin,calibration_status\n80%+,overconfident\n",
+    )
+    _write_csv(source_root / "analysis" / "market_utility_segments.csv", "segment,n_bets\nall,10\n")
+    _write_csv(source_root / "analysis" / "market_edge_policy.csv", "signal,recommended\nspread_threshold,true\n")
     _write_csv(source_root / "analysis" / "model_metrics_week_02.csv", "metric_key,value\naccuracy,0.65\n")
     _write_csv(
         source_root / "predictions" / "evaluation" / "player_props" / "prop_quality_week_02.csv",
@@ -38,6 +64,14 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     _write_csv(
         source_root / "predictions" / "evaluation" / "player_props" / "prop_line_coverage_week_02.csv",
         "scope,raw_rows\noverall,3\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "player_props" / "prop_roster_line_audit_week_02.csv",
+        "player_id,line_availability_status\nrb,unknown\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "player_props" / "confidence_tier_metrics.csv",
+        "evaluation_scope,scope,n_rows\nhistorical_lines,overall,100\n",
     )
 
     published = publish_csvs(
@@ -56,15 +90,31 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "current" / "player_props_defense.csv").exists()
     assert (destination_root / "current" / "player_props_novelty.csv").exists()
     assert (destination_root / "evaluation" / "overall_metrics.csv").exists()
+    assert (destination_root / "evaluation" / "feature_family_ablation.csv").exists()
     assert (destination_root / "analysis" / "market_roi_spread.csv").exists()
     assert (destination_root / "analysis" / "market_benchmark_summary.csv").exists()
+    assert (destination_root / "analysis" / "market_clv_detail.csv").exists()
+    assert (destination_root / "analysis" / "market_clv_summary.csv").exists()
+    assert (destination_root / "analysis" / "market_disagreement_edge_bins.csv").exists()
+    assert (destination_root / "analysis" / "market_disagreement_season_stability.csv").exists()
+    assert (destination_root / "analysis" / "market_probability_edge_calibration.csv").exists()
+    assert (destination_root / "analysis" / "market_blend_backtest.csv").exists()
+    assert (destination_root / "analysis" / "market_blend_summary.csv").exists()
+    assert (destination_root / "analysis" / "market_blend_policy.csv").exists()
+    assert (destination_root / "analysis" / "market_spread_key_numbers.csv").exists()
+    assert (destination_root / "analysis" / "market_spread_calibration.csv").exists()
+    assert (destination_root / "analysis" / "market_spread_cover_recalibration.csv").exists()
+    assert (destination_root / "analysis" / "market_utility_segments.csv").exists()
+    assert (destination_root / "analysis" / "market_edge_policy.csv").exists()
     assert (destination_root / "analysis" / "model_metrics_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_quality_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_quality_summary_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_line_coverage_week_02.csv").exists()
+    assert (destination_root / "evaluation" / "player_props" / "prop_roster_line_audit_week_02.csv").exists()
+    assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 19
+    assert len(published) == 35
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):

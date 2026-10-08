@@ -73,8 +73,10 @@ NEW_VOLATILITY_FEATURES = {
     "pred_margin_confidence",
     "model_margin_disagreement",
 }
-MIN_PRED_POSITIVE_RATE = 0.02
-MAX_PRED_POSITIVE_RATE = 0.85
+MIN_PRED_POSITIVE_RATE = 0.20
+MAX_PRED_POSITIVE_RATE = 0.65
+TARGET_PRED_POSITIVE_RATE = 0.35
+TARGET_PRED_POSITIVE_TOLERANCE = 0.20
 
 
 def save_calibration_plot(probs: np.ndarray, targets: np.ndarray, threshold: float, path: Path) -> None:
@@ -202,6 +204,8 @@ def select_threshold_from_sweep(
     decision_threshold: Optional[float] = None,
     min_pred_positive_rate: float = MIN_PRED_POSITIVE_RATE,
     max_pred_positive_rate: float = MAX_PRED_POSITIVE_RATE,
+    target_pred_positive_rate: Optional[float] = TARGET_PRED_POSITIVE_RATE,
+    target_pred_positive_tolerance: float = TARGET_PRED_POSITIVE_TOLERANCE,
 ) -> dict[str, float]:
     if not sweep_records:
         raise ValueError("Cannot select threshold from an empty sweep.")
@@ -217,10 +221,33 @@ def select_threshold_from_sweep(
     if not candidates:
         candidates = sweep_records
 
+    target_rate = None
+    if target_pred_positive_rate is not None:
+        target_rate = float(np.clip(target_pred_positive_rate, 0.0, 1.0))
+        tolerance = float(np.clip(target_pred_positive_tolerance, 0.0, 1.0))
+        target_candidates = [
+            r
+            for r in candidates
+            if abs(float(r["pred_positive_rate"]) - target_rate) <= tolerance
+        ]
+        if target_candidates:
+            candidates = target_candidates
+
+    def _coverage_distance(record: dict[str, float]) -> float:
+        if target_rate is None:
+            return 0.0
+        return abs(float(record["pred_positive_rate"]) - target_rate)
+
     strategy = (threshold_metric or "balanced").lower()
     if strategy == "f1":
-        return max(candidates, key=lambda r: (r["f1"], r["balanced_accuracy"], r["precision"], r["recall"]))
-    return max(candidates, key=lambda r: (r["balanced_accuracy"], r["f1"], r["precision"], r["recall"]))
+        return max(
+            candidates,
+            key=lambda r: (r["f1"], r["balanced_accuracy"], r["precision"], r["recall"], -_coverage_distance(r)),
+        )
+    return max(
+        candidates,
+        key=lambda r: (r["balanced_accuracy"], r["f1"], r["precision"], r["recall"], -_coverage_distance(r)),
+    )
 
 
 def train_classifier(
@@ -302,7 +329,11 @@ def evaluate_model(
     y_test: np.ndarray,
     *,
     decision_threshold: Optional[float] = None,
-    threshold_metric: str = 'balanced',
+    threshold_metric: str = 'balanced',
+    min_pred_positive_rate: float = MIN_PRED_POSITIVE_RATE,
+    max_pred_positive_rate: float = MAX_PRED_POSITIVE_RATE,
+    target_pred_positive_rate: Optional[float] = TARGET_PRED_POSITIVE_RATE,
+    target_pred_positive_tolerance: float = TARGET_PRED_POSITIVE_TOLERANCE,
 ) -> tuple[Dict[str, float], np.ndarray, np.ndarray, float]:
     if hasattr(model, "predict_proba"):
         y_prob = model.predict_proba(X_test)[:, 1]
@@ -347,6 +378,10 @@ def evaluate_model(
         sweep_records,
         threshold_metric=threshold_metric,
         decision_threshold=decision_threshold,
+        min_pred_positive_rate=min_pred_positive_rate,
+        max_pred_positive_rate=max_pred_positive_rate,
+        target_pred_positive_rate=target_pred_positive_rate,
+        target_pred_positive_tolerance=target_pred_positive_tolerance,
     )
     best_threshold = float(selected["threshold"])
     y_pred = (y_prob >= best_threshold).astype(int)
@@ -457,6 +492,10 @@ def main(args: argparse.Namespace) -> None:
         y_test,
         decision_threshold=args.decision_threshold,
         threshold_metric=args.threshold_metric,
+        min_pred_positive_rate=args.threshold_min_positive_rate,
+        max_pred_positive_rate=args.threshold_max_positive_rate,
+        target_pred_positive_rate=args.threshold_target_positive_rate,
+        target_pred_positive_tolerance=args.threshold_target_tolerance,
     )
     importances = get_feature_importance(model, list(feature_df.columns))
     highlighted = importances[importances["feature"].isin(NEW_VOLATILITY_FEATURES)].head(5)
@@ -474,6 +513,10 @@ def main(args: argparse.Namespace) -> None:
         sweep_records,
         threshold_metric=args.threshold_metric,
         decision_threshold=args.decision_threshold,
+        min_pred_positive_rate=args.threshold_min_positive_rate,
+        max_pred_positive_rate=args.threshold_max_positive_rate,
+        target_pred_positive_rate=args.threshold_target_positive_rate,
+        target_pred_positive_tolerance=args.threshold_target_tolerance,
     )
     selected_threshold = float(np.clip(chosen["threshold"], 0.0, 1.0))
     final_pred = (y_prob_test >= selected_threshold).astype(int)
@@ -547,6 +590,10 @@ def main(args: argparse.Namespace) -> None:
             "test_samples": int(len(X_test)),
             "decision_threshold": selected_threshold,
             "threshold_metric": args.threshold_metric,
+            "threshold_min_positive_rate": args.threshold_min_positive_rate,
+            "threshold_max_positive_rate": args.threshold_max_positive_rate,
+            "threshold_target_positive_rate": args.threshold_target_positive_rate,
+            "threshold_target_tolerance": args.threshold_target_tolerance,
             "threshold_sweep": sweep_records,
             "stable_rate": stable_rate,
             "volatile_rate": volatility_rate,
@@ -676,7 +723,31 @@ if __name__ == "__main__":
         default="balanced",
         help="Strategy for auto-selecting the probability threshold when --decision-threshold is not supplied.",
     )
-    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging.")
+    parser.add_argument(
+        "--threshold-min-positive-rate",
+        type=float,
+        default=MIN_PRED_POSITIVE_RATE,
+        help="Minimum test-set share the automatic volatility threshold should select.",
+    )
+    parser.add_argument(
+        "--threshold-max-positive-rate",
+        type=float,
+        default=MAX_PRED_POSITIVE_RATE,
+        help="Maximum test-set share the automatic volatility threshold should select.",
+    )
+    parser.add_argument(
+        "--threshold-target-positive-rate",
+        type=float,
+        default=TARGET_PRED_POSITIVE_RATE,
+        help="Preferred test-set share for automatic volatility threshold selection.",
+    )
+    parser.add_argument(
+        "--threshold-target-tolerance",
+        type=float,
+        default=TARGET_PRED_POSITIVE_TOLERANCE,
+        help="Allowed distance from the preferred selected-game share before falling back to all candidates.",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging.")
     args = parser.parse_args()
 
     if args.debug:

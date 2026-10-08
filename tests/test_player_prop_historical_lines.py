@@ -129,6 +129,285 @@ def test_join_historical_lines_matches_strict_and_initial_last_fallback():
     assert bool(wr["model_pick_correct"]) is False
 
 
+def test_join_historical_lines_does_not_initial_last_fallback_anytime_td():
+    predictions = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "team": "BUF",
+                "opponent": "BAL",
+                "player_id": "ty-johnson",
+                "player_name": "Ty.Johnson",
+                "position": "RB",
+                "position_group": "RB",
+                "market": "anytime_td",
+                "actual_value": 1.0,
+                "actual_over_zero": True,
+                "model_projection": 0.18,
+                "prob_over_zero": 0.18,
+                "model_type": "count_event",
+                "evaluation_method": "season_walk_forward",
+                "train_rows": 100,
+                "feature_count": 10,
+            },
+        ]
+    )
+    lines = pd.DataFrame(
+        [
+            {
+                "line_source": "odds_api_historical",
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "oddsapi_event_id": "evt-buf",
+                "requested_date": "2025-09-07T16:50:00Z",
+                "snapshot_timestamp": "2025-09-07T16:45:00Z",
+                "market": "anytime_td",
+                "market_key": "player_anytime_td",
+                "player_name": "Taron Johnson",
+                "player_name_key": "t:johnson",
+                "player_name_prefix_key": "ta:johnson",
+                "sportsbook": "hardrockbet",
+                "line": 0.5,
+                "over_odds": 5000,
+                "under_odds": pd.NA,
+                "implied_probability": 100 / 5100,
+                "line_balance_distance": float("inf"),
+                "line_is_comparable": False,
+                "line_updated_at": "2025-09-07T16:45:00Z",
+            },
+        ]
+    )
+
+    joined, prepared_lines = join_historical_lines(lines=lines, predictions=predictions)
+
+    assert len(prepared_lines) == 1
+    assert joined.empty
+
+
+def test_join_historical_lines_does_not_initial_last_fallback_novelty_td():
+    predictions = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "team": "BUF",
+                "opponent": "BAL",
+                "player_id": "ty-johnson",
+                "player_name": "Ty.Johnson",
+                "position": "RB",
+                "position_group": "RB",
+                "market": "two_plus_tds",
+                "actual_value": 0.0,
+                "actual_over_zero": False,
+                "model_projection": 0.08,
+                "prob_over_zero": 0.08,
+                "model_type": "count_event",
+                "evaluation_method": "season_walk_forward",
+                "train_rows": 100,
+                "feature_count": 10,
+            },
+        ]
+    )
+    lines = pd.DataFrame(
+        [
+            {
+                "line_source": "odds_api_historical",
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "oddsapi_event_id": "evt-buf",
+                "requested_date": "2025-09-07T16:50:00Z",
+                "snapshot_timestamp": "2025-09-07T16:45:00Z",
+                "market": "two_plus_tds",
+                "market_key": "player_tds_over",
+                "player_name": "Taron Johnson",
+                "player_name_key": "t:johnson",
+                "player_name_prefix_key": "ta:johnson",
+                "sportsbook": "hardrockbet",
+                "line": 0.5,
+                "over_odds": 5000,
+                "under_odds": pd.NA,
+                "implied_probability": 100 / 5100,
+                "line_balance_distance": float("inf"),
+                "line_is_comparable": False,
+                "line_updated_at": "2025-09-07T16:45:00Z",
+            },
+        ]
+    )
+
+    joined, prepared_lines = join_historical_lines(lines=lines, predictions=predictions)
+
+    assert len(prepared_lines) == 1
+    assert joined.empty
+
+
+def test_join_historical_lines_uses_identity_for_anytime_td_full_name_alias():
+    predictions = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "team": "BUF",
+                "opponent": "BAL",
+                "player_id": "ty-johnson",
+                "player_name": "T.Johnson",
+                "position": "RB",
+                "position_group": "RB",
+                "market": "anytime_td",
+                "actual_value": 1.0,
+                "actual_over_zero": True,
+                "model_projection": 0.18,
+                "prob_over_zero": 0.18,
+                "model_type": "count_event",
+                "evaluation_method": "season_walk_forward",
+                "train_rows": 100,
+                "feature_count": 10,
+            },
+        ]
+    )
+    lines = pd.DataFrame(
+        [
+            {
+                "line_source": "odds_api_historical",
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "oddsapi_event_id": "evt-buf",
+                "requested_date": "2025-09-07T16:50:00Z",
+                "snapshot_timestamp": "2025-09-07T16:45:00Z",
+                "market": "anytime_td",
+                "market_key": "player_anytime_td",
+                "player_name": "Ty Johnson",
+                "player_name_key": "t:johnson",
+                "player_name_prefix_key": "ty:johnson",
+                "sportsbook": "draftkings",
+                "line": 0.5,
+                "over_odds": 180,
+                "under_odds": pd.NA,
+                "implied_probability": 100 / 280,
+                "line_balance_distance": float("inf"),
+                "line_is_comparable": False,
+                "line_updated_at": "2025-09-07T16:45:00Z",
+            },
+        ]
+    )
+    identity = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "team": "BUF",
+                "player_id": "ty-johnson",
+                "alias_name": "Ty Johnson",
+                "alias_source": "nflverse_roster",
+                "alias_confidence": 1.0,
+                "alias_name_key": "t:johnson",
+                "alias_prefix_key": "ty:johnson",
+            }
+        ]
+    )
+
+    joined, prepared_lines = join_historical_lines(lines=lines, predictions=predictions, identity=identity)
+
+    assert len(prepared_lines) == 1
+    assert len(joined) == 1
+    row = joined.iloc[0]
+    assert row["match_method"] == "identity_strict"
+    assert row["line_player_name"] == "Ty Johnson"
+    assert row["model_player_name"] == "T.Johnson"
+    assert row["player_id"] == "ty-johnson"
+    assert row["identity_alias_source"] == "nflverse_roster"
+
+
+def test_join_historical_lines_identity_does_not_cross_match_name_collision():
+    predictions = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "team": "BUF",
+                "opponent": "BAL",
+                "player_id": "ty-johnson",
+                "player_name": "T.Johnson",
+                "position": "RB",
+                "position_group": "RB",
+                "market": "anytime_td",
+                "actual_value": 1.0,
+                "actual_over_zero": True,
+                "model_projection": 0.18,
+                "prob_over_zero": 0.18,
+                "model_type": "count_event",
+                "evaluation_method": "season_walk_forward",
+                "train_rows": 100,
+                "feature_count": 10,
+            },
+        ]
+    )
+    lines = pd.DataFrame(
+        [
+            {
+                "line_source": "odds_api_historical",
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_BAL_BUF",
+                "oddsapi_event_id": "evt-buf",
+                "requested_date": "2025-09-07T16:50:00Z",
+                "snapshot_timestamp": "2025-09-07T16:45:00Z",
+                "market": "anytime_td",
+                "market_key": "player_anytime_td",
+                "player_name": "Taron Johnson",
+                "player_name_key": "t:johnson",
+                "player_name_prefix_key": "ta:johnson",
+                "sportsbook": "hardrockbet",
+                "line": 0.5,
+                "over_odds": 5000,
+                "under_odds": pd.NA,
+                "implied_probability": 100 / 5100,
+                "line_balance_distance": float("inf"),
+                "line_is_comparable": False,
+                "line_updated_at": "2025-09-07T16:45:00Z",
+            },
+        ]
+    )
+    identity = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "team": "BUF",
+                "player_id": "taron-johnson",
+                "alias_name": "Taron Johnson",
+                "alias_source": "nflverse_roster",
+                "alias_confidence": 1.0,
+                "alias_name_key": "t:johnson",
+                "alias_prefix_key": "ta:johnson",
+            },
+            {
+                "season": 2025,
+                "week": 1,
+                "team": "BUF",
+                "player_id": "ty-johnson",
+                "alias_name": "Ty Johnson",
+                "alias_source": "nflverse_roster",
+                "alias_confidence": 1.0,
+                "alias_name_key": "t:johnson",
+                "alias_prefix_key": "ty:johnson",
+            },
+        ]
+    )
+
+    joined, prepared_lines = join_historical_lines(lines=lines, predictions=predictions, identity=identity)
+
+    assert len(prepared_lines) == 1
+    assert joined.empty
+
+
 def test_summarize_join_reports_match_and_pick_accuracy():
     joined, prepared_lines = join_historical_lines(lines=_lines(), predictions=_predictions())
 

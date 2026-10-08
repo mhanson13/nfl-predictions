@@ -149,18 +149,21 @@ def _fallback_if_probability_collapsed(
 
 
 def _best_probability_signal(preds: pd.DataFrame, index: pd.Index) -> tuple[pd.Series, str]:
-    """Return the best available probability column that still has ranking signal."""
-    candidates: list[tuple[bool, float, pd.Series, str]] = []
+    """Return the safest probability column that still has ranking signal."""
+    fallback_candidates: list[tuple[bool, float, pd.Series, str]] = []
     for col in ("home_win_prob_capped", "home_win_prob_calibrated", "home_win_prob_model_raw"):
         if col not in preds.columns:
             continue
         series = _coerce_probability_series(preds[col], index)
         prob_range = _probability_range(series)
         if _has_probability_signal(series):
-            candidates.append((_is_saturated_probability_signal(series), prob_range, series, col))
-    if candidates:
-        non_saturated = [item for item in candidates if not item[0]]
-        pool = non_saturated or candidates
+            saturated = _is_saturated_probability_signal(series)
+            if col == "home_win_prob_capped" and not saturated:
+                return series, col
+            fallback_candidates.append((saturated, prob_range, series, col))
+    if fallback_candidates:
+        non_saturated = [item for item in fallback_candidates if not item[0]]
+        pool = non_saturated or fallback_candidates
         _, _, best_series, best_col = max(pool, key=lambda item: item[1])
         return best_series, best_col
     if "home_win_prob" in preds.columns:
@@ -195,6 +198,45 @@ def _should_skip_volatility_shrinkage(
     min_cov = float(np.clip(min_coverage, 0.0, 1.0))
     max_cov = float(np.clip(max_coverage, 0.0, 1.0))
     return coverage < min_cov or coverage > max_cov, coverage
+
+
+def _stabilize_volatility_threshold_for_slate(
+    volatility_prob: Any,
+    threshold: float,
+    *,
+    min_coverage: float,
+    max_coverage: float,
+) -> tuple[float, float, str | None]:
+    """Move learned volatility thresholds only when current-slate coverage is unusably thin or broad."""
+    probs = pd.to_numeric(pd.Series(volatility_prob), errors="coerce").dropna()
+    if probs.empty:
+        return float(threshold), 0.0, None
+
+    base_threshold = float(np.clip(threshold, 0.0, 1.0))
+    min_cov = float(np.clip(min_coverage, 0.0, 1.0))
+    max_cov = float(np.clip(max_coverage, 0.0, 1.0))
+
+    def _coverage(candidate: float) -> float:
+        return float(probs.ge(float(candidate)).mean())
+
+    coverage = _coverage(base_threshold)
+    if 0.0 < min_cov and coverage < min_cov:
+        target_count = int(np.ceil(len(probs) * min_cov))
+        target_count = max(1, min(target_count, len(probs)))
+        sorted_probs = np.sort(probs.to_numpy(dtype=float))[::-1]
+        adjusted = float(sorted_probs[target_count - 1])
+        adjusted = min(base_threshold, adjusted)
+        return adjusted, _coverage(adjusted), "coverage_floor"
+
+    if max_cov < 1.0 and coverage > max_cov:
+        target_count = int(np.floor(len(probs) * max_cov))
+        target_count = max(1, min(target_count, len(probs)))
+        sorted_probs = np.sort(probs.to_numpy(dtype=float))[::-1]
+        adjusted = float(sorted_probs[target_count - 1])
+        adjusted = max(base_threshold, adjusted)
+        return adjusted, _coverage(adjusted), "coverage_ceiling"
+
+    return base_threshold, coverage, None
 
 
 def _volatility_artifact_skip_reason(
@@ -346,6 +388,7 @@ def _round_or_none(value: Any, digits: int) -> Optional[float]:
 
 
 MOUNTAIN_TZ = tz.gettz("America/Denver")
+NFL_SCHEDULE_TZ = "America/New_York"
 
 
 def _format_mountain_time(series: pd.Series) -> pd.Series:
@@ -361,6 +404,81 @@ def _format_mountain_time(series: pd.Series) -> pd.Series:
         kickoff_mt = kickoff_dt.dt.tz_convert(MOUNTAIN_TZ)
         formatted = kickoff_mt.dt.strftime("%Y-%m-%d %H:%M %Z")
     return formatted.fillna("")
+
+
+def _parse_kickoff_times(series: pd.Series) -> pd.Series:
+    """Parse kickoff-like timestamps, treating date-only values as end-of-day."""
+    raw = series.astype("string").str.strip()
+    parsed = pd.to_datetime(raw, utc=True, errors="coerce")
+    date_only = raw.str.match(r"^\d{4}-\d{2}-\d{2}$", na=False)
+    if date_only.any():
+        parsed.loc[date_only] = parsed.loc[date_only] + pd.Timedelta(hours=23, minutes=59)
+    return parsed
+
+
+def _schedule_kickoff_from_gameday_gametime(games: pd.DataFrame) -> pd.Series:
+    """Parse schedule gameday/gametime columns as Eastern Time kickoff timestamps."""
+    kickoff = pd.Series(pd.NaT, index=games.index, dtype="datetime64[ns, UTC]")
+    if not {"gameday", "gametime"}.issubset(games.columns):
+        return kickoff
+
+    dates = games["gameday"].astype("string").str.strip()
+    times = games["gametime"].astype("string").str.strip()
+    has_time = times.str.match(r"^\d{1,2}:\d{2}(:\d{2})?$", na=False)
+    combined = dates.where(dates.notna(), "") + " " + times.where(times.notna(), "")
+    parsed = pd.to_datetime(combined.where(has_time), errors="coerce")
+    if parsed.notna().any():
+        kickoff = parsed.dt.tz_localize(
+            NFL_SCHEDULE_TZ,
+            ambiguous="NaT",
+            nonexistent="NaT",
+        ).dt.tz_convert("UTC")
+    return kickoff
+
+
+def _filter_unstarted_games(
+    games: pd.DataFrame,
+    *,
+    now: Optional[pd.Timestamp] = None,
+    debug: bool = False,
+) -> pd.DataFrame:
+    """Return games whose kickoff has not passed, keeping rows with unknown kickoff."""
+    if games.empty:
+        return games.copy()
+
+    kickoff = _schedule_kickoff_from_gameday_gametime(games)
+    kickoff_col = "gameday/gametime" if kickoff.notna().any() else None
+
+    fallback_col = next((col for col in ["kickoff", "start_date", "date"] if col in games.columns), None)
+    if fallback_col is not None:
+        fallback_kickoff = _parse_kickoff_times(games[fallback_col])
+        kickoff = kickoff.where(kickoff.notna(), fallback_kickoff)
+        kickoff_col = kickoff_col or fallback_col
+
+    if kickoff_col is None:
+        if debug:
+            print("[predict][schedule] cannot exclude started games: no kickoff/date column available")
+        return games.copy()
+
+    if kickoff.notna().sum() == 0:
+        if debug:
+            print(f"[predict][schedule] cannot exclude started games: {kickoff_col} has no parseable values")
+        return games.copy()
+
+    cutoff = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    else:
+        cutoff = cutoff.tz_convert("UTC")
+
+    keep = kickoff.isna() | (kickoff > cutoff)
+    removed = int((~keep).sum())
+    if debug:
+        print(
+            "[predict][schedule] exclude-started filter: "
+            f"kept={int(keep.sum())} removed={removed} cutoff={cutoff.isoformat()}"
+        )
+    return games.loc[keep].copy()
 
 
 
@@ -755,6 +873,9 @@ def _cleanup_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
         "home_win_prob_raw",
         "volatility_prob",
         "volatility_label",
+        "market_moneyline_favorite_disagreement",
+        "market_moneyline_policy_recommendation_flag",
+        "market_spread_policy_recommendation_flag",
     }
 
     idx = pd.Index(cleaned.columns)
@@ -829,6 +950,281 @@ def _slugify_bookmaker(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_") or "bookmaker"
 
 
+def _bool_from_value(value: Any) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def _read_market_policy(path: Path = Path("analysis/market_edge_policy.csv")) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        frame = pd.read_csv(path)
+    except Exception:
+        return {}
+    if frame.empty or "signal" not in frame.columns:
+        return {}
+    return {
+        str(row["signal"]): row.to_dict()
+        for _, row in frame.iterrows()
+        if pd.notna(row.get("signal"))
+    }
+
+
+def _probability_edge_bin(value: Any) -> str:
+    edge = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(edge):
+        return "unavailable"
+    edge = float(edge)
+    if edge < 0.0:
+        return "<0%"
+    if edge < 0.02:
+        return "0-2%"
+    if edge < 0.05:
+        return "2-5%"
+    if edge < 0.08:
+        return "5-8%"
+    if edge < 0.10:
+        return "8-10%"
+    if edge < 0.15:
+        return "10-15%"
+    return "15%+"
+
+
+def _spread_edge_bin(value: Any) -> str:
+    edge = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(edge):
+        return "unavailable"
+    edge = abs(float(edge))
+    if edge < 1.0:
+        return "0-1"
+    if edge < 2.0:
+        return "1-2"
+    if edge < 3.0:
+        return "2-3"
+    if edge < 5.0:
+        return "3-5"
+    if edge < 7.0:
+        return "5-7"
+    if edge < 10.0:
+        return "7-10"
+    return "10+"
+
+
+def _first_existing_numeric_median(df: pd.DataFrame, pattern: str) -> pd.Series:
+    cols = [col for col in df.columns if re.match(pattern, str(col))]
+    if not cols:
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    values = df[cols].apply(pd.to_numeric, errors="coerce")
+    return values.median(axis=1, skipna=True).astype(float)
+
+
+def _attach_market_policy_fields(
+    preds: pd.DataFrame,
+    *,
+    policy_path: Path = Path("analysis/market_edge_policy.csv"),
+) -> list[str]:
+    if preds.empty:
+        return []
+
+    policy = _read_market_policy(policy_path)
+    added = [
+        "market_home_moneyline",
+        "market_away_moneyline",
+        "market_home_implied_prob_novig",
+        "market_away_implied_prob_novig",
+        "market_model_pick",
+        "market_vegas_pick",
+        "market_moneyline_favorite_disagreement",
+        "market_moneyline_prob_edge",
+        "market_moneyline_edge_bin",
+        "market_moneyline_policy_tier",
+        "market_moneyline_policy_status",
+        "market_moneyline_policy_recommendation_flag",
+        "market_home_spread",
+        "market_away_spread",
+        "market_home_margin",
+        "market_spread_edge_points",
+        "market_spread_abs_edge_points",
+        "market_spread_selected_side",
+        "market_spread_edge_bin",
+        "market_spread_policy_tier",
+        "market_spread_policy_status",
+        "market_spread_policy_recommendation_flag",
+        "market_policy_primary_signal",
+        "market_policy_tier",
+        "market_policy_status",
+    ]
+
+    home_prob = pd.to_numeric(_column_or_default(preds, "home_win_prob"), errors="coerce").astype(float)
+    away_prob = 1.0 - home_prob
+
+    preds["market_home_moneyline"] = _first_existing_numeric_median(preds, r"^odds_.*_home_moneyline$")
+    preds["market_away_moneyline"] = _first_existing_numeric_median(preds, r"^odds_.*_away_moneyline$")
+    home_implied = pd.Series(moneyline_to_prob(preds["market_home_moneyline"]), index=preds.index, dtype=float)
+    away_implied = pd.Series(moneyline_to_prob(preds["market_away_moneyline"]), index=preds.index, dtype=float)
+    implied_sum = home_implied + away_implied
+    preds["market_home_implied_prob_novig"] = np.where(implied_sum > 0.0, home_implied / implied_sum, np.nan)
+    preds["market_away_implied_prob_novig"] = np.where(implied_sum > 0.0, away_implied / implied_sum, np.nan)
+
+    model_home_pick = home_prob >= 0.5
+    vegas_home_pick = preds["market_home_implied_prob_novig"] >= 0.5
+    moneyline_available = preds["market_home_implied_prob_novig"].notna() & preds["market_away_implied_prob_novig"].notna()
+    preds["market_model_pick"] = np.where(model_home_pick, preds["home_team"], preds["away_team"])
+    preds["market_vegas_pick"] = np.where(vegas_home_pick, preds["home_team"], preds["away_team"])
+    preds["market_moneyline_favorite_disagreement"] = (model_home_pick != vegas_home_pick) & moneyline_available
+
+    model_pick_prob = np.where(model_home_pick, home_prob, away_prob)
+    vegas_model_side_prob = np.where(
+        model_home_pick,
+        preds["market_home_implied_prob_novig"],
+        preds["market_away_implied_prob_novig"],
+    )
+    preds["market_moneyline_prob_edge"] = model_pick_prob - vegas_model_side_prob
+    preds["market_moneyline_edge_bin"] = preds["market_moneyline_prob_edge"].apply(_probability_edge_bin)
+
+    ml_policy = policy.get("moneyline_disagreement", {})
+    ml_policy_enabled = _bool_from_value(ml_policy.get("recommended", False))
+    ml_threshold = pd.to_numeric(pd.Series([ml_policy.get("threshold", np.nan)]), errors="coerce").iloc[0]
+    ml_max_auto_edge = 0.10
+    ml_tier = str(ml_policy.get("recommendation_tier", "no_bet") or "no_bet")
+    ml_clv_status = str(ml_policy.get("clv_status", "") or "").strip()
+    ml_clv_blocks_policy = bool(
+        ml_clv_status and ml_clv_status.lower() not in {"nan", "unavailable", "clv_pass"}
+    )
+    ml_candidate = (
+        ml_policy_enabled
+        & preds["market_moneyline_favorite_disagreement"].astype(bool)
+        & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
+    )
+    high_edge_review = ml_candidate & preds["market_moneyline_prob_edge"].ge(ml_max_auto_edge)
+    ml_recommended = ml_candidate & ~high_edge_review
+    ml_clv_policy_block = (
+        (not ml_policy_enabled)
+        & ml_clv_blocks_policy
+        & preds["market_moneyline_favorite_disagreement"].astype(bool)
+        & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
+    )
+    preds["market_moneyline_policy_recommendation_flag"] = ml_recommended
+    preds["market_moneyline_policy_tier"] = np.select(
+        [ml_recommended, high_edge_review, ml_clv_policy_block],
+        [ml_tier, "review", ml_tier if ml_tier in {"review", "no_bet"} else "review"],
+        default="no_bet",
+    )
+    preds["market_moneyline_policy_status"] = np.select(
+        [
+            ~moneyline_available,
+            high_edge_review,
+            ml_recommended,
+            ml_clv_policy_block,
+            preds["market_moneyline_favorite_disagreement"].astype(bool),
+        ],
+        [
+            "unavailable_moneyline",
+            "moneyline_high_edge_review",
+            "strong_moneyline_disagreement",
+            ml_clv_status,
+            "disagreement_below_policy_edge",
+        ],
+        default="no_bet",
+    )
+
+    preds["market_home_spread"] = _first_existing_numeric_median(preds, r"^odds_.*_home_spread$")
+    preds["market_away_spread"] = _first_existing_numeric_median(preds, r"^odds_.*_away_spread$")
+    preds["market_home_margin"] = -pd.to_numeric(preds["market_home_spread"], errors="coerce")
+    pred_margin = pd.to_numeric(_column_or_default(preds, "pred_home_margin"), errors="coerce")
+    preds["market_spread_edge_points"] = pred_margin - preds["market_home_margin"]
+    preds["market_spread_abs_edge_points"] = preds["market_spread_edge_points"].abs()
+    preds["market_spread_selected_side"] = np.where(
+        preds["market_spread_edge_points"] >= 0.0,
+        "home",
+        "away",
+    )
+    preds.loc[preds["market_spread_edge_points"].isna(), "market_spread_selected_side"] = "unavailable"
+    preds["market_spread_edge_bin"] = preds["market_spread_abs_edge_points"].apply(_spread_edge_bin)
+
+    spread_policy = policy.get("spread_edge_bin", {})
+    spread_policy_enabled = _bool_from_value(spread_policy.get("recommended", False))
+    spread_policy_bin = str(spread_policy.get("edge_bin", "") or "")
+    spread_tier = str(spread_policy.get("recommendation_tier", "lean") or "lean")
+    spread_calibration_status = str(spread_policy.get("spread_cover_calibration_status", "") or "")
+    spread_available = preds["market_spread_abs_edge_points"].notna()
+    spread_lean = spread_policy_enabled & preds["market_spread_edge_bin"].eq(spread_policy_bin)
+    spread_calibration_block = (
+        spread_available
+        & (not spread_policy_enabled)
+        & preds["market_spread_edge_bin"].eq(spread_policy_bin)
+        & bool(spread_policy_bin)
+        & bool(spread_calibration_status and spread_calibration_status != "unavailable")
+    )
+    spread_blocked_high = spread_available & preds["market_spread_abs_edge_points"].ge(5.0)
+    spread_blocked_mid = (
+        spread_available
+        & preds["market_spread_abs_edge_points"].ge(3.0)
+        & preds["market_spread_abs_edge_points"].lt(5.0)
+    )
+    preds["market_spread_policy_recommendation_flag"] = spread_lean
+    preds["market_spread_policy_tier"] = np.select(
+        [spread_lean, spread_calibration_block, spread_blocked_high | spread_blocked_mid, ~spread_available],
+        [spread_tier, "review", "blocked", "unavailable"],
+        default="no_bet",
+    )
+    preds["market_spread_policy_status"] = np.select(
+        [~spread_available, spread_lean, spread_calibration_block, spread_blocked_high, spread_blocked_mid],
+        [
+            "unavailable_spread",
+            "lean_spread_research",
+            spread_calibration_status or "blocked_spread_cover_calibration",
+            "blocked_overconfident_spread_edge",
+            "blocked_uncalibrated_spread_edge",
+        ],
+        default="no_bet",
+    )
+
+    preds["market_policy_primary_signal"] = np.select(
+        [
+            ml_recommended,
+            ml_clv_policy_block,
+            spread_lean,
+            high_edge_review,
+            spread_calibration_block | spread_blocked_high | spread_blocked_mid,
+        ],
+        ["moneyline_disagreement", "moneyline_review", "spread_edge_bin", "moneyline_review", "blocked_spread"],
+        default="none",
+    )
+    preds["market_policy_tier"] = np.select(
+        [
+            ml_recommended,
+            ml_clv_policy_block,
+            spread_lean,
+            high_edge_review,
+            spread_calibration_block,
+            spread_blocked_high | spread_blocked_mid,
+        ],
+        [ml_tier, ml_tier if ml_tier in {"review", "no_bet"} else "review", spread_tier, "review", "review", "blocked"],
+        default="no_bet",
+    )
+    preds["market_policy_status"] = np.select(
+        [
+            ml_recommended,
+            ml_clv_policy_block,
+            spread_lean,
+            high_edge_review,
+            spread_calibration_block | spread_blocked_high | spread_blocked_mid,
+        ],
+        [
+            preds["market_moneyline_policy_status"],
+            preds["market_moneyline_policy_status"],
+            preds["market_spread_policy_status"],
+            preds["market_moneyline_policy_status"],
+            preds["market_spread_policy_status"],
+        ],
+        default="no_bet",
+    )
+    return added
+
+
 
 def _attach_odds_spreads(preds: pd.DataFrame, odds: Optional[list[dict]], debug: bool = False) -> List[str]:
 
@@ -870,21 +1266,40 @@ def _attach_odds_spreads(preds: pd.DataFrame, odds: Optional[list[dict]], debug:
 
                 slug = _slugify_bookmaker(book_key)
 
-                market = None
+                spread_market = None
+                h2h_market = None
 
                 for mk in book.get("markets", []):
 
                     if mk.get("key") == "spreads":
 
-                        market = mk
+                        spread_market = mk
 
-                        break
+                    elif mk.get("key") == "h2h":
 
-                if market is None:
+                        h2h_market = mk
+
+                home_moneyline = away_moneyline = None
+
+                if h2h_market is not None:
+
+                    for outcome in h2h_market.get("outcomes", []):
+
+                        abbr = _normalize_team_name(outcome.get("name"))
+
+                        if abbr == home_abbr:
+
+                            home_moneyline = outcome.get("price")
+
+                        elif abbr == away_abbr:
+
+                            away_moneyline = outcome.get("price")
+
+                if spread_market is None and h2h_market is None:
 
                     continue
 
-                outcomes = market.get("outcomes", [])
+                outcomes = spread_market.get("outcomes", []) if spread_market is not None else []
 
                 home_line = home_price = away_line = away_price = None
 
@@ -915,6 +1330,10 @@ def _attach_odds_spreads(preds: pd.DataFrame, odds: Optional[list[dict]], debug:
                     f"odds_{slug}_away_spread": away_line,
 
                     f"odds_{slug}_away_price": away_price,
+
+                    f"odds_{slug}_home_moneyline": home_moneyline,
+
+                    f"odds_{slug}_away_moneyline": away_moneyline,
 
                 }
 
@@ -2704,6 +3123,12 @@ def main():
     ap.add_argument("--save-players-defense", dest="save_players_defense", type=str, default="predictions_players_defense.csv", help="Path to save defensive projections; set empty to skip")
 
     ap.add_argument(
+        "--exclude-started",
+        action="store_true",
+        help="Exclude games whose kickoff/date has already passed; intended for live mid-week reruns.",
+    )
+
+    ap.add_argument(
 
         "--volatility-artifact",
 
@@ -2757,9 +3182,9 @@ def main():
 
         type=float,
 
-        default=0.02,
+        default=0.15,
 
-        help="Skip volatility shrinkage when fewer than this share of the slate is labeled volatile.",
+        help="Minimum current-slate share selected by learned volatility shrinkage before adaptive threshold fallback.",
 
     )
 
@@ -2769,9 +3194,9 @@ def main():
 
         type=float,
 
-        default=0.85,
+        default=0.65,
 
-        help="Skip volatility shrinkage when more than this share of the slate is labeled volatile.",
+        help="Maximum current-slate share selected by learned volatility shrinkage before adaptive threshold fallback.",
 
     )
 
@@ -2950,6 +3375,15 @@ def main():
             f"No feature rows found for season {season}, week {week}. "
             "Run the data/feature pipeline for that season/week before predicting."
         )
+
+    if args.exclude_started:
+        before_started_filter = len(this_week)
+        this_week = _filter_unstarted_games(this_week, debug=args.debug)
+        if this_week.empty:
+            raise RuntimeError(
+                f"No unstarted games found for season {season}, week {week} "
+                f"after excluding {before_started_filter} started games."
+            )
 
     this_week = _make_feature_diffs(this_week)
     if "game_id" in this_week.columns and this_week.duplicated("game_id").any():
@@ -3525,7 +3959,8 @@ def main():
 
                     raise RuntimeError(f"weak volatility artifact: {artifact_skip_reason}")
 
-                threshold = args.volatility_threshold if args.volatility_threshold is not None else artifact.threshold
+                artifact_threshold = float(artifact.threshold)
+                threshold = float(args.volatility_threshold) if args.volatility_threshold is not None else artifact_threshold
 
                 win_raw, win_source = _best_probability_signal(preds, preds.index)
 
@@ -3553,6 +3988,14 @@ def main():
                         volatility_input[col] = preds[col].reindex(volatility_input.index)
 
                 vol_prob, _ = score_volatility(volatility_input, artifact)
+                threshold_adjustment = None
+                if args.volatility_threshold is None:
+                    threshold, _threshold_coverage, threshold_adjustment = _stabilize_volatility_threshold_for_slate(
+                        vol_prob.reindex(preds.index),
+                        threshold,
+                        min_coverage=float(args.volatility_min_coverage),
+                        max_coverage=float(args.volatility_max_coverage),
+                    )
 
                 adj_prob, adj_margin, labels = apply_volatility_shrinkage(
 
@@ -3628,12 +4071,18 @@ def main():
                 preds["volatility_label"] = labels.reindex(preds.index)
 
                 if args.debug:
+                    threshold_text = f"threshold={threshold:.2f}"
+                    if threshold_adjustment:
+                        threshold_text += (
+                            f" artifact_threshold={artifact_threshold:.2f} "
+                            f"threshold_adjustment={threshold_adjustment}"
+                        )
 
                     print(
 
                         f"[predict][volatility] {shrinkage_status} shrinkage: "
 
-                        f"threshold={threshold:.2f} prob_strength={args.volatility_strength:.2f} "
+                        f"{threshold_text} prob_strength={args.volatility_strength:.2f} "
 
                         f"margin_strength={args.volatility_margin_strength:.2f} coverage={coverage:.1%}"
 
@@ -4618,13 +5067,13 @@ def main():
 
         _flip_total(base)
 
-    # Diagnostic: list available '*allowed*' columns from features
+    # Diagnostic: list non-model context/export columns containing "allowed".
 
     try:
 
         allowed_in_feat = [c for c in this_week.columns if "allowed" in c]
 
-        print(f"[predict] features allowed cols: {len(allowed_in_feat)} -> {sorted(allowed_in_feat)[:30]}")
+        print(f"[predict] context/export allowed cols: {len(allowed_in_feat)} -> {sorted(allowed_in_feat)[:30]}")
 
     except Exception:
 
@@ -4996,6 +5445,8 @@ def main():
 
             print(f"[predict][odds] integration failed: {exc}")
 
+    market_policy_columns = _attach_market_policy_fields(preds)
+
 
 
     # Final cleanup: drop duplicate / empty columns so exports focus on populated predictions
@@ -5072,6 +5523,18 @@ def main():
 
         "home_win_prob", "home_win_prob_model_raw", "home_win_prob_calibrated", "home_win_prob_capped", "home_win_prob_raw", "home_win_prob_quality_fallback", "volatility_prob", "volatility_label", "pred_home_margin", "pred_home_margin_expl", "home_pick", "home_confidence_pct", "home_odds_american", "home_odds_decimal", "pick_expl",
 
+        # market-policy guardrails
+
+        "market_policy_primary_signal", "market_policy_tier", "market_policy_status",
+
+        "market_model_pick", "market_vegas_pick",
+
+        "market_home_moneyline", "market_away_moneyline", "market_home_implied_prob_novig", "market_away_implied_prob_novig",
+
+        "market_moneyline_favorite_disagreement", "market_moneyline_prob_edge", "market_moneyline_edge_bin", "market_moneyline_policy_tier", "market_moneyline_policy_status", "market_moneyline_policy_recommendation_flag",
+
+        "market_home_spread", "market_away_spread", "market_home_margin", "market_spread_edge_points", "market_spread_abs_edge_points", "market_spread_selected_side", "market_spread_edge_bin", "market_spread_policy_tier", "market_spread_policy_status", "market_spread_policy_recommendation_flag",
+
         # offensive production projections
 
         "pred_home_passing_att", "pred_away_passing_att",
@@ -5119,6 +5582,14 @@ def main():
     if odds_columns:
 
         for col in odds_columns:
+
+            if col not in curated:
+
+                curated.append(col)
+
+    if market_policy_columns:
+
+        for col in market_policy_columns:
 
             if col not in curated:
 

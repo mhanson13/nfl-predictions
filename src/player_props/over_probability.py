@@ -17,6 +17,10 @@ DEFAULT_INPUT_PATH = PROC_DIR / "player_prop_historical_line_eval.parquet"
 DEFAULT_OUTPUT_PATH = PROC_DIR / "player_prop_over_probability_eval.parquet"
 DEFAULT_METRICS_PATH = Path("predictions/evaluation/player_props/over_probability_metrics.csv")
 DEFAULT_BINS_PATH = Path("predictions/evaluation/player_props/over_probability_bins.csv")
+DEFAULT_MARKET_BLEND_MIN_SAMPLES = 100
+DEFAULT_MARKET_BLEND_STRENGTH = 6.0
+DEFAULT_MARKET_BLEND_MIN_WEIGHT = 0.15
+DEFAULT_MARKET_BLEND_MAX_WEIGHT = 0.95
 
 PROBABILITY_OUTPUT_COLUMNS = [
     "season",
@@ -38,8 +42,12 @@ PROBABILITY_OUTPUT_COLUMNS = [
     "implied_probability",
     "prob_over_model",
     "prob_over_model_raw",
+    "prob_over_residual",
     "prob_over_market",
     "prob_edge_vs_market",
+    "market_blend_weight",
+    "residual_brier_prior",
+    "market_brier_prior",
     "calibration_sample_size",
     "calibration_method",
     "model_edge",
@@ -75,8 +83,12 @@ METRIC_COLUMNS = [
     "mean_prob_over_market",
     "mean_prob_edge_vs_market",
     "residual_cdf_rows",
+    "market_residual_blend_rows",
     "market_implied_fallback_rows",
     "base_rate_fallback_rows",
+    "mean_market_blend_weight",
+    "mean_residual_brier_prior",
+    "mean_market_brier_prior",
     "mean_calibration_sample_size",
     "generated_at",
 ]
@@ -209,6 +221,10 @@ def _score_rows_against_history(
     out["prob_over_market"] = _clip_probability(out["implied_probability"], probability_floor, probability_cap)
     out["prob_over_model_raw"] = np.nan
     out["prob_over_model"] = np.nan
+    out["prob_over_residual"] = np.nan
+    out["market_blend_weight"] = 0.0
+    out["residual_brier_prior"] = np.nan
+    out["market_brier_prior"] = np.nan
     out["calibration_sample_size"] = int(len(residual_history))
     out["calibration_method"] = "base_rate_fallback"
 
@@ -221,6 +237,7 @@ def _score_rows_against_history(
             model_prob = (weight * raw) + ((1.0 - weight) * float(base_rate))
             out["prob_over_model_raw"] = np.clip(raw, probability_floor, probability_cap)
             out["prob_over_model"] = np.clip(model_prob, probability_floor, probability_cap)
+            out["prob_over_residual"] = out["prob_over_model"]
             out["calibration_method"] = "residual_cdf"
             return out
 
@@ -236,6 +253,84 @@ def _score_rows_against_history(
     return out
 
 
+def _market_blend_stats(
+    prior_scored: pd.DataFrame,
+    *,
+    min_samples: int,
+    probability_floor: float,
+    probability_cap: float,
+    market_blend_strength: float,
+    market_blend_min_weight: float,
+    market_blend_max_weight: float,
+) -> tuple[float, float, float]:
+    required = {"actual_over_line", "prob_over_residual", "prob_over_market"}
+    if prior_scored.empty or not required.issubset(prior_scored.columns):
+        return (float("nan"), float("nan"), float("nan"))
+
+    valid = prior_scored[list(required)].copy()
+    valid["prob_over_residual"] = pd.to_numeric(valid["prob_over_residual"], errors="coerce")
+    valid["prob_over_market"] = pd.to_numeric(valid["prob_over_market"], errors="coerce")
+    valid = valid.dropna(subset=["prob_over_residual", "prob_over_market", "actual_over_line"])
+    if len(valid) < int(min_samples):
+        return (float("nan"), float("nan"), float("nan"))
+
+    actual = valid["actual_over_line"].astype(bool).astype(int)
+    residual_prob = valid["prob_over_residual"].clip(probability_floor, probability_cap)
+    market_prob = valid["prob_over_market"].clip(probability_floor, probability_cap)
+    residual_brier = float(brier_score_loss(actual, residual_prob))
+    market_brier = float(brier_score_loss(actual, market_prob))
+    relative_delta = (residual_brier - market_brier) / max(market_brier, 1e-6)
+    market_weight = 0.5 + (float(market_blend_strength) * relative_delta)
+    market_weight = float(np.clip(market_weight, market_blend_min_weight, market_blend_max_weight))
+    return (market_weight, residual_brier, market_brier)
+
+
+def _apply_market_blend(
+    scored: pd.DataFrame,
+    prior_scored: pd.DataFrame,
+    *,
+    min_samples: int,
+    probability_floor: float,
+    probability_cap: float,
+    market_blend_strength: float,
+    market_blend_min_weight: float,
+    market_blend_max_weight: float,
+) -> pd.DataFrame:
+    if scored.empty:
+        return scored
+
+    out = scored.copy()
+    market_weight, residual_brier, market_brier = _market_blend_stats(
+        prior_scored,
+        min_samples=min_samples,
+        probability_floor=probability_floor,
+        probability_cap=probability_cap,
+        market_blend_strength=market_blend_strength,
+        market_blend_min_weight=market_blend_min_weight,
+        market_blend_max_weight=market_blend_max_weight,
+    )
+    if not np.isfinite(market_weight):
+        return out
+
+    blend_mask = (
+        out["calibration_method"].eq("residual_cdf")
+        & out["prob_over_residual"].notna()
+        & out["prob_over_market"].notna()
+    )
+    if not bool(blend_mask.any()):
+        return out
+
+    residual_prob = pd.to_numeric(out.loc[blend_mask, "prob_over_residual"], errors="coerce")
+    market_prob = pd.to_numeric(out.loc[blend_mask, "prob_over_market"], errors="coerce")
+    blended = ((1.0 - market_weight) * residual_prob) + (market_weight * market_prob)
+    out.loc[blend_mask, "prob_over_model"] = np.clip(blended, probability_floor, probability_cap)
+    out.loc[blend_mask, "market_blend_weight"] = market_weight
+    out.loc[blend_mask, "residual_brier_prior"] = residual_brier
+    out.loc[blend_mask, "market_brier_prior"] = market_brier
+    out.loc[blend_mask, "calibration_method"] = "market_residual_blend"
+    return out
+
+
 def add_walk_forward_over_probabilities(
     frame: pd.DataFrame,
     *,
@@ -243,6 +338,10 @@ def add_walk_forward_over_probabilities(
     shrinkage: float = 50.0,
     probability_floor: float = 0.02,
     probability_cap: float = 0.98,
+    market_blend_min_samples: int = DEFAULT_MARKET_BLEND_MIN_SAMPLES,
+    market_blend_strength: float = DEFAULT_MARKET_BLEND_STRENGTH,
+    market_blend_min_weight: float = DEFAULT_MARKET_BLEND_MIN_WEIGHT,
+    market_blend_max_weight: float = DEFAULT_MARKET_BLEND_MAX_WEIGHT,
 ) -> pd.DataFrame:
     prepared = prepare_probability_input(frame)
     if prepared.empty:
@@ -251,6 +350,7 @@ def add_walk_forward_over_probabilities(
     scored_groups: list[pd.DataFrame] = []
     for market, market_rows in prepared.groupby("market", sort=True):
         market_rows = market_rows.sort_values(["season", "week", "game_id"], kind="stable").copy()
+        scored_market_parts: list[pd.DataFrame] = []
         for (season, week), scoring_rows in market_rows.groupby(["season", "week"], sort=True):
             prior_rows = market_rows[
                 (market_rows["season"] < int(season))
@@ -266,7 +366,23 @@ def add_walk_forward_over_probabilities(
                 probability_floor=probability_floor,
                 probability_cap=probability_cap,
             )
+            prior_scored = (
+                pd.concat(scored_market_parts, ignore_index=True, sort=False)
+                if scored_market_parts
+                else pd.DataFrame()
+            )
+            scored = _apply_market_blend(
+                scored,
+                prior_scored,
+                min_samples=market_blend_min_samples,
+                probability_floor=probability_floor,
+                probability_cap=probability_cap,
+                market_blend_strength=market_blend_strength,
+                market_blend_min_weight=market_blend_min_weight,
+                market_blend_max_weight=market_blend_max_weight,
+            )
             scored_groups.append(scored)
+            scored_market_parts.append(scored)
 
     if not scored_groups:
         return pd.DataFrame(columns=PROBABILITY_OUTPUT_COLUMNS)
@@ -300,6 +416,10 @@ def attach_current_over_probabilities(
     shrinkage: float = 50.0,
     probability_floor: float = 0.02,
     probability_cap: float = 0.98,
+    market_blend_min_samples: int = DEFAULT_MARKET_BLEND_MIN_SAMPLES,
+    market_blend_strength: float = DEFAULT_MARKET_BLEND_STRENGTH,
+    market_blend_min_weight: float = DEFAULT_MARKET_BLEND_MIN_WEIGHT,
+    market_blend_max_weight: float = DEFAULT_MARKET_BLEND_MAX_WEIGHT,
 ) -> pd.DataFrame:
     if predictions.empty or historical_lines.empty:
         return predictions
@@ -312,6 +432,17 @@ def attach_current_over_probabilities(
     history = filter_before_week(history, season, week)
     if history.empty:
         return predictions
+    scored_history = add_walk_forward_over_probabilities(
+        history,
+        min_samples=min_samples,
+        shrinkage=shrinkage,
+        probability_floor=probability_floor,
+        probability_cap=probability_cap,
+        market_blend_min_samples=market_blend_min_samples,
+        market_blend_strength=market_blend_strength,
+        market_blend_min_weight=market_blend_min_weight,
+        market_blend_max_weight=market_blend_max_weight,
+    )
 
     out = predictions.copy()
     for col in ["prob_over_raw", "prob_edge", "prob_over_sample_size"]:
@@ -334,6 +465,17 @@ def attach_current_over_probabilities(
             shrinkage=shrinkage,
             probability_floor=probability_floor,
             probability_cap=probability_cap,
+        )
+        prior_scored = scored_history[scored_history["market"].eq(market)].copy() if not scored_history.empty else scored_history
+        scored = _apply_market_blend(
+            scored,
+            prior_scored,
+            min_samples=market_blend_min_samples,
+            probability_floor=probability_floor,
+            probability_cap=probability_cap,
+            market_blend_strength=market_blend_strength,
+            market_blend_min_weight=market_blend_min_weight,
+            market_blend_max_weight=market_blend_max_weight,
         )
         scored_parts.append(scored)
 
@@ -410,8 +552,12 @@ def _metrics_for_group(
         "mean_prob_over_market": float(group["prob_over_market"].mean()),
         "mean_prob_edge_vs_market": float(group["prob_edge_vs_market"].mean()),
         "residual_cdf_rows": int(group["calibration_method"].eq("residual_cdf").sum()),
+        "market_residual_blend_rows": int(group["calibration_method"].eq("market_residual_blend").sum()),
         "market_implied_fallback_rows": int(group["calibration_method"].eq("market_implied_fallback").sum()),
         "base_rate_fallback_rows": int(group["calibration_method"].eq("base_rate_fallback").sum()),
+        "mean_market_blend_weight": float(group["market_blend_weight"].replace(0.0, np.nan).mean()),
+        "mean_residual_brier_prior": float(group["residual_brier_prior"].mean()),
+        "mean_market_brier_prior": float(group["market_brier_prior"].mean()),
         "mean_calibration_sample_size": float(group["calibration_sample_size"].mean()),
         "generated_at": generated_at,
     }
@@ -478,6 +624,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--shrinkage", type=float, default=50.0)
     parser.add_argument("--probability-floor", type=float, default=0.02)
     parser.add_argument("--probability-cap", type=float, default=0.98)
+    parser.add_argument("--market-blend-min-samples", type=int, default=DEFAULT_MARKET_BLEND_MIN_SAMPLES)
+    parser.add_argument("--market-blend-strength", type=float, default=DEFAULT_MARKET_BLEND_STRENGTH)
+    parser.add_argument("--market-blend-min-weight", type=float, default=DEFAULT_MARKET_BLEND_MIN_WEIGHT)
+    parser.add_argument("--market-blend-max-weight", type=float, default=DEFAULT_MARKET_BLEND_MAX_WEIGHT)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -491,6 +641,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         shrinkage=args.shrinkage,
         probability_floor=args.probability_floor,
         probability_cap=args.probability_cap,
+        market_blend_min_samples=args.market_blend_min_samples,
+        market_blend_strength=args.market_blend_strength,
+        market_blend_min_weight=args.market_blend_min_weight,
+        market_blend_max_weight=args.market_blend_max_weight,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
     metrics = summarize_over_probability(scored, generated_at=generated_at)

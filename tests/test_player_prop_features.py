@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.player_props.features import build_player_prop_features, build_player_prop_prediction_features, main
+from src.player_props.features import (
+    build_player_prop_features,
+    build_player_prop_novelty_features,
+    build_player_prop_novelty_prediction_features,
+    build_player_prop_prediction_features,
+    main,
+)
 
 
 def _labels() -> pd.DataFrame:
@@ -112,6 +118,42 @@ def _labels() -> pd.DataFrame:
     )
 
 
+def _novelty_labels() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for week, first, last, two_plus, three_plus in [
+        (1, 1.0, 0.0, 0.0, 0.0),
+        (2, 0.0, 1.0, 1.0, 0.0),
+        (3, 1.0, 1.0, 1.0, 1.0),
+    ]:
+        for market, value in [
+            ("first_td", first),
+            ("last_td", last),
+            ("two_plus_tds", two_plus),
+            ("three_plus_tds", three_plus),
+        ]:
+            rows.append(
+                {
+                    "season": 2026,
+                    "week": week,
+                    "game_id": f"2026_{week:02d}_ATL_CAR",
+                    "team": "ATL",
+                    "opponent": "CAR",
+                    "player_id": "rb-1",
+                    "player_name": "RB One",
+                    "position": "RB",
+                    "position_group": "RB",
+                    "market": market,
+                    "actual_value": value,
+                    "actual_over_zero": value > 0,
+                    "played_flag": True,
+                    "active_flag": True,
+                    "value_type": "count",
+                    "source": "nfl_pbp",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def test_build_player_prop_features_splits_offense_and_defense():
     offense, defense = build_player_prop_features(_labels(), seasons=[2026])
 
@@ -159,6 +201,16 @@ def test_build_player_prop_features_live_cutoff_excludes_active_week():
 
     assert offense["week"].max() == 2
     assert defense["week"].max() == 2
+
+
+def test_build_player_prop_novelty_features_uses_novelty_family():
+    novelty = build_player_prop_novelty_features(_novelty_labels(), seasons=[2026])
+
+    assert set(novelty["market_family"]) == {"novelty"}
+    assert set(novelty["market"]) == {"first_td", "last_td", "two_plus_tds", "three_plus_tds"}
+    first_week2 = novelty[(novelty["market"] == "first_td") & (novelty["week"] == 2)].iloc[0]
+    assert first_week2["player_games_prior"] == 1
+    assert first_week2["player_over_zero_rate_prior"] == 1.0
 
 
 def test_build_player_prop_prediction_features_use_history_before_target_week():
@@ -209,11 +261,46 @@ def test_build_player_prop_prediction_features_use_history_before_target_week():
     assert sack["player_over_zero_rate_prior"] == 0.5
 
 
+def test_build_player_prop_novelty_prediction_features_use_history_before_target_week():
+    candidates = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "game_id": "2026_03_ATL_CAR",
+                "team": "ATL",
+                "opponent": "CAR",
+                "player_id": "rb-1",
+                "player_name": "RB One",
+                "position": "RB",
+                "position_group": "RB",
+                "market": "two_plus_tds",
+            }
+        ]
+    )
+
+    novelty = build_player_prop_novelty_prediction_features(
+        _novelty_labels(),
+        candidates,
+        exclude_from_season=2026,
+        exclude_from_week=3,
+    )
+
+    row = novelty.iloc[0]
+    assert row["market_family"] == "novelty"
+    assert row["actual_value"] != row["actual_value"]
+    assert row["player_games_prior"] == 2
+    assert row["player_over_zero_rate_prior"] == 0.5
+
+
 def test_player_prop_features_cli_writes_split_outputs(tmp_path):
     labels_path = tmp_path / "labels.parquet"
+    novelty_labels_path = tmp_path / "novelty_labels.parquet"
     offense_path = tmp_path / "features_offense.parquet"
     defense_path = tmp_path / "features_defense.parquet"
+    novelty_path = tmp_path / "features_novelty.parquet"
     _labels().to_parquet(labels_path, index=False)
+    _novelty_labels().to_parquet(novelty_labels_path, index=False)
 
     rc = main(
         [
@@ -223,6 +310,11 @@ def test_player_prop_features_cli_writes_split_outputs(tmp_path):
             str(offense_path),
             "--defense-output",
             str(defense_path),
+            "--include-novelty",
+            "--novelty-labels",
+            str(novelty_labels_path),
+            "--novelty-output",
+            str(novelty_path),
             "--exclude-from-season",
             "2026",
             "--exclude-from-week",
@@ -233,7 +325,10 @@ def test_player_prop_features_cli_writes_split_outputs(tmp_path):
     assert rc == 0
     offense = pd.read_parquet(offense_path)
     defense = pd.read_parquet(defense_path)
+    novelty = pd.read_parquet(novelty_path)
     assert not offense.empty
     assert not defense.empty
+    assert not novelty.empty
     assert set(offense["market_family"]) == {"offense"}
     assert set(defense["market_family"]) == {"defense"}
+    assert set(novelty["market_family"]) == {"novelty"}

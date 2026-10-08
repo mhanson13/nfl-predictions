@@ -11,12 +11,15 @@ import pandas as pd
 from src.player_props.predict import _player_name_key, _player_name_prefix_key
 from src.predict.utils import moneyline_to_prob
 from src.utils.io import PROC_DIR, read_df, write_df
+from src.utils.teams import normalize_team_abbr
 
 
 DEFAULT_LINES_PATH = PROC_DIR / "oddsapi_historical_player_prop_lines.parquet"
 DEFAULT_MODEL_PREDICTIONS_PATH = Path("predictions/evaluation/player_props/model_predictions.csv")
+DEFAULT_PLAYER_IDENTITY_PATH = PROC_DIR / "player_identity.parquet"
 DEFAULT_OUTPUT_PATH = PROC_DIR / "player_prop_historical_line_eval.parquet"
 DEFAULT_SUMMARY_PATH = Path("predictions/evaluation/player_props/historical_line_join_summary.csv")
+NO_INITIAL_LAST_FALLBACK_MARKETS = frozenset({"anytime_td", "first_td", "last_td", "two_plus_tds", "three_plus_tds"})
 
 JOIN_OUTPUT_COLUMNS = [
     "season",
@@ -43,6 +46,9 @@ JOIN_OUTPUT_COLUMNS = [
     "player_name_key",
     "player_name_prefix_key",
     "player_id",
+    "identity_alias_name",
+    "identity_alias_source",
+    "identity_alias_confidence",
     "team",
     "opponent",
     "position",
@@ -62,6 +68,8 @@ JOIN_OUTPUT_COLUMNS = [
     "abs_line_error",
     "prob_over_zero",
     "actual_over_zero",
+    "sample_size",
+    "confidence_tier",
     "model_type",
     "evaluation_method",
     "train_rows",
@@ -154,6 +162,8 @@ def _prepare_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
         "position": pd.NA,
         "position_group": pd.NA,
         "prob_over_zero": np.nan,
+        "sample_size": np.nan,
+        "confidence_tier": pd.NA,
         "model_type": pd.NA,
         "evaluation_method": pd.NA,
         "train_rows": np.nan,
@@ -245,6 +255,84 @@ def _prepare_lines(
     return out
 
 
+def _game_team_candidates(game_id: object) -> list[str]:
+    text = str(game_id).strip().upper()
+    parts = text.split("_")
+    if len(parts) < 4:
+        return []
+    teams = []
+    for raw in parts[-2:]:
+        team = normalize_team_abbr(raw)
+        if isinstance(team, str) and team and team not in teams:
+            teams.append(team)
+    return teams
+
+
+def _prepare_identity(identity: pd.DataFrame | None) -> pd.DataFrame:
+    if identity is None or identity.empty:
+        return pd.DataFrame()
+    required = {"season", "week", "team", "player_id"}
+    if missing := required - set(identity.columns):
+        raise ValueError(f"Player identity table missing required columns: {sorted(missing)}")
+
+    out = identity.copy()
+    out["season"] = pd.to_numeric(out["season"], errors="coerce")
+    out["week"] = pd.to_numeric(out["week"], errors="coerce")
+    out["team"] = out["team"].astype("string").str.strip().str.upper().map(normalize_team_abbr)
+    out["player_id"] = _as_text(out["player_id"])
+    if "alias_name_key" not in out.columns:
+        out["alias_name_key"] = out.get("alias_name", pd.Series(pd.NA, index=out.index)).apply(_player_name_key)
+    if "alias_prefix_key" not in out.columns:
+        out["alias_prefix_key"] = out.get("alias_name", pd.Series(pd.NA, index=out.index)).apply(_player_name_prefix_key)
+    out["alias_name_key"] = _as_text(out["alias_name_key"])
+    out["alias_prefix_key"] = _as_text(out["alias_prefix_key"])
+    if "alias_name" not in out.columns:
+        out["alias_name"] = pd.NA
+    if "alias_source" not in out.columns:
+        out["alias_source"] = pd.NA
+    if "alias_confidence" not in out.columns:
+        out["alias_confidence"] = np.nan
+    out["alias_confidence"] = pd.to_numeric(out["alias_confidence"], errors="coerce").fillna(0.0)
+    out = out.dropna(subset=["season", "week", "team", "player_id", "alias_name_key", "alias_prefix_key"]).copy()
+    if out.empty:
+        return pd.DataFrame()
+    out["season"] = out["season"].astype(int)
+    out["week"] = out["week"].astype(int)
+
+    identity_keys = ["season", "week", "team", "alias_name_key", "alias_prefix_key"]
+    unique_counts = (
+        out.groupby(identity_keys, dropna=False)["player_id"]
+        .nunique(dropna=True)
+        .reset_index(name="_identity_player_count")
+    )
+    out = out.merge(unique_counts, on=identity_keys, how="left")
+    out = out[out["_identity_player_count"].eq(1)].copy()
+    out = out.sort_values(identity_keys + ["alias_confidence"], ascending=[True, True, True, True, True, False], kind="stable")
+    out = out.drop_duplicates(identity_keys, keep="first")
+    out = out.rename(
+        columns={
+            "team": "identity_team",
+            "player_id": "identity_player_id",
+            "alias_name": "identity_alias_name",
+            "alias_source": "identity_alias_source",
+            "alias_confidence": "identity_alias_confidence",
+        }
+    )
+    return out[
+        [
+            "season",
+            "week",
+            "identity_team",
+            "alias_name_key",
+            "alias_prefix_key",
+            "identity_player_id",
+            "identity_alias_name",
+            "identity_alias_source",
+            "identity_alias_confidence",
+        ]
+    ].reset_index(drop=True)
+
+
 def _add_market_metrics(joined: pd.DataFrame) -> pd.DataFrame:
     if joined.empty:
         return joined
@@ -281,6 +369,7 @@ def join_historical_lines(
     *,
     lines: pd.DataFrame,
     predictions: pd.DataFrame,
+    identity: pd.DataFrame | None = None,
     sportsbooks: Sequence[str] | None = None,
     comparable_only: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -297,7 +386,55 @@ def join_historical_lines(
     matches: list[pd.DataFrame] = []
     matched_line_ids: set[int] = set()
 
-    strict_lines = line_base.dropna(subset=strict_cols)
+    prepared_identity = _prepare_identity(identity)
+    if not prepared_identity.empty:
+        identity_lines = line_base.dropna(subset=strict_cols).copy()
+        if not identity_lines.empty:
+            identity_lines["_identity_candidate_team"] = identity_lines["game_id"].apply(_game_team_candidates)
+            identity_lines = identity_lines.explode("_identity_candidate_team")
+            identity_lines = identity_lines[identity_lines["_identity_candidate_team"].notna()].copy()
+        identity_predictions = pred_base.dropna(subset=["season", "week", "game_id", "market", "player_id"]).copy()
+        if not identity_lines.empty and not identity_predictions.empty:
+            line_identity = identity_lines.merge(
+                prepared_identity,
+                left_on=[
+                    "season",
+                    "week",
+                    "_identity_candidate_team",
+                    "player_name_key",
+                    "player_name_prefix_key",
+                ],
+                right_on=[
+                    "season",
+                    "week",
+                    "identity_team",
+                    "alias_name_key",
+                    "alias_prefix_key",
+                ],
+                how="inner",
+            )
+            if not line_identity.empty:
+                identity_join = line_identity.merge(
+                    identity_predictions,
+                    left_on=["season", "week", "game_id", "market", "identity_player_id"],
+                    right_on=["season", "week", "game_id", "market", "player_id"],
+                    how="inner",
+                    suffixes=("_line", "_model"),
+                )
+                if not identity_join.empty:
+                    match_counts = (
+                        identity_join.groupby("_line_row_id", dropna=False)["player_id"]
+                        .nunique(dropna=True)
+                        .reset_index(name="_identity_prediction_count")
+                    )
+                    identity_join = identity_join.merge(match_counts, on="_line_row_id", how="left")
+                    identity_join = identity_join[identity_join["_identity_prediction_count"].eq(1)].copy()
+                if not identity_join.empty:
+                    identity_join["match_method"] = "identity_strict"
+                    matches.append(identity_join)
+                    matched_line_ids.update(identity_join["_line_row_id"].astype(int).tolist())
+
+    strict_lines = line_base[~line_base["_line_row_id"].isin(matched_line_ids)].dropna(subset=strict_cols)
     strict_predictions = pred_base.dropna(subset=strict_cols)
     if not strict_lines.empty and not strict_predictions.empty:
         strict = strict_lines.merge(pred_base, on=strict_cols, how="inner", suffixes=("_line", "_model"))
@@ -308,6 +445,11 @@ def join_historical_lines(
 
     fallback_lines = line_base[~line_base["_line_row_id"].isin(matched_line_ids)].dropna(subset=legacy_cols).copy()
     fallback_predictions = pred_base.dropna(subset=legacy_cols).copy()
+    if not fallback_lines.empty and not fallback_predictions.empty:
+        fallback_lines = fallback_lines[~fallback_lines["market"].isin(NO_INITIAL_LAST_FALLBACK_MARKETS)].copy()
+        fallback_predictions = fallback_predictions[
+            ~fallback_predictions["market"].isin(NO_INITIAL_LAST_FALLBACK_MARKETS)
+        ].copy()
     if not fallback_lines.empty and not fallback_predictions.empty:
         line_prefix_counts = (
             fallback_lines.groupby(legacy_cols, dropna=False)["player_name_prefix_key"]
@@ -341,6 +483,10 @@ def join_historical_lines(
     joined = pd.concat(matches, ignore_index=True, sort=False)
     joined = joined.sort_values(["_line_row_id", "match_method"], kind="stable")
     joined = joined.drop_duplicates("_line_row_id", keep="first")
+    if "player_name_key" not in joined.columns:
+        key_line = joined.get("player_name_key_line", pd.Series(pd.NA, index=joined.index))
+        key_model = joined.get("player_name_key_model", pd.Series(pd.NA, index=joined.index))
+        joined["player_name_key"] = key_line.where(key_line.notna(), key_model)
     if "player_name_prefix_key" not in joined.columns:
         prefix_line = joined.get("player_name_prefix_key_line", pd.Series(pd.NA, index=joined.index))
         prefix_model = joined.get("player_name_prefix_key_model", pd.Series(pd.NA, index=joined.index))
@@ -406,6 +552,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--lines", type=Path, default=DEFAULT_LINES_PATH)
     parser.add_argument("--model-predictions", type=Path, default=DEFAULT_MODEL_PREDICTIONS_PATH)
+    parser.add_argument("--identity", type=Path, default=DEFAULT_PLAYER_IDENTITY_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--summary-output", type=Path, default=DEFAULT_SUMMARY_PATH)
     parser.add_argument("--sportsbooks", nargs="+", default=None)
@@ -418,9 +565,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     lines = _read_table(args.lines)
     predictions = _read_table(args.model_predictions)
+    identity = _read_table(args.identity)
     joined, prepared_lines = join_historical_lines(
         lines=lines,
         predictions=predictions,
+        identity=identity,
         sportsbooks=args.sportsbooks,
         comparable_only=args.comparable_only,
     )

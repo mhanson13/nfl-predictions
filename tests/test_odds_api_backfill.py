@@ -4,13 +4,21 @@ import json
 
 import pandas as pd
 
+from src.data.odds_api_historical import DEFAULT_PLAYER_PROP_MARKETS
 from src.data.odds_api_backfill import (
     build_backfill_manifest,
     estimate_quota,
     fetch_event_odds,
     match_events_to_manifest,
+    _manifest_target_markets,
     normalize_historical_player_prop_lines,
 )
+
+
+def test_default_oddsapi_player_prop_markets_include_novelty_td_history():
+    assert "player_1st_td" in DEFAULT_PLAYER_PROP_MARKETS
+    assert "player_last_td" in DEFAULT_PLAYER_PROP_MARKETS
+    assert "player_tds_over" in DEFAULT_PLAYER_PROP_MARKETS
 
 
 def _schedule() -> pd.DataFrame:
@@ -193,6 +201,127 @@ def test_normalize_historical_player_prop_lines_pairs_over_under_rows():
     assert bool(row["line_is_comparable"]) is True
 
 
+def test_normalize_historical_player_prop_lines_keeps_anytime_td_yes_rows():
+    odds = pd.DataFrame(
+        [
+            {
+                "requested_season": 2026,
+                "requested_week": 3,
+                "requested_game_id": "2026_03_ATL_GB",
+                "event_id": "evt-gb",
+                "requested_date": "2026-09-25T00:05:00Z",
+                "snapshot_timestamp": "2026-09-25T00:00:36Z",
+                "commence_time": "2026-09-25T00:15:00Z",
+                "home_team": "Green Bay Packers",
+                "away_team": "Atlanta Falcons",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_anytime_td",
+                "market_last_update": "2026-09-25T00:00:18Z",
+                "outcome_name": "Yes",
+                "player_name": "Bijan Robinson",
+                "price": -140,
+                "point": pd.NA,
+            },
+        ]
+    )
+
+    lines = normalize_historical_player_prop_lines(odds, vendors=["draftkings"])
+
+    assert len(lines) == 1
+    row = lines.iloc[0]
+    assert row["market"] == "anytime_td"
+    assert row["line"] == 0.5
+    assert row["over_odds"] == -140
+    assert pd.isna(row["under_odds"])
+    assert round(row["implied_probability"], 6) == round(140 / 240, 6)
+    assert bool(row["line_is_comparable"]) is False
+
+
+def test_normalize_historical_player_prop_lines_maps_novelty_td_markets():
+    base = {
+        "requested_season": 2026,
+        "requested_week": 3,
+        "requested_game_id": "2026_03_ATL_GB",
+        "event_id": "evt-gb",
+        "requested_date": "2026-09-25T00:05:00Z",
+        "snapshot_timestamp": "2026-09-25T00:00:36Z",
+        "commence_time": "2026-09-25T00:15:00Z",
+        "home_team": "Green Bay Packers",
+        "away_team": "Atlanta Falcons",
+        "bookmaker_key": "draftkings",
+        "market_last_update": "2026-09-25T00:00:18Z",
+        "player_name": "Bijan Robinson",
+    }
+    odds = pd.DataFrame(
+        [
+            {**base, "market_key": "player_1st_td", "outcome_name": "Yes", "price": 900, "point": pd.NA},
+            {**base, "market_key": "player_last_td", "outcome_name": "Yes", "price": 1000, "point": pd.NA},
+            {**base, "market_key": "player_tds_over", "outcome_name": "Over", "price": 450, "point": 1.5},
+            {**base, "market_key": "player_tds_over", "outcome_name": "Over", "price": 1400, "point": 2.5},
+        ]
+    )
+
+    lines = normalize_historical_player_prop_lines(odds, vendors=["draftkings"])
+
+    by_market = lines.set_index("market")
+    assert set(by_market.index) == {"first_td", "last_td", "two_plus_tds", "three_plus_tds"}
+    assert by_market["line"].eq(0.5).all()
+    assert by_market.loc["first_td", "over_odds"] == 900
+    assert by_market.loc["last_td", "over_odds"] == 1000
+    assert by_market.loc["two_plus_tds", "over_odds"] == 450
+    assert by_market.loc["three_plus_tds", "over_odds"] == 1400
+    assert by_market["under_odds"].isna().all()
+    assert by_market["line_is_comparable"].eq(False).all()
+
+
+def test_normalize_historical_player_prop_lines_maps_two_way_touchdown_milestones():
+    base = {
+        "requested_season": 2026,
+        "requested_week": 3,
+        "requested_game_id": "2026_03_ATL_GB",
+        "event_id": "evt-gb",
+        "requested_date": "2026-09-25T00:05:00Z",
+        "snapshot_timestamp": "2026-09-25T00:00:36Z",
+        "commence_time": "2026-09-25T00:15:00Z",
+        "home_team": "Green Bay Packers",
+        "away_team": "Atlanta Falcons",
+        "bookmaker_key": "draftkings",
+        "market_key": "player_tds",
+        "market_last_update": "2026-09-25T00:00:18Z",
+        "player_name": "Bijan Robinson",
+        "point": 1.5,
+    }
+    odds = pd.DataFrame(
+        [
+            {**base, "outcome_name": "Over", "price": 250},
+            {**base, "outcome_name": "Under", "price": -320},
+        ]
+    )
+
+    lines = normalize_historical_player_prop_lines(odds, vendors=["draftkings"])
+
+    assert len(lines) == 1
+    row = lines.iloc[0]
+    assert row["market"] == "two_plus_tds"
+    assert row["line"] == 0.5
+    assert row["over_odds"] == 250
+    assert row["under_odds"] == -320
+    assert bool(row["line_is_comparable"]) is False
+
+
+def test_manifest_target_markets_drive_quota_display_markets():
+    manifest = build_backfill_manifest(
+        _schedule(),
+        start_season=2023,
+        end_season=2023,
+        current_date="2023-09-11",
+        include_postseason=False,
+        markets=["player_anytime_td"],
+    )
+
+    assert _manifest_target_markets(manifest, ["player_pass_yds", "player_rush_yds"]) == ["player_anytime_td"]
+
+
 def test_fetch_event_odds_dry_run_requires_market_discovery(tmp_path):
     manifest = build_backfill_manifest(
         _schedule(),
@@ -258,3 +387,72 @@ def test_fetch_event_odds_dry_run_handles_manifest_before_event_discovery(tmp_pa
     assert planned == 0
     assert estimated_credits == 0
     assert updated["event_odds_status"].tolist() == ["missing_event", "missing_event"]
+
+
+def test_fetch_event_odds_resume_requests_missing_new_market(tmp_path):
+    manifest = build_backfill_manifest(
+        _schedule(),
+        start_season=2023,
+        end_season=2023,
+        current_date="2023-09-11",
+        include_postseason=False,
+        markets=["player_anytime_td"],
+    )
+    manifest["oddsapi_event_id"] = ["evt-atl", "evt-la"]
+
+    markets = pd.DataFrame(
+        [
+            {
+                "event_id": "evt-atl",
+                "requested_date": manifest.loc[0, "snapshot_time_utc"],
+                "bookmaker_key": "draftkings",
+                "market_key": "player_anytime_td",
+            },
+            {
+                "event_id": "evt-la",
+                "requested_date": manifest.loc[1, "snapshot_time_utc"],
+                "bookmaker_key": "draftkings",
+                "market_key": "player_anytime_td",
+            },
+        ]
+    )
+    existing_odds = pd.DataFrame(
+        [
+            {
+                "event_id": "evt-atl",
+                "requested_date": manifest.loc[0, "snapshot_time_utc"],
+                "bookmaker_key": "draftkings",
+                "market_key": "player_pass_yds",
+            },
+            {
+                "event_id": "evt-la",
+                "requested_date": manifest.loc[1, "snapshot_time_utc"],
+                "bookmaker_key": "draftkings",
+                "market_key": "player_anytime_td",
+            },
+        ]
+    )
+    odds_output = tmp_path / "odds.parquet"
+    existing_odds.to_parquet(odds_output)
+
+    updated, _existing, planned, estimated_credits = fetch_event_odds(
+        manifest,
+        markets,
+        api_key=None,
+        output=odds_output,
+        sport_key="americanfootball_nfl",
+        regions=["us"],
+        odds_format="american",
+        include_links=False,
+        include_sids=False,
+        retries=0,
+        sleep=0,
+        timeout=1,
+        dry_run=True,
+        resume=True,
+        max_requests=None,
+    )
+
+    assert planned == 1
+    assert estimated_credits == 10
+    assert updated["event_odds_status"].tolist() == ["pending", "done"]

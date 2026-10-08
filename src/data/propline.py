@@ -1,25 +1,39 @@
 from __future__ import annotations
 
 import argparse
+from datetime import timezone
+import json
 import logging
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
-from src.utils.io import RAW_DIR, write_df
+from src.utils.io import RAW_DIR, read_df
 from src.utils.secrets import get_secret
+from src.utils.teams import get_team_abbr_from_name, normalize_team_abbr
 
 
 API_BASE = "https://api.prop-line.com/v1"
 DEFAULT_SPORT_KEY = "football_nfl"
+DEFAULT_SCHEDULE_PATH = RAW_DIR / "nfl_schedules.parquet"
+DEFAULT_KICKOFF_TZ = "America/New_York"
 DEFAULT_BOOKMAKERS = ["draftkings", "hardrock", "fanduel"]
 DEFAULT_MARKETS = [
     "player_pass_yds",
+    "player_pass_tds",
     "player_rush_yds",
+    "player_rush_tds",
     "player_reception_yds",
+    "player_reception_tds",
+    "player_anytime_td",
+    "player_1st_td",
+    "player_last_td",
+    "player_2plus_td",
+    "player_3plus_td",
     "player_sacks",
 ]
 REQUEST_TIMEOUT = 30.0
@@ -47,6 +61,194 @@ def _build_output_path(season: Optional[int], week: Optional[int]) -> Path:
 
 def _csv_param(values: Iterable[str]) -> str:
     return ",".join(str(value).strip() for value in values if str(value).strip())
+
+
+def _is_missing(value: Any) -> bool:
+    if isinstance(value, (dict, list, tuple, set)):
+        return False
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _json_safe(value: Any) -> Any:
+    if _is_missing(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _flatten_nested_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Stringify nested API fields before parquet write/read round-trips."""
+    if frame.empty:
+        return frame
+    out = frame.copy()
+    for col in out.columns:
+        if out[col].dtype != "object":
+            continue
+        has_nested = out[col].map(lambda value: isinstance(value, (dict, list, tuple, set))).any()
+        if has_nested:
+            out[col] = out[col].map(
+                lambda value: None
+                if _is_missing(value)
+                else json.dumps(_json_safe(value), ensure_ascii=False, sort_keys=True)
+            )
+    for col in out.columns:
+        if out[col].isna().all():
+            out[col] = out[col].astype("string")
+    return out
+
+
+def _write_propline_frame(frame: pd.DataFrame, output: Path) -> Path:
+    clean = _flatten_nested_columns(frame)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.suffix == ".csv" or not output.suffix:
+        output_path = output.with_suffix(".csv")
+        clean.to_csv(output_path, index=False, encoding="utf-8")
+        return output_path
+    output_path = output if output.suffix == ".parquet" else output.with_suffix(".parquet")
+    clean.to_parquet(output_path, engine="pyarrow", index=False)
+    return output_path
+
+
+def _schedule_team_abbr(value: Any) -> Optional[str]:
+    if _is_missing(value):
+        return None
+    text = str(value).strip()
+    if not text or text.upper() in {"NONE", "NAN", "NA", "<NA>"}:
+        return None
+    abbr = get_team_abbr_from_name(text) or normalize_team_abbr(text)
+    if abbr == "LAR":
+        return "LA"
+    return str(abbr).strip().upper() if abbr else None
+
+
+def _schedule_kickoff_utc(gameday: Any, gametime: Any, *, kickoff_tz: str) -> pd.Timestamp:
+    if _is_missing(gameday):
+        return pd.NaT
+    day = pd.to_datetime(gameday, errors="coerce")
+    if pd.isna(day):
+        return pd.NaT
+    time_text = "12:00" if _is_missing(gametime) else str(gametime).strip()
+    if not time_text:
+        time_text = "12:00"
+    kickoff = pd.Timestamp(f"{day.date()} {time_text}")
+    localized = kickoff.to_pydatetime().replace(tzinfo=ZoneInfo(kickoff_tz))
+    return pd.Timestamp(localized).tz_convert(timezone.utc)
+
+
+def _prepare_schedule_week(
+    schedule: pd.DataFrame,
+    *,
+    season: int,
+    week: int,
+    kickoff_tz: str = DEFAULT_KICKOFF_TZ,
+) -> pd.DataFrame:
+    required = {"season", "week", "game_id", "home_team", "away_team", "gameday"}
+    if schedule.empty or not required.issubset(schedule.columns):
+        return pd.DataFrame()
+
+    frame = schedule.copy()
+    frame["season"] = pd.to_numeric(frame["season"], errors="coerce")
+    frame["week"] = pd.to_numeric(frame["week"], errors="coerce")
+    frame = frame[frame["season"].eq(int(season)) & frame["week"].eq(int(week))].copy()
+    if frame.empty:
+        return pd.DataFrame()
+
+    gametime = frame["gametime"] if "gametime" in frame.columns else pd.Series("12:00", index=frame.index)
+    out = pd.DataFrame(
+        {
+            "_schedule_game_id": frame["game_id"].astype("string"),
+            "_home_abbr": frame["home_team"].apply(_schedule_team_abbr),
+            "_away_abbr": frame["away_team"].apply(_schedule_team_abbr),
+            "_schedule_kickoff_utc": [
+                _schedule_kickoff_utc(gameday, time_value, kickoff_tz=kickoff_tz)
+                for gameday, time_value in zip(frame["gameday"], gametime)
+            ],
+        }
+    )
+    return out.dropna(subset=["_schedule_game_id", "_home_abbr", "_away_abbr"]).drop_duplicates()
+
+
+def _filter_to_schedule_week(
+    frame: pd.DataFrame,
+    schedule: pd.DataFrame,
+    *,
+    season: int,
+    week: int,
+    kickoff_tz: str = DEFAULT_KICKOFF_TZ,
+    kickoff_tolerance_hours: float = 18.0,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    schedule_week = _prepare_schedule_week(
+        schedule,
+        season=int(season),
+        week=int(week),
+        kickoff_tz=kickoff_tz,
+    )
+    if schedule_week.empty:
+        logging.warning("PropLine schedule filter skipped: no schedule rows for season=%s week=%s.", season, week)
+        return frame
+
+    out = frame.copy()
+    out["_home_abbr"] = out["home_team"].apply(_schedule_team_abbr) if "home_team" in out.columns else pd.NA
+    out["_away_abbr"] = out["away_team"].apply(_schedule_team_abbr) if "away_team" in out.columns else pd.NA
+    out["_event_kickoff_utc"] = (
+        pd.to_datetime(out["commence_time"], errors="coerce", utc=True) if "commence_time" in out.columns else pd.NaT
+    )
+    out["_source_row"] = range(len(out))
+
+    matched = out.merge(schedule_week, on=["_home_abbr", "_away_abbr"], how="inner")
+    if matched.empty:
+        logging.warning(
+            "PropLine schedule filter removed all rows for season=%s week=%s; no team matchup matched schedule.",
+            season,
+            week,
+        )
+        return matched.drop(columns=[col for col in matched.columns if col.startswith("_")], errors="ignore")
+
+    matched["_time_diff_seconds"] = (
+        matched["_event_kickoff_utc"] - matched["_schedule_kickoff_utc"]
+    ).abs().dt.total_seconds()
+    tolerance_seconds = float(kickoff_tolerance_hours) * 3600.0
+    time_ok = matched["_time_diff_seconds"].isna() | matched["_time_diff_seconds"].le(tolerance_seconds)
+    matched = matched[time_ok].copy()
+    if matched.empty:
+        logging.warning(
+            "PropLine schedule filter removed all rows for season=%s week=%s; matched teams but kickoff times were outside %.1fh.",
+            season,
+            week,
+            kickoff_tolerance_hours,
+        )
+        return matched.drop(columns=[col for col in matched.columns if col.startswith("_")], errors="ignore")
+
+    matched = matched.sort_values(["_source_row", "_time_diff_seconds"], kind="stable")
+    matched = matched.drop_duplicates(subset=["_source_row"], keep="first")
+    matched["game_id"] = matched["_schedule_game_id"].astype("string")
+    matched["schedule_season"] = int(season)
+    matched["schedule_week"] = int(week)
+    matched["schedule_game_id"] = matched["_schedule_game_id"].astype("string")
+    matched["schedule_kickoff_utc"] = matched["_schedule_kickoff_utc"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    matched["event_home_abbr"] = matched["_home_abbr"]
+    matched["event_away_abbr"] = matched["_away_abbr"]
+    matched["event_schedule_time_diff_seconds"] = matched["_time_diff_seconds"]
+
+    removed = len(frame) - len(matched)
+    logging.info(
+        "PropLine schedule filter season=%s week=%s kept=%s removed=%s target_games=%s matched_games=%s",
+        season,
+        week,
+        len(matched),
+        removed,
+        schedule_week["_schedule_game_id"].nunique(),
+        matched["_schedule_game_id"].nunique(),
+    )
+    return matched.drop(columns=[col for col in matched.columns if col.startswith("_")], errors="ignore")
 
 
 def _request_with_retry(
@@ -209,6 +411,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--bookmakers", nargs="+", default=DEFAULT_BOOKMAKERS)
     parser.add_argument("--markets", nargs="+", default=DEFAULT_MARKETS)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE_PATH)
+    parser.add_argument("--kickoff-tz", default=DEFAULT_KICKOFF_TZ)
+    parser.add_argument("--kickoff-tolerance-hours", type=float, default=18.0)
+    parser.add_argument("--no-schedule-filter", action="store_true")
     parser.add_argument("--sleep", type=float, default=DEFAULT_SLEEP)
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--timeout", type=float, default=REQUEST_TIMEOUT)
@@ -243,13 +449,29 @@ def main(argv: Optional[list[str]] = None) -> None:
         sleep=args.sleep,
         timeout=args.timeout,
     )
+    if not args.no_schedule_filter:
+        if args.schedule.exists():
+            schedule = read_df(args.schedule)
+            frame = _filter_to_schedule_week(
+                frame,
+                schedule,
+                season=args.season,
+                week=args.week,
+                kickoff_tz=args.kickoff_tz,
+                kickoff_tolerance_hours=args.kickoff_tolerance_hours,
+            )
+        else:
+            logging.warning("PropLine schedule filter skipped: schedule file not found at %s", args.schedule)
+
     if frame.empty:
         logging.warning("PropLine returned no player prop rows for season=%s week=%s.", args.season, args.week)
-    else:
+    if "propline_feed" not in frame.columns:
         frame.insert(0, "propline_feed", "player_props")
+    if "requested_season" not in frame.columns:
         frame.insert(1, "requested_season", int(args.season))
+    if "requested_week" not in frame.columns:
         frame.insert(2, "requested_week", int(args.week))
-    written = write_df(frame, output)
+    written = _write_propline_frame(frame, output)
     logging.info("Saved PropLine player prop rows=%s -> %s", len(frame), written)
 
 

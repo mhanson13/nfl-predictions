@@ -47,6 +47,33 @@ PREDICT_OUTPUTS = [
     Path("predictions/predictions_players_defense.csv"),
 ]
 DEFAULT_PROPLINE_BOOKMAKERS = ["draftkings", "hardrock", "fanduel"]
+DEFAULT_PROPLINE_MARKETS = [
+    "player_pass_yds",
+    "player_pass_tds",
+    "player_rush_yds",
+    "player_rush_tds",
+    "player_reception_yds",
+    "player_reception_tds",
+    "player_anytime_td",
+    "player_1st_td",
+    "player_last_td",
+    "player_2plus_td",
+    "player_3plus_td",
+    "player_sacks",
+]
+DEFAULT_BALLDONTLIE_FEEDS = [
+    "teams",
+    "players",
+    "active_players",
+    "games",
+    "standings",
+    "injuries",
+    "stats",
+    "season_stats",
+    "team_stats",
+    "team_season_stats",
+]
+BALLDONTLIE_STATIC_FEEDS = {"teams", "players"}
 # Pipeline stages overview:
 #   1. Concurrent data ingestion (NFLverse/ESPN/weather/etc.)
 #   2. Sequential transforms: reference refresh, features, training, predictions, calibration, evaluation.
@@ -274,7 +301,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--propline-markets",
         nargs="+",
-        default=["player_pass_yds", "player_rush_yds", "player_reception_yds", "player_sacks"],
+        default=DEFAULT_PROPLINE_MARKETS.copy(),
         help="PropLine market keys to request for player prop odds.",
     )
     parser.add_argument(
@@ -665,37 +692,45 @@ def build_data_jobs(
 
     if include_balldontlie:
 
-        balldontlie_cmd = [
+        selected_balldontlie_feeds = balldontlie_feeds or DEFAULT_BALLDONTLIE_FEEDS.copy()
+        static_feeds = [feed for feed in selected_balldontlie_feeds if feed in BALLDONTLIE_STATIC_FEEDS]
+        live_feeds = [feed for feed in selected_balldontlie_feeds if feed not in BALLDONTLIE_STATIC_FEEDS]
 
-            "python",
+        def _balldontlie_cmd(feeds: list[str], *, overwrite: bool, include_week: bool) -> list[str]:
+            cmd = [
+                "python",
+                "-m",
+                "src.data.balldontlie",
+                "--seasons",
+                str(current_year),
+                *debug,
+            ]
+            if include_week and prediction_week and str(prediction_week).lower() != "auto":
+                try:
+                    cmd.extend(["--weeks", str(int(prediction_week))])
+                except ValueError:
+                    pass
+            if feeds:
+                cmd.extend(["--feeds", *feeds])
+            if overwrite:
+                cmd.append("--overwrite")
+            return cmd
 
-            "-m",
+        if static_feeds:
+            jobs.append(
+                Job(
+                    "balldontlie_static",
+                    _balldontlie_cmd(static_feeds, overwrite=False, include_week=False),
+                )
+            )
 
-            "src.data.balldontlie",
-
-            "--seasons",
-
-            str(current_year),
-
-            *debug,
-
-        ]
-
-        if prediction_week and str(prediction_week).lower() != "auto":
-
-            try:
-
-                balldontlie_cmd.extend(["--weeks", str(int(prediction_week))])
-
-            except ValueError:
-
-                pass
-
-        if balldontlie_feeds:
-
-            balldontlie_cmd.extend(["--feeds", *balldontlie_feeds])
-
-        jobs.append(Job("balldontlie", balldontlie_cmd))
+        if live_feeds:
+            jobs.append(
+                Job(
+                    "balldontlie_live",
+                    _balldontlie_cmd(live_feeds, overwrite=True, include_week=True),
+                )
+            )
 
     if include_propline and prediction_week and str(prediction_week).lower() != "auto":
 
@@ -822,6 +857,12 @@ def build_sequential_jobs(
     apply_spread_config = enable_tuning or spread_config_path.exists()
 
 
+    jobs.append(
+        Job(
+            "player_identity",
+            ["python", "-m", "src.data.player_identity", *debug],
+        )
+    )
 
     jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
 
@@ -861,13 +902,35 @@ def build_sequential_jobs(
     jobs.append(
         Job(
             "player_prop_labels",
-            ["python", "-m", "src.player_props.labels", "--seasons", *season_args, *debug, *live_exclude_args],
+            [
+                "python",
+                "-m",
+                "src.player_props.labels",
+                "--seasons",
+                *season_args,
+                "--include-novelty-td-labels",
+                *debug,
+                *live_exclude_args,
+            ],
         )
     )
     jobs.append(
         Job(
             "player_prop_features",
-            ["python", "-m", "src.player_props.features", "--seasons", *season_args, *debug, *live_exclude_args],
+            [
+                "python",
+                "-m",
+                "src.player_props.features",
+                "--seasons",
+                *season_args,
+                "--include-novelty",
+                "--novelty-labels",
+                str(Path("data/processed/player_prop_novelty_td_labels.parquet")),
+                "--novelty-output",
+                str(Path("data/processed/player_prop_features_novelty.parquet")),
+                *debug,
+                *live_exclude_args,
+            ],
         )
     )
     jobs.append(Job("build_features", ["python", "-m", "src.features.build_features", "--season", *season_args, *debug]))
@@ -1021,6 +1084,27 @@ def build_sequential_jobs(
     train_spread_cmd.extend(live_exclude_args)
     jobs.append(Job("train_spread", train_spread_cmd))
 
+    if not skip_evaluation:
+        feature_ablation_cmd = [
+            "python",
+            "-m",
+            "src.models.feature_ablation",
+            "--output",
+            str(Path("predictions/evaluation/feature_family_ablation.csv")),
+            *debug,
+        ]
+        if train_start_year is not None:
+            feature_ablation_cmd.extend(["--train-start-year", str(train_start_year)])
+        if use_gpu:
+            feature_ablation_cmd.append("--use-gpu")
+        if apply_winprob_config:
+            feature_ablation_cmd.extend(["--winprob-param-config", str(winprob_config_path)])
+        if apply_spread_config:
+            feature_ablation_cmd.extend(["--spread-param-config", str(spread_config_path)])
+        feature_ablation_cmd.extend(["--cv-folds", str(cv_folds)])
+        feature_ablation_cmd.extend(live_exclude_args)
+        jobs.append(Job("feature_family_ablation", feature_ablation_cmd))
+
 
     pred_save = str(pred_dir / "predictions.csv")
 
@@ -1080,6 +1164,8 @@ def build_sequential_jobs(
         )
 
     )
+    if live_exclude is not None:
+        predict_upcoming_job.command.append("--exclude-started")
 
     history_years = [year for year in years if train_start_year is None or year > train_start_year]
     history_seasons = history_years or years
@@ -1230,6 +1316,8 @@ def build_sequential_jobs(
             str(Path("data/processed/player_prop_features_offense.parquet")),
             "--defense-features",
             str(Path("data/processed/player_prop_features_defense.parquet")),
+            "--novelty-features",
+            str(Path("data/processed/player_prop_features_novelty.parquet")),
             "--output-dir",
             str(pred_dir / "evaluation" / "player_props"),
             "--models-dir",
@@ -1251,6 +1339,8 @@ def build_sequential_jobs(
             str(Path("data/processed/oddsapi_historical_player_prop_lines.parquet")),
             "--model-predictions",
             str(pred_dir / "evaluation" / "player_props" / "model_predictions.csv"),
+            "--identity",
+            str(Path("data/processed/player_identity.parquet")),
             "--output",
             str(Path("data/processed/player_prop_historical_line_eval.parquet")),
             "--summary-output",
@@ -1258,6 +1348,25 @@ def build_sequential_jobs(
             *debug,
         ]
         jobs.append(Job("join_historical_player_prop_lines", historical_line_cmd))
+        confidence_tiers_cmd = [
+            "python",
+            "-m",
+            "src.player_props.confidence_tiers",
+            "--model-predictions",
+            str(pred_dir / "evaluation" / "player_props" / "model_predictions.csv"),
+            "--offense-features",
+            str(Path("data/processed/player_prop_features_offense.parquet")),
+            "--defense-features",
+            str(Path("data/processed/player_prop_features_defense.parquet")),
+            "--novelty-features",
+            str(Path("data/processed/player_prop_features_novelty.parquet")),
+            "--line-eval",
+            str(Path("data/processed/player_prop_historical_line_eval.parquet")),
+            "--output",
+            str(pred_dir / "evaluation" / "player_props" / "confidence_tier_metrics.csv"),
+            *debug,
+        ]
+        jobs.append(Job("evaluate_player_prop_confidence_tiers", confidence_tiers_cmd))
         over_probability_cmd = [
             "python",
             "-m",
@@ -1273,6 +1382,25 @@ def build_sequential_jobs(
             *debug,
         ]
         jobs.append(Job("evaluate_player_prop_over_probability", over_probability_cmd))
+        edge_backtest_cmd = [
+            "python",
+            "-m",
+            "src.player_props.edge_backtest",
+            "--lines",
+            str(Path("data/processed/player_prop_historical_line_eval.parquet")),
+            "--probabilities",
+            str(Path("data/processed/player_prop_over_probability_eval.parquet")),
+            "--detail-output",
+            str(pred_dir / "evaluation" / "player_props" / "edge_backtest_detail.csv"),
+            "--summary-output",
+            str(pred_dir / "evaluation" / "player_props" / "edge_backtest_summary.csv"),
+            "--market-threshold-output",
+            str(pred_dir / "evaluation" / "player_props" / "edge_backtest_market_thresholds.csv"),
+            "--policy-output",
+            str(pred_dir / "evaluation" / "player_props" / "edge_recommendation_policy.csv"),
+            *debug,
+        ]
+        jobs.append(Job("backtest_player_prop_edges", edge_backtest_cmd))
         try:
             player_prop_week = int(prediction_week)
         except (TypeError, ValueError):
@@ -1290,6 +1418,8 @@ def build_sequential_jobs(
                 str(pred_dir),
                 "--models-dir",
                 str(Path("models/player_props")),
+                "--novelty-labels",
+                str(Path("data/processed/player_prop_novelty_td_labels.parquet")),
                 "--qb-output",
                 str(pred_dir / "player_props_qb.csv"),
                 "--offense-output",
@@ -1300,6 +1430,10 @@ def build_sequential_jobs(
                 str(pred_dir / "player_props_novelty.csv"),
                 "--availability",
                 str(Path("data/processed/current_player_availability.parquet")),
+                "--player-identity",
+                str(Path("data/processed/player_identity.parquet")),
+                "--edge-policy",
+                str(pred_dir / "evaluation" / "player_props" / "edge_recommendation_policy.csv"),
                 "--odds-vendor",
                 *(propline_bookmakers or DEFAULT_PROPLINE_BOOKMAKERS),
                 *debug,
@@ -1355,6 +1489,27 @@ def build_sequential_jobs(
 
     if not skip_evaluation and not skip_market_roi:
 
+        try:
+            clv_week = int(prediction_week)
+        except (TypeError, ValueError):
+            clv_week = None
+
+        if clv_week is not None:
+            jobs.append(
+                Job(
+                    "market_clv",
+                    [
+                        "python",
+                        "-m",
+                        "analysis.market_clv",
+                        "--season",
+                        str(current_year),
+                        "--week",
+                        str(clv_week),
+                    ],
+                )
+            )
+
         roi_cmd = [
 
             "python",
@@ -1371,6 +1526,14 @@ def build_sequential_jobs(
 
         roi_cmd.extend(live_exclude_args)
         jobs.append(Job("market_roi", roi_cmd))
+
+        blend_cmd = [
+            "python",
+            "-m",
+            "analysis.market_blend",
+            *debug,
+        ]
+        jobs.append(Job("market_blend", blend_cmd))
 
         try:
             metrics_week = int(prediction_week)

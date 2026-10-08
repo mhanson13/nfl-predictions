@@ -96,6 +96,11 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Number of CV folds for Optuna objective scoring. Use 1 to disable CV and use a single split.",
     )
+    parser.add_argument(
+        "--include-bdl-features",
+        action="store_true",
+        help="Include BallDontLie bdl_* team-form features while tuning. Defaults off pending repeatable ablation lift.",
+    )
     parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from tuning.")
     parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from tuning.")
     return parser.parse_args()
@@ -128,9 +133,9 @@ def _deduplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, ~pd.Index(df.columns).duplicated()]
 
 
-def prepare_win_prob_data(df: pd.DataFrame, random_state: int) -> DatasetSplit:
+def prepare_win_prob_data(df: pd.DataFrame, random_state: int, *, include_bdl_features: bool = False) -> DatasetSplit:
     feat_df = _make_feature_diffs(df)
-    feat_cols = _select_feature_columns(feat_df)
+    feat_cols = _select_feature_columns(feat_df, include_bdl=include_bdl_features)
     if not feat_cols:
         raise ValueError("No usable *_diff features discovered for win probability tuning.")
 
@@ -153,9 +158,9 @@ def prepare_win_prob_data(df: pd.DataFrame, random_state: int) -> DatasetSplit:
     return DatasetSplit(X_train, X_valid, y_train, y_valid, use_cols)
 
 
-def prepare_spread_data(df: pd.DataFrame, random_state: int) -> DatasetSplit:
+def prepare_spread_data(df: pd.DataFrame, random_state: int, *, include_bdl_features: bool = False) -> DatasetSplit:
     feat_df = _make_feature_diffs(df)
-    feat_cols = _select_feature_columns(feat_df)
+    feat_cols = _select_feature_columns(feat_df, include_bdl=include_bdl_features)
     if not feat_cols:
         raise ValueError("No usable *_diff features discovered for spread tuning.")
 
@@ -393,13 +398,13 @@ def run_study(args: argparse.Namespace) -> optuna.study.Study:
             raise ValueError(
                 f"Metric '{metric}' not supported for win_prob. Options: {CLASSIFIER_METRICS + ('auc_brier',)}."
             )
-        data = prepare_win_prob_data(df, args.random_state)
+        data = prepare_win_prob_data(df, args.random_state, include_bdl_features=args.include_bdl_features)
         objective = lambda trial: win_prob_objective(trial, data, metric, args.use_gpu, args.random_state, cv_folds)
         direction = "minimize"
     else:
         if metric not in REGRESSOR_METRICS:
             raise ValueError(f"Metric '{metric}' not supported for spread. Options: {REGRESSOR_METRICS}.")
-        data = prepare_spread_data(df, args.random_state)
+        data = prepare_spread_data(df, args.random_state, include_bdl_features=args.include_bdl_features)
         objective = lambda trial: spread_objective(trial, data, metric, args.use_gpu, args.random_state, cv_folds)
         direction = "minimize"
 

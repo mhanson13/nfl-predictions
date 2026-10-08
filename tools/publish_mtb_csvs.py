@@ -57,6 +57,10 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(Path("predictions/evaluation/largest_margin_errors.csv"), Path("evaluation/largest_margin_errors.csv")),
     CsvArtifact(Path("predictions/evaluation/feature_quality.csv"), Path("evaluation/feature_quality.csv")),
     CsvArtifact(
+        Path("predictions/evaluation/feature_family_ablation.csv"),
+        Path("evaluation/feature_family_ablation.csv"),
+    ),
+    CsvArtifact(
         Path("predictions/evaluation/merged_predictions_actuals.csv"),
         Path("evaluation/merged_predictions_actuals.csv"),
     ),
@@ -64,8 +68,53 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(Path("analysis/market_roi_spread.csv"), Path("analysis/market_roi_spread.csv")),
     CsvArtifact(Path("analysis/market_benchmark.csv"), Path("analysis/market_benchmark.csv")),
     CsvArtifact(Path("analysis/market_benchmark_summary.csv"), Path("analysis/market_benchmark_summary.csv")),
+    CsvArtifact(Path("analysis/market_clv_detail.csv"), Path("analysis/market_clv_detail.csv")),
+    CsvArtifact(Path("analysis/market_clv_summary.csv"), Path("analysis/market_clv_summary.csv")),
     CsvArtifact(Path("analysis/market_disagreement_roi.csv"), Path("analysis/market_disagreement_roi.csv")),
+    CsvArtifact(
+        Path("analysis/market_disagreement_season_stability.csv"),
+        Path("analysis/market_disagreement_season_stability.csv"),
+    ),
+    CsvArtifact(
+        Path("analysis/market_disagreement_edge_bins.csv"),
+        Path("analysis/market_disagreement_edge_bins.csv"),
+    ),
+    CsvArtifact(
+        Path("analysis/market_probability_edge_calibration.csv"),
+        Path("analysis/market_probability_edge_calibration.csv"),
+    ),
+    CsvArtifact(Path("analysis/market_blend_backtest.csv"), Path("analysis/market_blend_backtest.csv")),
+    CsvArtifact(Path("analysis/market_blend_summary.csv"), Path("analysis/market_blend_summary.csv")),
+    CsvArtifact(Path("analysis/market_blend_policy.csv"), Path("analysis/market_blend_policy.csv")),
     CsvArtifact(Path("analysis/market_roi_spread_edge_bins.csv"), Path("analysis/market_roi_spread_edge_bins.csv")),
+    CsvArtifact(Path("analysis/market_spread_key_numbers.csv"), Path("analysis/market_spread_key_numbers.csv")),
+    CsvArtifact(Path("analysis/market_spread_calibration.csv"), Path("analysis/market_spread_calibration.csv")),
+    CsvArtifact(
+        Path("analysis/market_spread_cover_recalibration.csv"),
+        Path("analysis/market_spread_cover_recalibration.csv"),
+    ),
+    CsvArtifact(Path("analysis/market_utility_segments.csv"), Path("analysis/market_utility_segments.csv")),
+    CsvArtifact(Path("analysis/market_edge_policy.csv"), Path("analysis/market_edge_policy.csv")),
+    CsvArtifact(
+        Path("predictions/evaluation/player_props/edge_backtest_detail.csv"),
+        Path("evaluation/player_props/edge_backtest_detail.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/player_props/edge_backtest_summary.csv"),
+        Path("evaluation/player_props/edge_backtest_summary.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/player_props/edge_backtest_market_thresholds.csv"),
+        Path("evaluation/player_props/edge_backtest_market_thresholds.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/player_props/edge_recommendation_policy.csv"),
+        Path("evaluation/player_props/edge_recommendation_policy.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/player_props/confidence_tier_metrics.csv"),
+        Path("evaluation/player_props/confidence_tier_metrics.csv"),
+    ),
     CsvArtifact(
         Path("analysis/volatility_classifier_importance.csv"),
         Path("analysis/volatility_classifier_importance.csv"),
@@ -175,6 +224,13 @@ def build_artifact_plan(
                         / "player_props"
                         / f"prop_line_coverage_week_{week:02d}.csv",
                         Path("evaluation") / "player_props" / f"prop_line_coverage_week_{week:02d}.csv",
+                    ),
+                    CsvArtifact(
+                        Path("predictions")
+                        / "evaluation"
+                        / "player_props"
+                        / f"prop_roster_line_audit_week_{week:02d}.csv",
+                        Path("evaluation") / "player_props" / f"prop_roster_line_audit_week_{week:02d}.csv",
                     ),
                 ]
             )

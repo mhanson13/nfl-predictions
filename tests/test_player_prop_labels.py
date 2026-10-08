@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.player_props.labels import build_player_prop_labels
+from src.player_props.labels import build_player_prop_labels, build_touchdown_novelty_labels
 
 
 def _sample_stats() -> pd.DataFrame:
@@ -21,8 +21,11 @@ def _sample_stats() -> pd.DataFrame:
                 "opponent_team": "CAR",
                 "season_type": 2,
                 "passing_yards": 275,
+                "passing_tds": 2,
                 "rushing_yards": 12,
+                "rushing_tds": 0,
                 "receiving_yards": 0,
+                "receiving_tds": 0,
                 "def_sacks": None,
             },
             {
@@ -38,8 +41,11 @@ def _sample_stats() -> pd.DataFrame:
                 "opponent_team": "CAR",
                 "season_type": "REG",
                 "passing_yards": 0,
+                "passing_tds": 0,
                 "rushing_yards": 88,
+                "rushing_tds": 1,
                 "receiving_yards": 14,
+                "receiving_tds": 0,
                 "def_sacks": None,
             },
             {
@@ -55,8 +61,11 @@ def _sample_stats() -> pd.DataFrame:
                 "opponent_team": "ATL",
                 "season_type": 2,
                 "passing_yards": 0,
+                "passing_tds": 0,
                 "rushing_yards": 0,
+                "rushing_tds": 0,
                 "receiving_yards": 102,
+                "receiving_tds": 1,
                 "def_sacks": None,
             },
             {
@@ -72,8 +81,11 @@ def _sample_stats() -> pd.DataFrame:
                 "opponent_team": "ATL",
                 "season_type": 2,
                 "passing_yards": 0,
+                "passing_tds": 0,
                 "rushing_yards": 0,
+                "rushing_tds": 0,
                 "receiving_yards": 0,
+                "receiving_tds": 0,
                 "def_sacks": 1.5,
             },
             {
@@ -89,8 +101,11 @@ def _sample_stats() -> pd.DataFrame:
                 "opponent_team": "CAR",
                 "season_type": 2,
                 "passing_yards": 310,
+                "passing_tds": 3,
                 "rushing_yards": 0,
+                "rushing_tds": 0,
                 "receiving_yards": 0,
+                "receiving_tds": 0,
                 "def_sacks": None,
             },
             {
@@ -106,21 +121,28 @@ def _sample_stats() -> pd.DataFrame:
                 "opponent_team": "CAR",
                 "season_type": 3,
                 "passing_yards": 400,
+                "passing_tds": 4,
                 "rushing_yards": 0,
+                "rushing_tds": 0,
                 "receiving_yards": 0,
+                "receiving_tds": 0,
                 "def_sacks": None,
             },
         ]
     )
 
 
-def test_build_player_prop_labels_creates_first_four_markets():
+def test_build_player_prop_labels_creates_supported_markets():
     labels = build_player_prop_labels(_sample_stats(), seasons=[2026])
 
     assert set(labels["market"]) == {
         "qb_passing_yards",
+        "qb_passing_tds",
         "rb_rushing_yards",
+        "rb_rushing_tds",
         "wrte_receiving_yards",
+        "wrte_receiving_tds",
+        "anytime_td",
         "def_sacks",
     }
     qb = labels[(labels["market"] == "qb_passing_yards") & (labels["player_id"] == "qb-1")].iloc[0]
@@ -133,6 +155,14 @@ def test_build_player_prop_labels_creates_first_four_markets():
     sack = labels[labels["market"] == "def_sacks"].iloc[0]
     assert sack["actual_value"] == 1.5
     assert sack["value_type"] == "count"
+
+    td = labels[(labels["market"] == "wrte_receiving_tds") & (labels["player_id"] == "wr-1")].iloc[0]
+    assert td["actual_value"] == 1
+    assert td["value_type"] == "count"
+
+    anytime = labels[(labels["market"] == "anytime_td") & (labels["player_id"] == "rb-1")].iloc[0]
+    assert anytime["actual_value"] == 1
+    assert bool(anytime["actual_over_zero"]) is True
 
 
 def test_build_player_prop_labels_filters_non_regular_and_live_cutoff():
@@ -170,8 +200,11 @@ def test_build_player_prop_labels_drops_self_opponent_rows():
         "opponent_team": "DET",
         "season_type": 2,
         "passing_yards": 0,
+        "passing_tds": 0,
         "rushing_yards": 0,
+        "rushing_tds": 0,
         "receiving_yards": 0,
+        "receiving_tds": 0,
         "def_sacks": 0.0,
     }
 
@@ -206,3 +239,61 @@ def test_build_player_prop_labels_fills_missing_game_id_from_schedule():
 
     assert labels["game_id"].notna().all()
     assert set(labels["game_id"]) == {"2026_01_ATL_CAR", "2026_02_ATL_CAR"}
+
+
+def test_build_touchdown_novelty_labels_from_pbp_and_anytime_candidates():
+    labels = build_player_prop_labels(_sample_stats(), seasons=[2026])
+    pbp = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 1,
+                "game_id": "2026_01_ATL_CAR",
+                "touchdown": 1,
+                "td_player_id": "rb-1",
+                "td_player_name": "RB One",
+                "game_seconds_remaining": 3100,
+            },
+            {
+                "season": 2026,
+                "week": 1,
+                "game_id": "2026_01_ATL_CAR",
+                "touchdown": 1,
+                "td_player_id": "wr-1",
+                "td_player_name": "WR One",
+                "game_seconds_remaining": 1900,
+            },
+            {
+                "season": 2026,
+                "week": 1,
+                "game_id": "2026_01_ATL_CAR",
+                "touchdown": 1,
+                "td_player_id": "rb-1",
+                "td_player_name": "RB One",
+                "game_seconds_remaining": 1200,
+            },
+            {
+                "season": 2026,
+                "week": 1,
+                "game_id": "2026_01_ATL_CAR",
+                "touchdown": 1,
+                "td_player_id": "rb-1",
+                "td_player_name": "RB One",
+                "game_seconds_remaining": 200,
+            },
+        ]
+    )
+
+    novelty = build_touchdown_novelty_labels(pbp, candidate_labels=labels, seasons=[2026])
+
+    by_game_market_player = novelty.set_index(["game_id", "market", "player_id"])["actual_value"]
+    game_key = "2026_01_ATL_CAR"
+    assert by_game_market_player.loc[(game_key, "first_td", "rb-1")] == 1
+    assert by_game_market_player.loc[(game_key, "last_td", "rb-1")] == 1
+    assert by_game_market_player.loc[(game_key, "two_plus_tds", "rb-1")] == 1
+    assert by_game_market_player.loc[(game_key, "three_plus_tds", "rb-1")] == 1
+    assert by_game_market_player.loc[(game_key, "first_td", "wr-1")] == 0
+    assert by_game_market_player.loc[(game_key, "last_td", "wr-1")] == 0
+    assert by_game_market_player.loc[(game_key, "two_plus_tds", "wr-1")] == 0
+    assert set(novelty["market"]) == {"first_td", "last_td", "two_plus_tds", "three_plus_tds"}
+    assert novelty["source"].eq("nfl_pbp").all()

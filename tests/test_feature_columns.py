@@ -4,7 +4,9 @@ import pandas as pd
 import pytest
 
 from src.models.feature_columns import (
+    BDL_FEATURE_PREFIX,
     LEAKAGE_PATTERNS,
+    is_bdl_feature_column,
     make_feature_diffs,
     select_feature_columns,
 )
@@ -103,6 +105,8 @@ def _large_df(n: int = 100) -> pd.DataFrame:
         "inj_out_diff": rng.normal(0, 1, n),
         "pass_epa_per_db_rolling3_diff": rng.normal(0, 0.2, n),
         "drive_epa_mean_rolling3_diff": rng.normal(0, 0.4, n),
+        "bdl_total_yards_rolling3_diff": rng.normal(0, 20, n),
+        "bdl_total_yards_diff": rng.normal(0, 20, n),
         "team_news_count7_post_diff": rng.normal(0, 1, n),
         "weather_temperature": rng.normal(55, 15, n),
         "roof_is_dome": rng.integers(0, 2, n).astype(float),
@@ -128,11 +132,28 @@ class TestSelectFeatureColumns:
         assert "pass_epa_per_db_rolling3_diff" in result
         assert "drive_epa_mean_rolling3_diff" in result
 
+    def test_bdl_columns_excluded_by_default(self):
+        df = _large_df()
+        result = select_feature_columns(df)
+        assert "bdl_total_yards_rolling3_diff" not in result
+        assert all(not col.startswith(BDL_FEATURE_PREFIX) for col in result)
+
+    def test_bdl_columns_can_be_enabled(self):
+        df = _large_df()
+        result = select_feature_columns(df, include_bdl=True)
+        assert "bdl_total_yards_rolling3_diff" in result
+        assert "bdl_total_yards_diff" not in result
+
+    def test_bdl_feature_column_helper(self):
+        assert is_bdl_feature_column("bdl_total_yards_rolling3_diff")
+        assert not is_bdl_feature_column("sched_spread_close_diff")
+
     def test_raw_performance_columns_excluded(self):
         df = _large_df()
         result = select_feature_columns(df)
         assert "epa_diff" not in result
         assert "completions_diff" not in result
+        assert "bdl_total_yards_diff" not in result
         assert "team_news_count7_post_diff" not in result
 
     def test_weather_columns_included(self):

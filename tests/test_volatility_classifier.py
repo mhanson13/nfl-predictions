@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from analysis.volatility_classifier import build_labels, evaluate_model
+from analysis.volatility_classifier import build_labels, evaluate_model, select_threshold_from_sweep
 
 
 class _ProbabilityModel:
@@ -63,3 +63,35 @@ def test_evaluate_model_can_select_threshold_below_half():
     assert metrics["pred_positive_rate"] > 0.0
     assert metrics["recall"] > 0.0
     assert pred.tolist().count(1) > 0
+
+
+def test_select_threshold_from_sweep_respects_coverage_band():
+    sweep = [
+        {
+            "threshold": 0.80,
+            "f1": 0.91,
+            "balanced_accuracy": 0.91,
+            "precision": 1.0,
+            "recall": 0.20,
+            "pred_positive_rate": 0.05,
+        },
+        {
+            "threshold": 0.50,
+            "f1": 0.84,
+            "balanced_accuracy": 0.88,
+            "precision": 0.85,
+            "recall": 0.70,
+            "pred_positive_rate": 0.35,
+        },
+    ]
+
+    selected = select_threshold_from_sweep(
+        sweep,
+        threshold_metric="balanced",
+        min_pred_positive_rate=0.20,
+        max_pred_positive_rate=0.65,
+        target_pred_positive_rate=0.35,
+        target_pred_positive_tolerance=0.20,
+    )
+
+    assert selected["threshold"] == 0.50

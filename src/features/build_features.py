@@ -43,6 +43,7 @@ import pandas as pd
 
 
 from src.features.adjusted_efficiency import build_adjusted_efficiency_features
+from src.features.balldontlie_team_form import build_balldontlie_team_form_features
 from src.features.passing_epa_features import build_passing_epa_features
 from src.features.drive_epa_features import build_drive_epa_features
 from src.features.pressure_features import build_pressure_features
@@ -197,6 +198,8 @@ def _resolve_sportradar_abbr(alias: Optional[str], name: Optional[str]) -> Optio
 
 # =========================== Schedule / weather helpers ===========================
 
+NFL_SCHEDULE_TIMEZONE = "America/New_York"
+
 
 
 def _load_schedule_data(path: Path, seasons: List[int]) -> pd.DataFrame:
@@ -331,7 +334,7 @@ def _load_weather_sources() -> pd.DataFrame:
 
                 vx_weather["weather_source"] = "visualcrossing"
 
-            weather_frames.append((-1, vx_weather))
+            weather_frames.append((3, vx_weather))
 
 
 
@@ -349,7 +352,7 @@ def _load_weather_sources() -> pd.DataFrame:
 
                 base_weather["weather_source"] = "tomorrow"
 
-            weather_frames.append((0, base_weather))
+            weather_frames.append((2, base_weather))
 
 
 
@@ -470,7 +473,7 @@ def _load_weather_sources() -> pd.DataFrame:
 
         weather_df.get("weather_source")
 
-        .map({"visualcrossing": -1, "tomorrow": 0, "noaa": 1})
+        .map({"noaa": 1, "tomorrow": 2, "visualcrossing": 3})
 
         .fillna(0)
 
@@ -500,6 +503,25 @@ def _load_weather_sources() -> pd.DataFrame:
 
 
 
+
+
+def _has_weather_signal(frame: pd.DataFrame) -> pd.Series:
+    signal_cols = [
+        "weather_temp_f",
+        "weather_temp_kickoff_f",
+        "weather_wind_mph",
+        "weather_windgust_mph",
+        "weather_precip_prob",
+        "weather_precip_prob_pct",
+        "weather_precip_mm",
+        "weather_precip_mm_total",
+        "weather_precip_intensity_inph",
+        "weather_is_precip",
+    ]
+    present_cols = [col for col in signal_cols if col in frame.columns]
+    if not present_cols:
+        return pd.Series(False, index=frame.index)
+    return frame[present_cols].notna().any(axis=1)
 
 
 def _merge_weather_features(feats: pd.DataFrame, weather_df: pd.DataFrame) -> pd.DataFrame:
@@ -616,7 +638,7 @@ def _merge_weather_features(feats: pd.DataFrame, weather_df: pd.DataFrame) -> pd
 
 
 
-    wx_cols = [c for c in w.columns if c.startswith("weather_") or c in ("kickoff", "roof", "venue_lat", "venue_lon")]
+    wx_cols = [c for c in w.columns if c.startswith("weather_") or c in ("roof", "venue_lat", "venue_lon")]
 
     missing_cols = [c for c in wx_cols if c not in feats.columns]
 
@@ -868,6 +890,10 @@ def _normalize_schedule_columns(sched: pd.DataFrame) -> pd.DataFrame:
 
     s["away_score"] = _coalesce(["away_score", "awayScore", "competitions.away.score", "awayTeam.score", "score_away"], s)
 
+    schedule_kickoff = _build_schedule_kickoff_utc(s)
+    if schedule_kickoff.notna().any():
+        s["kickoff"] = schedule_kickoff
+
 
 
     # Clean casing/whitespace on team codes
@@ -909,6 +935,43 @@ def _dedupe_schedule_games(sched: pd.DataFrame, label: str = "schedule") -> pd.D
         return sched.drop_duplicates(subset=key, keep="last").reset_index(drop=True)
 
     return sched
+
+
+def _build_schedule_kickoff_utc(frame: pd.DataFrame) -> pd.Series:
+    """Build canonical kickoff timestamps from schedule date/time columns.
+
+    nflverse schedule `gameday` + `gametime` values are Eastern Time. Treating
+    date-only values as UTC has caused live reruns to keep already-started games,
+    so only date+time pairs are converted here.
+    """
+    if frame is None or frame.empty:
+        return pd.Series([], dtype="datetime64[ns, UTC]")
+
+    kickoff = pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns, UTC]")
+    if {"gameday", "gametime"}.issubset(frame.columns):
+        dates = frame["gameday"].astype("string").str.strip()
+        times = frame["gametime"].astype("string").str.strip()
+        has_time = times.str.match(r"^\d{1,2}:\d{2}(:\d{2})?$", na=False)
+        combined = dates.where(dates.notna(), "") + " " + times.where(times.notna(), "")
+        parsed = pd.to_datetime(combined.where(has_time), errors="coerce")
+        if parsed.notna().any():
+            localized = parsed.dt.tz_localize(
+                NFL_SCHEDULE_TIMEZONE,
+                ambiguous="NaT",
+                nonexistent="NaT",
+            ).dt.tz_convert("UTC")
+            kickoff = kickoff.where(kickoff.notna(), localized)
+
+    for col in ("kickoff", "start_date", "start_time"):
+        if col not in frame.columns:
+            continue
+        raw = frame[col].astype("string").str.strip()
+        has_clock = raw.str.contains(r"\d{1,2}:\d{2}", regex=True, na=False)
+        parsed = pd.to_datetime(raw.where(has_clock), errors="coerce", utc=True)
+        if parsed.notna().any():
+            kickoff = kickoff.where(kickoff.notna(), parsed)
+
+    return kickoff
 
 
 # =========================== PBP helpers ===========================
@@ -3011,12 +3074,10 @@ def main():
 
     try:
 
-        wx_cols = ["weather_temp_f", "weather_wind_mph", "weather_precip_prob"]
-
-        # Only fill rows that are missing ALL three primary weather columns
+        # Only fill rows that have no usable live weather signal at all.
         if "home_team" in feats.columns:
 
-            missing_wx = feats[wx_cols].isna().all(axis=1) if all(c in feats.columns for c in wx_cols) else pd.Series(True, index=feats.index)
+            missing_wx = ~_has_weather_signal(feats)
 
             if missing_wx.any():
 
@@ -5311,6 +5372,68 @@ def _augment_team_week_features(
             print(f"[features] pressure merge skipped: {exc}")
 
 
+    # BallDontLie live team game stats. These are shifted/rolling features only
+    # for modeling, so in-progress same-week rows cannot leak into predictions.
+
+    try:
+
+        bdl_frames: list[pd.DataFrame] = []
+
+        for season in seasons:
+
+            raw = load_raw(f"balldontlie_team_stats_{int(season)}.parquet")
+
+            if not raw.empty:
+
+                bdl_frames.append(raw)
+
+        if bdl_frames:
+
+            bdl_team_stats = pd.concat(bdl_frames, ignore_index=True, sort=False)
+
+            bdl_features = build_balldontlie_team_form_features(
+
+                bdl_team_stats,
+
+                seasons,
+
+                _norm_abbr,
+
+                schedule=sched_df,
+
+            )
+
+            if not bdl_features.empty:
+
+                if "team" in bdl_features.columns:
+
+                    lar_alias = bdl_features[bdl_features["team"].astype("string").str.upper().eq("LAR")].copy()
+
+                    if not lar_alias.empty:
+
+                        lar_alias["team"] = "LA"
+
+                        bdl_features = pd.concat([bdl_features, lar_alias], ignore_index=True, sort=False)
+
+                out = _merge_home_away(bdl_features)
+
+                bdl_bases = [
+
+                    col
+
+                    for col in bdl_features.columns
+
+                    if col.startswith("bdl_") and (col.endswith("_prev") or "_rolling" in col)
+
+                ]
+
+                out = _add_feature_diffs(out, bdl_bases)
+
+    except Exception as exc:
+
+        print(f"[features] BallDontLie team form merge skipped: {exc}")
+
+
 
     # Player news
 
@@ -5416,7 +5539,7 @@ def _augment_team_week_features(
 
 
 
-    for prefix in ("inj_", "snaps_", "depth_", "roster_", "pstats_", "news_", "team_news_"):
+    for prefix in ("inj_", "snaps_", "depth_", "roster_", "pstats_", "bdl_", "news_", "team_news_"):
 
         cols = [c for c in out.columns if c.startswith(prefix)]
 

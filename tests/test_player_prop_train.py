@@ -21,19 +21,19 @@ def _feature_row(
         "season": season,
         "week": week,
         "game_id": f"{season}_{week:02d}_ATL_CAR",
-        "team": "ATL" if family == "offense" else "CAR",
-        "opponent": "CAR" if family == "offense" else "ATL",
+        "team": "CAR" if family == "defense" else "ATL",
+        "opponent": "ATL" if family == "defense" else "CAR",
         "player_id": player_id,
         "player_name": player_id,
-        "position": "WR" if market == "wrte_receiving_yards" else "DE",
-        "position_group": "WR" if market == "wrte_receiving_yards" else "DL",
+        "position": "DE" if family == "defense" else "WR",
+        "position_group": "DL" if family == "defense" else "WR",
         "market": market,
         "market_family": family,
         "actual_value": actual_value,
         "actual_over_zero": actual_value > 0,
         "played_flag": True,
         "active_flag": True,
-        "value_type": "yards" if family == "offense" else "count",
+        "value_type": "yards" if market.endswith("_yards") else "count",
         "source": "test",
         "player_games_prior": week - 1,
         "player_avg_prior": feature_value,
@@ -75,6 +75,24 @@ def _defense_features() -> pd.DataFrame:
                     player_id=f"dl-{week}",
                     actual_value=base + (1.0 if week % 2 == 0 else 0.0),
                     feature_value=float(week % 2),
+                )
+            )
+    return pd.DataFrame(rows)
+
+
+def _novelty_features() -> pd.DataFrame:
+    rows = []
+    for season, base in [(2025, 0.0), (2026, 0.2)]:
+        for week in [1, 2, 3, 4]:
+            rows.append(
+                _feature_row(
+                    season=season,
+                    week=week,
+                    market="first_td",
+                    family="novelty",
+                    player_id=f"rb-{week}",
+                    actual_value=1.0 if week % 2 == 1 else 0.0,
+                    feature_value=base + float(week % 2),
                 )
             )
     return pd.DataFrame(rows)
@@ -123,18 +141,38 @@ def test_train_and_evaluate_honors_live_cutoff():
     assert predictions[predictions["season"] == 2026]["week"].max() == 2
 
 
+def test_train_and_evaluate_trains_novelty_family():
+    predictions, metrics, bundles = train_and_evaluate(
+        offense_features=pd.DataFrame(),
+        defense_features=pd.DataFrame(),
+        novelty_features=_novelty_features(),
+        markets=["first_td"],
+        model_type="ridge",
+        min_train_rows=3,
+        generated_at="2026-09-21T00:00:00+00:00",
+    )
+
+    assert set(predictions["market"]) == {"first_td"}
+    assert set(metrics["market"]) == {"first_td"}
+    assert set(bundles) == {"first_td"}
+    assert bundles["first_td"]["market_family"] == "novelty"
+
+
 def test_player_prop_train_cli_writes_outputs_and_models(tmp_path):
     offense_path = tmp_path / "offense.parquet"
     defense_path = tmp_path / "defense.parquet"
+    novelty_path = tmp_path / "novelty.parquet"
     output_dir = tmp_path / "eval"
     models_dir = tmp_path / "models"
     baseline_metrics = output_dir / "baseline_metrics.csv"
     baseline_predictions = output_dir / "baseline_predictions.csv"
     offense = _offense_features()
     defense = _defense_features()
+    novelty = _novelty_features()
     output_dir.mkdir(parents=True, exist_ok=True)
     offense.to_parquet(offense_path, index=False)
     defense.to_parquet(defense_path, index=False)
+    novelty.to_parquet(novelty_path, index=False)
     pd.DataFrame(
         [
             {
@@ -168,6 +206,8 @@ def test_player_prop_train_cli_writes_outputs_and_models(tmp_path):
             str(offense_path),
             "--defense-features",
             str(defense_path),
+            "--novelty-features",
+            str(novelty_path),
             "--output-dir",
             str(output_dir),
             "--models-dir",
@@ -179,6 +219,7 @@ def test_player_prop_train_cli_writes_outputs_and_models(tmp_path):
             "--markets",
             "wrte_receiving_yards",
             "def_sacks",
+            "first_td",
             "--model-type",
             "ridge",
             "--min-train-rows",
@@ -192,3 +233,4 @@ def test_player_prop_train_cli_writes_outputs_and_models(tmp_path):
     assert (output_dir / "model_vs_baseline.csv").exists()
     assert (models_dir / "offense" / "wrte_receiving_yards_model.pkl").exists()
     assert (models_dir / "defense" / "def_sacks_model.pkl").exists()
+    assert (models_dir / "novelty" / "first_td_model.pkl").exists()

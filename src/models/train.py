@@ -109,10 +109,35 @@ from src.models.feature_columns import (
 )
 
 from src.utils.io import PROC_DIR, MODELS_DIR, read_df
-from src.utils.logging import configure as configure_logging
+from src.utils.logging_config import setup_logging
 from src.utils.week_filter import filter_before_week
 
 EVAL_DIR = MODELS_DIR.parent / "predictions" / "evaluation"
+
+
+def _is_expected_sparse_high_null_feature(feature: str) -> bool:
+    """Return whether high null rates are expected for an optional/sparse feature family."""
+    name = str(feature).lower()
+    if name.startswith(("inj_", "news_")):
+        return True
+    if name.startswith("bdl_") and "sack_rate" in name:
+        return True
+    if name.startswith("weather_") and any(token in name for token in ("windgust", "gusty", "severe", "precip")):
+        return True
+    if name.startswith("sched_") and any(
+        token in name
+        for token in (
+            "pct_change",
+            "prev_is_",
+            "consecutive_",
+            "short_rest_flag",
+            "long_rest_flag",
+            "is_home",
+            "is_away",
+        )
+    ):
+        return True
+    return False
 
 
 def report_feature_quality(
@@ -126,8 +151,10 @@ def report_feature_quality(
     Compute per-feature quality diagnostics and log warnings for problematic columns.
 
     Checks null rate, variance, and observation count for each feature. Any column
-    with null_rate > warn_null_threshold or variance < warn_var_threshold is logged
-    as a WARNING. The summary is also written to
+    with null_rate > warn_null_threshold is logged as a WARNING unless it belongs
+    to an expected sparse feature family such as injury, news, optional weather,
+    or schedule derivative fields. Near-constant columns are always logged as
+    WARNING. The summary is also written to
     predictions/evaluation/feature_quality.csv (appended with run timestamp).
 
     Parameters
@@ -155,6 +182,7 @@ def report_feature_quality(
     sub = feature_df[present_cols]
     rows = []
     warnings_emitted: list[str] = []
+    expected_sparse_high_null: list[str] = []
 
     for col in present_cols:
         series = pd.to_numeric(sub[col], errors="coerce")
@@ -167,12 +195,16 @@ def report_feature_quality(
         col_max = float(series.max()) if n_obs > 0 else float("nan")
         col_mean = float(series.mean()) if n_obs > 0 else float("nan")
 
-        flag = ""
+        flags: list[str] = []
         if null_rate > warn_null_threshold:
-            flag += " HIGH_NULL"
-            warnings_emitted.append(f"  {col}: null_rate={null_rate:.1%}")
+            if _is_expected_sparse_high_null_feature(col):
+                flags.extend(["EXPECTED_SPARSE", "HIGH_NULL_EXPECTED"])
+                expected_sparse_high_null.append(f"  {col}: null_rate={null_rate:.1%}")
+            else:
+                flags.append("HIGH_NULL")
+                warnings_emitted.append(f"  {col}: null_rate={null_rate:.1%}")
         if variance < warn_var_threshold:
-            flag += " NEAR_CONSTANT"
+            flags.append("NEAR_CONSTANT")
             warnings_emitted.append(f"  {col}: variance={variance:.2e}")
 
         rows.append({
@@ -183,14 +215,21 @@ def report_feature_quality(
             "min": col_min,
             "max": col_max,
             "mean": col_mean,
-            "flags": flag.strip(),
+            "flags": " ".join(flags),
         })
 
     summary = pd.DataFrame(rows)
     prefix = f"[{context}]" if context else "[feature_quality]"
+    high_null_mask = summary["null_rate"] > warn_null_threshold
+    expected_sparse_mask = summary["flags"].str.contains("HIGH_NULL_EXPECTED", regex=False, na=False)
+    unexpected_high_null_count = int((high_null_mask & ~expected_sparse_mask).sum())
+    expected_sparse_count = int(expected_sparse_mask.sum())
     print(f"{prefix} feature quality: {len(present_cols)} features  "
-          f"null>20%: {(summary['null_rate'] > warn_null_threshold).sum()}  "
+          f"unexpected_null>20%: {unexpected_high_null_count}  "
+          f"expected_sparse_null>20%: {expected_sparse_count}  "
           f"near-constant: {(summary['variance'] < warn_var_threshold).sum()}")
+    if expected_sparse_high_null:
+        print(f"{prefix} expected sparse high-null features: {len(expected_sparse_high_null)}")
     if warnings_emitted:
         import logging
         logger = logging.getLogger(__name__)
@@ -440,6 +479,7 @@ def train_win_prob(
     config_source: Path | None = None,
     skip_logit: bool = False,
     cv_folds: int = 3,
+    include_bdl_features: bool = False,
 ) -> None:
     """
     Train the win-probability classification stack and persist models to disk.
@@ -461,10 +501,13 @@ def train_win_prob(
     cv_folds : int
         Number of CV folds for evaluation metrics. Use 1 to disable CV and
         use a single 80/20 split instead.
+    include_bdl_features : bool
+        Include BallDontLie team-form features in the production feature set.
+        Defaults off until ablation shows repeatable lift.
     """
     feat_df = make_feature_diffs(df)
 
-    feat_cols = select_feature_columns(feat_df)
+    feat_cols = select_feature_columns(feat_df, include_bdl=include_bdl_features)
 
     if not feat_cols:
 
@@ -721,6 +764,8 @@ def train_win_prob(
 
     proba_cal_log = None
 
+    report_feature_quality(tgt_df_nodup, use_cols, context="win_prob")
+
     if skip_logit:
 
         print("[win_prob][logit] skipped via --skip-logit")
@@ -735,17 +780,11 @@ def train_win_prob(
 
         X_log_test = X_log_full[idx_test]
 
-
-
         logistic_model = Pipeline(
 
             steps=[
 
                 ("imputer", _make_median_imputer()),
-
-
-    report_feature_quality(tgt_df_nodup, use_cols, context="win_prob")
-
 
                 ("scaler", StandardScaler()),
 
@@ -841,6 +880,8 @@ def train_win_prob(
 
             "model_type": model_label,
 
+            "feature_policy": {"include_bdl_features": bool(include_bdl_features)},
+
         },
 
         MODELS_DIR / "winprob_gb.pkl",
@@ -857,6 +898,7 @@ def train_spread(
     param_config: dict[str, object] | None = None,
     config_source: Path | None = None,
     cv_folds: int = 3,
+    include_bdl_features: bool = False,
 ) -> None:
     """
     Train regression models for point-spread prediction and quantile ranges.
@@ -867,10 +909,13 @@ def train_spread(
     cv_folds : int
         Number of CV folds for evaluation metrics. Use 1 to disable CV and
         use a single 75/25 split instead.
+    include_bdl_features : bool
+        Include BallDontLie team-form features in the production feature set.
+        Defaults off until ablation shows repeatable lift.
     """
     feat_df = make_feature_diffs(df)
 
-    feat_cols = select_feature_columns(feat_df)
+    feat_cols = select_feature_columns(feat_df, include_bdl=include_bdl_features)
 
     if not feat_cols:
 
@@ -1199,6 +1244,8 @@ def train_spread(
 
             "bias_correction": bias_correction,
 
+            "feature_policy": {"include_bdl_features": bool(include_bdl_features)},
+
         },
 
         MODELS_DIR / "spread_gb.pkl",
@@ -1264,12 +1311,17 @@ def main():
         default=3,
         help="Number of CV folds for evaluation. Use 1 to disable CV and use a single split.",
     )
+    ap.add_argument(
+        "--include-bdl-features",
+        action="store_true",
+        help="Include BallDontLie bdl_* team-form features in model training. Defaults off pending repeatable ablation lift.",
+    )
     ap.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from training.")
     ap.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from training.")
     args = ap.parse_args()
 
 
-    configure_logging(args.debug)
+    setup_logging("nfl_predictions", level="DEBUG" if args.debug else "INFO")
 
 
 
@@ -1308,6 +1360,7 @@ def main():
             config_source=cfg_path,
             skip_logit=args.skip_logit,
             cv_folds=args.cv_folds,
+            include_bdl_features=args.include_bdl_features,
         )
     else:
         train_spread(
@@ -1316,6 +1369,7 @@ def main():
             param_config=param_cfg,
             config_source=cfg_path,
             cv_folds=args.cv_folds,
+            include_bdl_features=args.include_bdl_features,
         )
 
 

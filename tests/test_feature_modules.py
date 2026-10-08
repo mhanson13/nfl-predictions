@@ -359,6 +359,140 @@ class TestAdjustedEfficiencyFeatures:
 
 
 # ===========================================================================
+# balldontlie_team_form
+# ===========================================================================
+from src.features.balldontlie_team_form import build_balldontlie_team_form_features
+
+
+def _make_bdl_team_stats() -> pd.DataFrame:
+    rows = []
+    for week in (1, 2, 3, 4):
+        status_state = "in_progress" if week == 4 else "final"
+        status = "7:47 - 1st" if week == 4 else "Final"
+        game_id = f"bdl_{week}"
+        for team, opponent, home_away, yards, turnovers, score, opp_score in [
+            ("KC", "BUF", "home", 300 + week * 10, 1, 20 + week, 17),
+            ("BUF", "KC", "away", 250 + week * 20, 2, 17, 20 + week),
+        ]:
+            rows.append(
+                {
+                    "game.id": game_id,
+                    "game.week": week,
+                    "game.season": 2026,
+                    "game.status": status,
+                    "game.status_state": status_state,
+                    "game.home_team_score": score if home_away == "home" else opp_score,
+                    "game.visitor_team_score": opp_score if home_away == "home" else score,
+                    "team.abbreviation": team,
+                    "team.full_name": team,
+                    "home_away": home_away,
+                    "first_downs": 18 + week,
+                    "third_down_conversions": 4,
+                    "third_down_attempts": 10,
+                    "total_offensive_plays": 60,
+                    "total_yards": yards,
+                    "yards_per_play": yards / 60,
+                    "net_passing_yards": yards - 100,
+                    "passing_attempts": 30,
+                    "sacks": 2,
+                    "rushing_yards": 100,
+                    "red_zone_scores": 2,
+                    "red_zone_attempts": 3,
+                    "turnovers": turnovers,
+                    "opponent": opponent,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _make_bdl_schedule() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "season": [2026, 2026, 2026, 2026],
+            "week": [1, 2, 3, 4],
+            "home_team": ["KC", "KC", "KC", "KC"],
+            "away_team": ["BUF", "BUF", "BUF", "BUF"],
+        }
+    )
+
+
+class TestBallDontLieTeamFormFeatures:
+
+    def test_returns_team_week_rows_from_schedule(self):
+        df = build_balldontlie_team_form_features(_make_bdl_team_stats(), [2026], _norm, schedule=_make_bdl_schedule())
+        assert len(df) == 8
+        assert not df.duplicated(subset=["season", "week", "team"]).any()
+
+    def test_filters_in_progress_games_before_rolling(self):
+        df = build_balldontlie_team_form_features(_make_bdl_team_stats(), [2026], _norm, schedule=_make_bdl_schedule())
+        kc_w4 = df[(df["team"] == "KC") & (df["week"].astype(int) == 4)].iloc[0]
+        assert pd.isna(kc_w4["bdl_total_yards"])
+        assert kc_w4["bdl_total_yards_prev"] == 330
+        assert kc_w4["bdl_total_yards_rolling3"] == pytest.approx((310 + 320 + 330) / 3)
+
+    def test_week_one_has_no_prior_form(self):
+        df = build_balldontlie_team_form_features(_make_bdl_team_stats(), [2026], _norm, schedule=_make_bdl_schedule())
+        kc_w1 = df[(df["team"] == "KC") & (df["week"].astype(int) == 1)].iloc[0]
+        assert pd.isna(kc_w1["bdl_total_yards_prev"])
+        assert pd.isna(kc_w1["bdl_total_yards_rolling3"])
+
+    def test_opponent_allowed_metrics_are_derived(self):
+        df = build_balldontlie_team_form_features(_make_bdl_team_stats(), [2026], _norm, schedule=_make_bdl_schedule())
+        kc_w3 = df[(df["team"] == "KC") & (df["week"].astype(int) == 3)].iloc[0]
+        assert kc_w3["bdl_total_yards_allowed"] == 310
+        assert kc_w3["bdl_takeaways"] == 2
+
+    def test_schedule_la_maps_to_rams_for_balldontlie(self):
+        stats = pd.DataFrame(
+            [
+                {
+                    "game.id": "bdl_lar",
+                    "game.week": 1,
+                    "game.season": 2026,
+                    "game.status_state": "final",
+                    "game.home_team_score": 21,
+                    "game.visitor_team_score": 17,
+                    "team.abbreviation": "LAR",
+                    "team.full_name": "Los Angeles Rams",
+                    "home_away": "home",
+                    "total_yards": 350,
+                    "total_offensive_plays": 70,
+                    "net_passing_yards": 220,
+                    "passing_attempts": 30,
+                    "sacks": 2,
+                    "rushing_yards": 130,
+                    "turnovers": 1,
+                },
+                {
+                    "game.id": "bdl_lar",
+                    "game.week": 1,
+                    "game.season": 2026,
+                    "game.status_state": "final",
+                    "game.home_team_score": 21,
+                    "game.visitor_team_score": 17,
+                    "team.abbreviation": "PHI",
+                    "team.full_name": "Philadelphia Eagles",
+                    "home_away": "away",
+                    "total_yards": 300,
+                    "total_offensive_plays": 65,
+                    "net_passing_yards": 180,
+                    "passing_attempts": 28,
+                    "sacks": 1,
+                    "rushing_yards": 120,
+                    "turnovers": 2,
+                },
+            ]
+        )
+        schedule = pd.DataFrame({"season": [2026], "week": [1], "home_team": ["LA"], "away_team": ["PHI"]})
+
+        df = build_balldontlie_team_form_features(stats, [2026], _norm, schedule=schedule)
+
+        assert "LAR" in set(df["team"])
+        lar = df[df["team"].eq("LAR")].iloc[0]
+        assert lar["bdl_total_yards"] == 350
+
+
+# ===========================================================================
 # volatility (engineer_volatility_inputs + build_volatility_feature_matrix)
 # ===========================================================================
 from src.features.volatility import (

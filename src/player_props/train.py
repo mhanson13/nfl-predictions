@@ -33,9 +33,8 @@ from src.player_props.evaluate_baselines import (
 )
 from src.player_props.features import (
     DEFAULT_DEFENSE_OUTPUT_PATH,
+    DEFAULT_NOVELTY_OUTPUT_PATH,
     DEFAULT_OFFENSE_OUTPUT_PATH,
-    DEFENSE_MARKETS,
-    OFFENSE_MARKETS,
 )
 from src.utils.io import MODELS_DIR, read_df
 from src.utils.week_filter import filter_before_week
@@ -68,6 +67,18 @@ NON_FEATURE_COLUMNS = {
 }
 
 
+def _confidence_tier(sample_size: object) -> str:
+    try:
+        sample = int(float(sample_size))
+    except (TypeError, ValueError):
+        sample = 0
+    if sample >= 20:
+        return "high"
+    if sample >= 5:
+        return "medium"
+    return "low"
+
+
 @dataclass(frozen=True)
 class MarketTrainingConfig:
     market: str
@@ -77,9 +88,17 @@ class MarketTrainingConfig:
 
 MARKET_CONFIGS: tuple[MarketTrainingConfig, ...] = (
     MarketTrainingConfig("qb_passing_yards", "offense", "regression"),
+    MarketTrainingConfig("qb_passing_tds", "offense", "count_event"),
     MarketTrainingConfig("rb_rushing_yards", "offense", "regression"),
+    MarketTrainingConfig("rb_rushing_tds", "offense", "count_event"),
     MarketTrainingConfig("wrte_receiving_yards", "offense", "regression"),
+    MarketTrainingConfig("wrte_receiving_tds", "offense", "count_event"),
+    MarketTrainingConfig("anytime_td", "offense", "count_event"),
     MarketTrainingConfig("def_sacks", "defense", "count_event"),
+    MarketTrainingConfig("first_td", "novelty", "count_event"),
+    MarketTrainingConfig("last_td", "novelty", "count_event"),
+    MarketTrainingConfig("two_plus_tds", "novelty", "count_event"),
+    MarketTrainingConfig("three_plus_tds", "novelty", "count_event"),
 )
 
 
@@ -316,6 +335,11 @@ def _train_market_walk_forward(
         ].copy()
         pred["model_projection"] = projection
         pred["prob_over_zero"] = prob_over_zero
+        if "player_games_prior" in test.columns:
+            pred["sample_size"] = pd.to_numeric(test["player_games_prior"], errors="coerce").fillna(0).astype(int)
+        else:
+            pred["sample_size"] = 0
+        pred["confidence_tier"] = pred["sample_size"].apply(_confidence_tier)
         pred["model_type"] = model_type
         pred["evaluation_method"] = "season_walk_forward"
         pred["train_rows"] = len(train)
@@ -534,6 +558,7 @@ def train_and_evaluate(
     *,
     offense_features: pd.DataFrame,
     defense_features: pd.DataFrame,
+    novelty_features: pd.DataFrame | None = None,
     markets: Sequence[str] | None = None,
     model_type: str = "hgb",
     min_train_rows: int = 100,
@@ -560,6 +585,18 @@ def train_and_evaluate(
         exclude_from_season=exclude_from_season,
         exclude_from_week=exclude_from_week,
     )
+    novelty = _prepare_features(
+        novelty_features if novelty_features is not None else pd.DataFrame(),
+        start_season=start_season,
+        end_season=end_season,
+        exclude_from_season=exclude_from_season,
+        exclude_from_week=exclude_from_week,
+    )
+    feature_frames = {
+        "offense": offense,
+        "defense": defense,
+        "novelty": novelty,
+    }
 
     predictions: list[pd.DataFrame] = []
     metrics: list[pd.DataFrame] = []
@@ -568,7 +605,9 @@ def train_and_evaluate(
     for config in MARKET_CONFIGS:
         if config.market not in requested:
             continue
-        frame = offense if config.family == "offense" else defense
+        frame = feature_frames.get(config.family, pd.DataFrame())
+        if frame.empty or "market" not in frame.columns:
+            continue
         frame = frame[frame["market"].eq(config.market)].copy()
         if frame.empty:
             continue
@@ -601,6 +640,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--offense-features", type=Path, default=DEFAULT_OFFENSE_OUTPUT_PATH)
     parser.add_argument("--defense-features", type=Path, default=DEFAULT_DEFENSE_OUTPUT_PATH)
+    parser.add_argument("--novelty-features", type=Path, default=DEFAULT_NOVELTY_OUTPUT_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     parser.add_argument("--baseline-metrics", type=Path, default=DEFAULT_OUTPUT_DIR / BASELINE_METRICS_NAME)
@@ -623,9 +663,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     generated_at = datetime.now(timezone.utc).isoformat()
     offense = _load_features(args.offense_features)
     defense = _load_features(args.defense_features)
+    novelty = _load_features(args.novelty_features)
     predictions, metrics, bundles = train_and_evaluate(
         offense_features=offense,
         defense_features=defense,
+        novelty_features=novelty,
         markets=args.markets,
         model_type=args.model_type,
         min_train_rows=args.min_train_rows,
@@ -654,7 +696,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.skip_save_models:
         for market, bundle in bundles.items():
             family = str(bundle["market_family"])
-            feature_frame = offense if family == "offense" else defense
+            feature_frame = {"offense": offense, "defense": defense, "novelty": novelty}.get(family, pd.DataFrame())
             market_frame = feature_frame[feature_frame["market"].eq(market)]
             market_frame = _prepare_features(
                 market_frame,

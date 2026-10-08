@@ -21,8 +21,15 @@ DEFAULT_REGIONS = ["us"]
 DEFAULT_BOOKMAKERS = ["draftkings", "fanduel", "hardrockbet"]
 DEFAULT_PLAYER_PROP_MARKETS = [
     "player_pass_yds",
+    "player_pass_tds",
     "player_rush_yds",
+    "player_rush_tds",
     "player_reception_yds",
+    "player_reception_tds",
+    "player_anytime_td",
+    "player_1st_td",
+    "player_last_td",
+    "player_tds_over",
     "player_sacks",
 ]
 REQUEST_TIMEOUT = 30.0

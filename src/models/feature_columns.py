@@ -51,15 +51,23 @@ ROLLING_PERFORMANCE_PREFIXES = (
     "pressures_",
     "sack_rate_",
 )
+BDL_FEATURE_PREFIX = "bdl_"
 LAGGED_FEATURE_MARKERS = ("_rolling", "_prev", "_lag")
 
 
-def _is_safe_model_diff(col: str) -> bool:
+def is_bdl_feature_column(col: str) -> bool:
+    """Return whether a column belongs to the BallDontLie feature family."""
+    return str(col).lower().startswith(BDL_FEATURE_PREFIX)
+
+
+def _is_safe_model_diff(col: str, *, include_bdl: bool = False) -> bool:
     lowname = col.lower()
     if any(p in lowname for p in LEAKAGE_PATTERNS):
         return False
     if "_post" in lowname or "post_" in lowname:
         return False
+    if lowname.startswith(BDL_FEATURE_PREFIX):
+        return include_bdl and any(marker in lowname for marker in LAGGED_FEATURE_MARKERS)
     if lowname.startswith(PREGAME_DIFF_PREFIXES):
         return True
     if lowname.startswith(ROLLING_PERFORMANCE_PREFIXES):
@@ -101,13 +109,16 @@ def make_feature_diffs(df: pd.DataFrame) -> pd.DataFrame:
     return feat_df.copy()
 
 
-def select_feature_columns(df: pd.DataFrame) -> List[str]:
+def select_feature_columns(df: pd.DataFrame, *, include_bdl: bool = False) -> List[str]:
     """Return the list of usable modeling columns from a feature DataFrame.
 
     Selection heuristic (same as model training):
       * numeric *_diff columns with enough support/variance and no leakage keywords
       * numeric weather_* columns and roof_is_dome
       * prefixed wx_ engineered deltas
+
+    BallDontLie (`bdl_*`) features are excluded by default. Enable
+    ``include_bdl`` only for experiments or once ablation shows repeatable lift.
     """
     try:
         dedup_mask = ~pd.Index(df.columns).duplicated()
@@ -142,7 +153,7 @@ def select_feature_columns(df: pd.DataFrame) -> List[str]:
     keep: list[str] = []
     diff_candidates = [c for c in df1.columns if isinstance(c, str) and c.endswith("_diff")]
     for col in diff_candidates:
-        if not _is_safe_model_diff(col):
+        if not _is_safe_model_diff(col, include_bdl=include_bdl):
             continue
         if _good_numeric(col):
             keep.append(col)
