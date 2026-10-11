@@ -103,6 +103,9 @@ MARKET_CLV_DETAIL_PATH = ANALYSIS_DIR / "market_clv_detail.csv"
 MARKET_CLV_MIN_TRACKED_GAMES = 10
 MARKET_CLV_MIN_POSITIVE_RATE = 0.52
 MARKET_CLV_MIN_AVG_PROB_DELTA = 0.0
+MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE = 0.10
+MONEYLINE_SEGMENT_GATE_MIN_BETS = 25
+MONEYLINE_SEGMENT_GATE_MIN_ROI = 0.0
 
 MARKET_BENCHMARK_CLV_COLUMNS = [
     "clv_detail_available",
@@ -186,6 +189,17 @@ MARKET_EDGE_POLICY_COLUMNS = [
     "clv_min_tracked_games",
     "clv_min_positive_rate",
     "clv_min_avg_prob_delta",
+    "segment_gate_pass",
+    "segment_gate_status",
+    "segment_gate_family",
+    "segment_gate_segments",
+    "segment_gate_failed_segments",
+    "segment_gate_qualified_segments",
+    "segment_gate_worst_segment",
+    "segment_gate_worst_roi",
+    "segment_gate_min_bets",
+    "segment_gate_min_roi",
+    "segment_gate_max_probability_edge",
     "spread_cover_calibration_pass",
     "spread_cover_calibration_status",
     "spread_cover_calibration_evaluated_bins",
@@ -2379,9 +2393,11 @@ def _market_policy_record(
     recommendation_tier: str | None = None,
     stability: pd.Series | None = None,
     moneyline_clv: dict[str, object] | None = None,
+    moneyline_segment_gate: dict[str, object] | None = None,
     spread_cover_calibration: dict[str, object] | None = None,
 ) -> dict[str, object]:
     moneyline_clv = moneyline_clv or {}
+    moneyline_segment_gate = moneyline_segment_gate or {}
     spread_cover_calibration = spread_cover_calibration or {}
     return {
         "signal": signal,
@@ -2422,6 +2438,17 @@ def _market_policy_record(
         "clv_min_tracked_games": moneyline_clv.get("min_tracked_games", np.nan),
         "clv_min_positive_rate": moneyline_clv.get("min_positive_rate", np.nan),
         "clv_min_avg_prob_delta": moneyline_clv.get("min_avg_prob_delta", np.nan),
+        "segment_gate_pass": moneyline_segment_gate.get("pass", np.nan),
+        "segment_gate_status": moneyline_segment_gate.get("status", np.nan),
+        "segment_gate_family": moneyline_segment_gate.get("family", np.nan),
+        "segment_gate_segments": moneyline_segment_gate.get("segments", np.nan),
+        "segment_gate_failed_segments": moneyline_segment_gate.get("failed_segments", np.nan),
+        "segment_gate_qualified_segments": moneyline_segment_gate.get("qualified_segments", np.nan),
+        "segment_gate_worst_segment": moneyline_segment_gate.get("worst_segment", np.nan),
+        "segment_gate_worst_roi": moneyline_segment_gate.get("worst_roi", np.nan),
+        "segment_gate_min_bets": moneyline_segment_gate.get("min_bets", np.nan),
+        "segment_gate_min_roi": moneyline_segment_gate.get("min_roi", np.nan),
+        "segment_gate_max_probability_edge": moneyline_segment_gate.get("max_probability_edge", np.nan),
         "spread_cover_calibration_pass": spread_cover_calibration.get("pass", np.nan),
         "spread_cover_calibration_status": spread_cover_calibration.get("status", np.nan),
         "spread_cover_calibration_evaluated_bins": spread_cover_calibration.get("evaluated_bins", np.nan),
@@ -2541,6 +2568,107 @@ def summarize_moneyline_clv_gate(
     return result
 
 
+def _moneyline_probability_edge_segment_labels(
+    *,
+    min_edge: float,
+    max_edge: float,
+) -> list[str]:
+    labels: list[str] = []
+    for lower, upper, label in MARKET_PROB_EDGE_BINS:
+        if np.isneginf(lower):
+            continue
+        lower_value = float(lower)
+        upper_value = float(upper)
+        if lower_value >= float(max_edge):
+            continue
+        if upper_value <= float(min_edge):
+            continue
+        labels.append(label)
+    return labels
+
+
+def summarize_moneyline_segment_gate(
+    moneyline_segments: pd.DataFrame | None,
+    moneyline_row: pd.Series | None,
+    *,
+    min_bets: int = MONEYLINE_SEGMENT_GATE_MIN_BETS,
+    min_roi: float = MONEYLINE_SEGMENT_GATE_MIN_ROI,
+    max_probability_edge: float = MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE,
+) -> dict[str, object]:
+    """Gate moneyline disagreement policy using bounded probability-edge segment ROI."""
+    threshold = np.nan
+    if moneyline_row is not None and "threshold" in moneyline_row:
+        threshold = pd.to_numeric(pd.Series([moneyline_row["threshold"]]), errors="coerce").iloc[0]
+    result: dict[str, object] = {
+        "pass": False,
+        "status": "unavailable",
+        "family": "probability_edge",
+        "segments": "",
+        "failed_segments": "",
+        "qualified_segments": 0,
+        "worst_segment": np.nan,
+        "worst_roi": np.nan,
+        "min_bets": int(min_bets),
+        "min_roi": float(min_roi),
+        "max_probability_edge": float(max_probability_edge),
+    }
+    if moneyline_row is None or pd.isna(threshold):
+        result["status"] = "no_policy_threshold"
+        return result
+    if moneyline_segments is None or moneyline_segments.empty:
+        return result
+
+    labels = _moneyline_probability_edge_segment_labels(
+        min_edge=float(threshold),
+        max_edge=float(max_probability_edge),
+    )
+    result["segments"] = ";".join(labels)
+    if not labels:
+        result["status"] = "no_actionable_segments"
+        return result
+
+    required = {"scope", "segment_family", "segment", "n_bets", "roi"}
+    if not required.issubset(moneyline_segments.columns):
+        result["status"] = "missing_required_segment_columns"
+        return result
+
+    frame = moneyline_segments.copy()
+    frame = frame[
+        frame["scope"].astype(str).eq("overall")
+        & frame["segment_family"].astype(str).eq("probability_edge")
+        & frame["segment"].astype(str).isin(labels)
+    ].copy()
+    if frame.empty:
+        result["status"] = "no_matching_segments"
+        return result
+
+    frame["n_bets"] = pd.to_numeric(frame["n_bets"], errors="coerce")
+    frame["roi"] = pd.to_numeric(frame["roi"], errors="coerce")
+    qualified = frame[frame["n_bets"].ge(int(min_bets)) & frame["roi"].notna()].copy()
+    if qualified.empty:
+        result["status"] = "insufficient_qualified_segments"
+        return result
+
+    qualified = qualified.sort_values(["roi", "n_bets"], ascending=[True, False], kind="stable")
+    worst = qualified.iloc[0]
+    failed = qualified[qualified["roi"].le(float(min_roi))].copy()
+    result.update(
+        {
+            "qualified_segments": int(len(qualified)),
+            "worst_segment": str(worst["segment"]),
+            "worst_roi": float(worst["roi"]),
+            "failed_segments": ";".join(failed["segment"].astype(str).tolist()),
+        }
+    )
+    if not failed.empty:
+        result["status"] = "weak_probability_edge_segment"
+        return result
+
+    result["pass"] = True
+    result["status"] = "segment_gate_pass"
+    return result
+
+
 def build_market_edge_policy(
     disagreement_roi: pd.DataFrame,
     spread_roi: pd.DataFrame,
@@ -2548,11 +2676,14 @@ def build_market_edge_policy(
     *,
     moneyline_stability: pd.DataFrame | None = None,
     moneyline_clv_summary: pd.DataFrame | None = None,
+    moneyline_segments: pd.DataFrame | None = None,
     spread_cover_recalibration: pd.DataFrame | None = None,
     min_bets: int = 100,
     min_roi: float = 0.0,
     min_probability_edge: float = 0.02,
     min_spread_edge: float = 2.0,
+    moneyline_segment_gate_min_bets: int = MONEYLINE_SEGMENT_GATE_MIN_BETS,
+    moneyline_segment_gate_min_roi: float = MONEYLINE_SEGMENT_GATE_MIN_ROI,
     clv_min_tracked_games: int = MARKET_CLV_MIN_TRACKED_GAMES,
     clv_min_positive_rate: float = MARKET_CLV_MIN_POSITIVE_RATE,
     clv_min_avg_prob_delta: float = MARKET_CLV_MIN_AVG_PROB_DELTA,
@@ -2593,7 +2724,7 @@ def build_market_edge_policy(
         min_roi=min_roi,
         threshold_col="threshold",
         min_threshold=min_probability_edge,
-        max_threshold=0.10,
+        max_threshold=MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE,
     )
     moneyline_review_row: pd.Series | None = None
     moneyline_review_recommended = False
@@ -2604,7 +2735,7 @@ def build_market_edge_policy(
             min_roi=min_roi,
             threshold_col="threshold",
             min_threshold=min_probability_edge,
-            max_threshold=0.10,
+            max_threshold=MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE,
         )
         moneyline_row = moneyline_review_row
         moneyline_recommended = False
@@ -2615,7 +2746,7 @@ def build_market_edge_policy(
             min_roi=min_roi,
             threshold_col="threshold",
             min_threshold=min_probability_edge,
-            max_threshold=0.10,
+            max_threshold=MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE,
         )
 
     moneyline_stability_row = _matching_moneyline_stability_row(moneyline_stability, moneyline_row)
@@ -2645,6 +2776,28 @@ def build_market_edge_policy(
             else:
                 moneyline_tier_override = "no_bet"
             moneyline_recommended = False
+    moneyline_segment_gate_required = moneyline_segments is not None
+    moneyline_segment_gate = summarize_moneyline_segment_gate(
+        moneyline_segments,
+        moneyline_row,
+        min_bets=moneyline_segment_gate_min_bets,
+        min_roi=moneyline_segment_gate_min_roi,
+        max_probability_edge=MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE,
+    )
+    if moneyline_segment_gate_required and moneyline_row is not None:
+        segment_gate_pass = bool(moneyline_segment_gate.get("pass", False))
+        if moneyline_recommended and not segment_gate_pass:
+            segment_status = str(moneyline_segment_gate.get("status", "unavailable") or "unavailable")
+            if segment_status in {
+                "unavailable",
+                "no_matching_segments",
+                "insufficient_qualified_segments",
+                "missing_required_segment_columns",
+            }:
+                moneyline_tier_override = "review"
+            else:
+                moneyline_tier_override = "no_bet"
+            moneyline_recommended = False
     moneyline_selection = "no recommended moneyline disagreement threshold"
     if moneyline_row is not None:
         moneyline_selection = f"prob_edge >= {float(moneyline_row['threshold']):.2f}"
@@ -2663,6 +2816,7 @@ def build_market_edge_policy(
             recommendation_tier=moneyline_tier_override,
             stability=moneyline_stability_row,
             moneyline_clv=moneyline_clv if moneyline_clv_gate_required else None,
+            moneyline_segment_gate=moneyline_segment_gate if moneyline_segment_gate_required else None,
         )
     )
 
@@ -2834,11 +2988,14 @@ def run(args: argparse.Namespace) -> None:
         spread_edge_bins_df,
         moneyline_stability=disagreement_stability_df,
         moneyline_clv_summary=market_clv_summary_df,
+        moneyline_segments=disagreement_segments_df,
         spread_cover_recalibration=spread_recalibration_df,
         min_bets=args.policy_min_bets,
         min_roi=args.policy_min_roi,
         min_probability_edge=args.policy_min_probability_edge,
         min_spread_edge=args.policy_min_spread_edge,
+        moneyline_segment_gate_min_bets=args.moneyline_segment_gate_min_bets,
+        moneyline_segment_gate_min_roi=args.moneyline_segment_gate_min_roi,
         clv_min_tracked_games=args.clv_min_tracked_games,
         clv_min_positive_rate=args.clv_min_positive_rate,
         clv_min_avg_prob_delta=args.clv_min_avg_prob_delta,
@@ -2934,6 +3091,9 @@ def run(args: argparse.Namespace) -> None:
             "policy_min_roi": float(args.policy_min_roi),
             "policy_min_probability_edge": float(args.policy_min_probability_edge),
             "policy_min_spread_edge": float(args.policy_min_spread_edge),
+            "moneyline_segment_gate_min_bets": int(args.moneyline_segment_gate_min_bets),
+            "moneyline_segment_gate_min_roi": float(args.moneyline_segment_gate_min_roi),
+            "moneyline_segment_gate_max_probability_edge": float(MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE),
             "market_clv_detail": str(args.market_clv_detail),
             "market_clv_summary": str(args.market_clv_summary),
             "clv_min_tracked_games": int(args.clv_min_tracked_games),
@@ -2964,6 +3124,7 @@ def run(args: argparse.Namespace) -> None:
         "moneyline_disagreement_best": {},
         "moneyline_disagreement_stability": {},
         "moneyline_disagreement_clv_gate": {},
+        "moneyline_disagreement_segment_gate": {},
         "moneyline_disagreement_edge_bin_best": {},
         "moneyline_disagreement_segment_best": {},
         "market_probability_edge_calibration_overall": {},
@@ -3030,6 +3191,22 @@ def run(args: argparse.Namespace) -> None:
                 "clv_min_tracked_games",
                 "clv_min_positive_rate",
                 "clv_min_avg_prob_delta",
+            ]
+        }
+        summary["moneyline_disagreement_segment_gate"] = {
+            key: _json_safe_value(moneyline_policy_row.get(key))
+            for key in [
+                "segment_gate_pass",
+                "segment_gate_status",
+                "segment_gate_family",
+                "segment_gate_segments",
+                "segment_gate_failed_segments",
+                "segment_gate_qualified_segments",
+                "segment_gate_worst_segment",
+                "segment_gate_worst_roi",
+                "segment_gate_min_bets",
+                "segment_gate_min_roi",
+                "segment_gate_max_probability_edge",
             ]
         }
     valid_disagreement_bins = disagreement_edge_bins_df[
@@ -3362,6 +3539,9 @@ def run(args: argparse.Namespace) -> None:
             "clv_tracked_games",
             "clv_avg_prob_delta",
             "clv_positive_rate",
+            "segment_gate_status",
+            "segment_gate_worst_segment",
+            "segment_gate_worst_roi",
         ]
         print(market_policy_df[display_cols].to_string(index=False))
 
@@ -3452,6 +3632,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="Minimum predicted margin edge in points for spread policy candidates.",
+    )
+    parser.add_argument(
+        "--moneyline-segment-gate-min-bets",
+        type=int,
+        default=MONEYLINE_SEGMENT_GATE_MIN_BETS,
+        help="Minimum bets required for a moneyline disagreement probability-edge segment to gate policy.",
+    )
+    parser.add_argument(
+        "--moneyline-segment-gate-min-roi",
+        type=float,
+        default=MONEYLINE_SEGMENT_GATE_MIN_ROI,
+        help="Minimum ROI required for each qualified moneyline disagreement segment in the actionable edge range.",
     )
     parser.add_argument(
         "--market-clv-detail",

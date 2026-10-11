@@ -567,6 +567,45 @@ def test_attach_market_policy_fields_surfaces_clv_blocked_moneyline_policy(tmp_p
     assert preds.loc[0, "market_policy_status"] == "insufficient_tracked_games"
 
 
+def test_attach_market_policy_fields_surfaces_segment_blocked_moneyline_policy(tmp_path):
+    policy_path = tmp_path / "market_edge_policy.csv"
+    pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": False,
+                "recommendation_tier": "no_bet",
+                "threshold": 0.02,
+                "segment_gate_status": "weak_probability_edge_segment",
+                "segment_gate_failed_segments": "5-8%",
+            },
+        ]
+    ).to_csv(policy_path, index=False)
+    preds = pd.DataFrame(
+        [
+            {
+                "home_team": "DAL",
+                "away_team": "TB",
+                "home_win_prob": 0.50,
+                "pred_home_margin": 1.0,
+                "odds_draftkings_home_moneyline": 120,
+                "odds_draftkings_away_moneyline": -140,
+                "odds_draftkings_home_spread": 1.0,
+                "odds_draftkings_away_spread": -1.0,
+            },
+        ]
+    )
+
+    _attach_market_policy_fields(preds, policy_path=policy_path)
+
+    assert preds.loc[0, "market_moneyline_edge_bin"] == "5-8%"
+    assert bool(preds.loc[0, "market_moneyline_policy_recommendation_flag"]) is False
+    assert preds.loc[0, "market_moneyline_policy_tier"] == "no_bet"
+    assert preds.loc[0, "market_moneyline_policy_status"] == "weak_probability_edge_segment"
+    assert preds.loc[0, "market_policy_primary_signal"] == "moneyline_review"
+    assert preds.loc[0, "market_policy_status"] == "weak_probability_edge_segment"
+
+
 def test_attach_market_policy_fields_blocks_spread_when_calibration_policy_fails(tmp_path):
     policy_path = tmp_path / "market_edge_policy.csv"
     pd.DataFrame(

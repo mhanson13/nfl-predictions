@@ -230,7 +230,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
 - Current-season nflverse PBP can still lag or be unavailable. BallDontLie team-form features now cover current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail still depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
 - BallDontLie team-form features are useful as a monitored fallback source, but latest Week 4/Week 5 ablation runs showed win-probability regression and only marginal spread benefit. Keep them out of production model features until repeatable same-split lift appears.
-- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
+- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, a segment-aware moneyline disagreement policy gate, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
 - Corrected spread ROI no longer shows broad profitability. Current Week 5 policy artifacts mark broad spread threshold strategies as `no_bet`; only the 2-to-3 point spread-edge bucket remains a low-confidence lean/research signal.
 
 ## Operating Roadmap
@@ -312,6 +312,7 @@ Roadmap:
 - [x] Add conservative market-edge policy artifact that can explicitly say `no_bet` when historical ROI/sample gates fail.
 - [x] Add bounded moneyline disagreement edge-bin ROI artifact: `analysis/market_disagreement_edge_bins.csv`.
 - [x] Add disagreement-only moneyline segment diagnostics by side, odds bucket, confidence, probability edge, and CLV: `analysis/market_disagreement_segments.csv`.
+- [x] Add a segment-aware moneyline disagreement policy gate so weak bounded probability-edge slices can downgrade broad threshold candidates before publication.
 - [x] Add spread cover-probability calibration artifact: `analysis/market_spread_calibration.csv`.
 - [x] Add empirical spread cover recalibration artifact: `analysis/market_spread_cover_recalibration.csv`.
 - [x] Hard-gate broad spread threshold policy to `no_bet` until calibrated spread probabilities and CLV justify promotion.

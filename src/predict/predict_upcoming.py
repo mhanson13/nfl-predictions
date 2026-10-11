@@ -1012,6 +1012,16 @@ def _spread_edge_bin(value: Any) -> str:
     return "10+"
 
 
+def _split_policy_segments(value: Any) -> set[str]:
+    if value is None or pd.isna(value):
+        return set()
+    return {
+        part.strip()
+        for part in str(value).split(";")
+        if part.strip() and part.strip().lower() not in {"nan", "none"}
+    }
+
+
 def _first_existing_numeric_median(df: pd.DataFrame, pattern: str) -> pd.Series:
     cols = [col for col in df.columns if re.match(pattern, str(col))]
     if not cols:
@@ -1093,6 +1103,12 @@ def _attach_market_policy_fields(
     ml_clv_blocks_policy = bool(
         ml_clv_status and ml_clv_status.lower() not in {"nan", "unavailable", "clv_pass"}
     )
+    ml_segment_status = str(ml_policy.get("segment_gate_status", "") or "").strip()
+    ml_segment_failed = _split_policy_segments(ml_policy.get("segment_gate_failed_segments"))
+    ml_segment_blocks_policy = bool(
+        ml_segment_status
+        and ml_segment_status.lower() not in {"nan", "unavailable", "segment_gate_pass"}
+    )
     ml_candidate = (
         ml_policy_enabled
         & preds["market_moneyline_favorite_disagreement"].astype(bool)
@@ -1106,10 +1122,21 @@ def _attach_market_policy_fields(
         & preds["market_moneyline_favorite_disagreement"].astype(bool)
         & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
     )
+    ml_segment_policy_block = (
+        (not ml_policy_enabled)
+        & ml_segment_blocks_policy
+        & preds["market_moneyline_favorite_disagreement"].astype(bool)
+        & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
+        & (
+            preds["market_moneyline_edge_bin"].isin(ml_segment_failed)
+            if ml_segment_failed
+            else pd.Series(True, index=preds.index)
+        )
+    )
     preds["market_moneyline_policy_recommendation_flag"] = ml_recommended
     preds["market_moneyline_policy_tier"] = np.select(
-        [ml_recommended, high_edge_review, ml_clv_policy_block],
-        [ml_tier, "review", ml_tier if ml_tier in {"review", "no_bet"} else "review"],
+        [ml_recommended, high_edge_review, ml_clv_policy_block, ml_segment_policy_block],
+        [ml_tier, "review", ml_tier if ml_tier in {"review", "no_bet"} else "review", ml_tier],
         default="no_bet",
     )
     preds["market_moneyline_policy_status"] = np.select(
@@ -1118,6 +1145,7 @@ def _attach_market_policy_fields(
             high_edge_review,
             ml_recommended,
             ml_clv_policy_block,
+            ml_segment_policy_block,
             preds["market_moneyline_favorite_disagreement"].astype(bool),
         ],
         [
@@ -1125,6 +1153,7 @@ def _attach_market_policy_fields(
             "moneyline_high_edge_review",
             "strong_moneyline_disagreement",
             ml_clv_status,
+            ml_segment_status,
             "disagreement_below_policy_edge",
         ],
         default="no_bet",
@@ -1186,34 +1215,53 @@ def _attach_market_policy_fields(
         [
             ml_recommended,
             ml_clv_policy_block,
+            ml_segment_policy_block,
             spread_lean,
             high_edge_review,
             spread_calibration_block | spread_blocked_high | spread_blocked_mid,
         ],
-        ["moneyline_disagreement", "moneyline_review", "spread_edge_bin", "moneyline_review", "blocked_spread"],
+        [
+            "moneyline_disagreement",
+            "moneyline_review",
+            "moneyline_review",
+            "spread_edge_bin",
+            "moneyline_review",
+            "blocked_spread",
+        ],
         default="none",
     )
     preds["market_policy_tier"] = np.select(
         [
             ml_recommended,
             ml_clv_policy_block,
+            ml_segment_policy_block,
             spread_lean,
             high_edge_review,
             spread_calibration_block,
             spread_blocked_high | spread_blocked_mid,
         ],
-        [ml_tier, ml_tier if ml_tier in {"review", "no_bet"} else "review", spread_tier, "review", "review", "blocked"],
+        [
+            ml_tier,
+            ml_tier if ml_tier in {"review", "no_bet"} else "review",
+            ml_tier,
+            spread_tier,
+            "review",
+            "review",
+            "blocked",
+        ],
         default="no_bet",
     )
     preds["market_policy_status"] = np.select(
         [
             ml_recommended,
             ml_clv_policy_block,
+            ml_segment_policy_block,
             spread_lean,
             high_edge_review,
             spread_calibration_block | spread_blocked_high | spread_blocked_mid,
         ],
         [
+            preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],
             preds["market_spread_policy_status"],

@@ -833,6 +833,76 @@ def test_market_edge_policy_allows_moneyline_when_clv_gate_passes():
     assert moneyline["clv_status"] == "clv_pass"
 
 
+def test_market_edge_policy_blocks_moneyline_when_segment_gate_fails():
+    disagreement_roi = pd.DataFrame(
+        [
+            {
+                "threshold": 0.02,
+                "n_bets": 160,
+                "wins": 82,
+                "losses": 78,
+                "pushes": 0,
+                "hit_rate": 82 / 160,
+                "avg_prob_edge_model_side": 0.06,
+                "roi": 0.04,
+            }
+        ]
+    )
+    segments = pd.DataFrame(
+        [
+            {
+                "scope": "overall",
+                "segment_family": "probability_edge",
+                "segment": "2-5%",
+                "n_bets": 55,
+                "roi": 0.07,
+            },
+            {
+                "scope": "overall",
+                "segment_family": "probability_edge",
+                "segment": "5-8%",
+                "n_bets": 60,
+                "roi": -0.04,
+            },
+            {
+                "scope": "overall",
+                "segment_family": "probability_edge",
+                "segment": "8-10%",
+                "n_bets": 45,
+                "roi": 0.02,
+            },
+            {
+                "scope": "overall",
+                "segment_family": "probability_edge",
+                "segment": "10-15%",
+                "n_bets": 70,
+                "roi": -0.20,
+            },
+        ]
+    )
+
+    policy = market_roi.build_market_edge_policy(
+        disagreement_roi,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        moneyline_segments=segments,
+        min_bets=100,
+        min_roi=0.0,
+        min_probability_edge=0.02,
+        min_spread_edge=2.0,
+        generated_at="2026-09-27T00:00:00+00:00",
+    )
+    moneyline = policy[policy["signal"].eq("moneyline_disagreement")].iloc[0]
+
+    assert bool(moneyline["recommended"]) is False
+    assert moneyline["recommendation_tier"] == "no_bet"
+    assert bool(moneyline["segment_gate_pass"]) is False
+    assert moneyline["segment_gate_status"] == "weak_probability_edge_segment"
+    assert moneyline["segment_gate_failed_segments"] == "5-8%"
+    assert moneyline["segment_gate_worst_segment"] == "5-8%"
+    assert moneyline["segment_gate_worst_roi"] == pytest.approx(-0.04)
+
+
 def test_market_edge_policy_limits_spread_edge_bin_to_two_to_three_points():
     disagreement_roi = pd.DataFrame(
         [
