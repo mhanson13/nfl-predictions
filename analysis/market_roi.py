@@ -125,6 +125,28 @@ MARKET_BENCHMARK_CLV_COLUMNS = [
     "spread_positive_clv",
 ]
 
+MARKET_DISAGREEMENT_SEGMENT_COLUMNS = [
+    "scope",
+    "season",
+    "segment_family",
+    "segment",
+    "n_bets",
+    "wins",
+    "losses",
+    "pushes",
+    "hit_rate",
+    "roi",
+    "total_profit",
+    "avg_model_pick_prob",
+    "avg_vegas_model_side_prob",
+    "avg_prob_edge_model_side",
+    "avg_model_side_moneyline",
+    "avg_model_side_decimal",
+    "clv_games",
+    "avg_moneyline_clv_prob_delta",
+    "positive_moneyline_clv_rate",
+]
+
 MARKET_EDGE_POLICY_COLUMNS = [
     "signal",
     "recommended",
@@ -1034,6 +1056,178 @@ def summarize_disagreement_moneyline_edge_bins(
         add_rows("season", int(season), season_df)
 
     return pd.DataFrame.from_records(records, columns=columns)
+
+
+def _moneyline_market_status(value: float) -> str | None:
+    if pd.isna(value):
+        return None
+    value = float(value)
+    if value < -110.0:
+        return "favorite"
+    if value > 110.0:
+        return "underdog"
+    return "near_pick"
+
+
+def _coerce_bool(value: object) -> bool | None:
+    if pd.isna(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
+        return None
+    return bool(value)
+
+
+def _moneyline_disagreement_segment_record(
+    *,
+    scope: str,
+    season: int | str,
+    segment_family: str,
+    segment: str,
+    selection: pd.DataFrame,
+) -> dict[str, float | int | str]:
+    n_bets = int(len(selection))
+    if n_bets == 0:
+        return {
+            "scope": scope,
+            "season": season,
+            "segment_family": segment_family,
+            "segment": segment,
+            "n_bets": 0,
+            "wins": 0,
+            "losses": 0,
+            "pushes": 0,
+            "hit_rate": np.nan,
+            "roi": np.nan,
+            "total_profit": 0.0,
+            "avg_model_pick_prob": np.nan,
+            "avg_vegas_model_side_prob": np.nan,
+            "avg_prob_edge_model_side": np.nan,
+            "avg_model_side_moneyline": np.nan,
+            "avg_model_side_decimal": np.nan,
+            "clv_games": 0,
+            "avg_moneyline_clv_prob_delta": np.nan,
+            "positive_moneyline_clv_rate": np.nan,
+        }
+
+    pushes = int(selection["home_tie"].sum())
+    wins = int(selection.loc[~selection["home_tie"], "model_side_actual_win"].sum())
+    losses = n_bets - wins - pushes
+    graded = wins + losses
+    total_profit = float(selection["model_side_profit"].sum())
+
+    if "moneyline_clv_prob_delta" in selection.columns:
+        clv_delta = pd.to_numeric(selection["moneyline_clv_prob_delta"], errors="coerce")
+    else:
+        clv_delta = pd.Series(np.nan, index=selection.index)
+    clv_mask = clv_delta.notna()
+    clv_games = int(clv_mask.sum())
+
+    positive_clv_rate = np.nan
+    if clv_games and "moneyline_positive_clv" in selection.columns:
+        positive_clv = selection.loc[clv_mask, "moneyline_positive_clv"].apply(_coerce_bool).dropna()
+        if not positive_clv.empty:
+            positive_clv_rate = float(positive_clv.astype(bool).mean())
+
+    return {
+        "scope": scope,
+        "season": season,
+        "segment_family": segment_family,
+        "segment": segment,
+        "n_bets": n_bets,
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "hit_rate": float(wins / graded) if graded > 0 else np.nan,
+        "roi": float(total_profit / n_bets),
+        "total_profit": total_profit,
+        "avg_model_pick_prob": float(selection["model_pick_prob"].mean()),
+        "avg_vegas_model_side_prob": float(selection["vegas_model_side_prob"].mean()),
+        "avg_prob_edge_model_side": float(selection["prob_edge_model_side"].mean()),
+        "avg_model_side_moneyline": float(selection["model_side_moneyline"].mean()),
+        "avg_model_side_decimal": float(selection["model_side_decimal"].mean())
+        if "model_side_decimal" in selection.columns
+        else np.nan,
+        "clv_games": clv_games,
+        "avg_moneyline_clv_prob_delta": float(clv_delta.mean()) if clv_games else np.nan,
+        "positive_moneyline_clv_rate": positive_clv_rate,
+    }
+
+
+def summarize_disagreement_moneyline_segments(benchmark: pd.DataFrame) -> pd.DataFrame:
+    """Slice favorite-disagreement moneyline ROI into actionable diagnostic segments."""
+    if benchmark.empty or "favorite_agreement" not in benchmark.columns:
+        return pd.DataFrame(columns=MARKET_DISAGREEMENT_SEGMENT_COLUMNS)
+
+    base = benchmark[benchmark["favorite_agreement"].eq(False)].copy()
+    if base.empty:
+        return pd.DataFrame(columns=MARKET_DISAGREEMENT_SEGMENT_COLUMNS)
+
+    base["model_pick_side"] = np.where(base["model_home_pick"].fillna(False).astype(bool), "home", "away")
+    base["model_side_moneyline_status"] = base["model_side_moneyline"].apply(_moneyline_market_status)
+    base["model_confidence_bin"] = base["model_pick_prob"].apply(
+        lambda value: _bin_label(value, MARKET_MODEL_CONFIDENCE_BINS)
+    )
+    base["prob_edge_bin"] = base["prob_edge_model_side"].apply(
+        lambda value: _bin_label(value, MARKET_PROB_EDGE_BINS)
+    )
+    base["model_side_moneyline_bin"] = base["model_side_moneyline"].apply(
+        lambda value: _bin_label(value, MARKET_MONEYLINE_BINS)
+    )
+
+    segment_specs = [
+        ("model_pick_side", "model_pick_side"),
+        ("model_side_moneyline_status", "model_side_moneyline_status"),
+        ("model_confidence", "model_confidence_bin"),
+        ("probability_edge", "prob_edge_bin"),
+        ("model_side_moneyline", "model_side_moneyline_bin"),
+    ]
+    if "clv_status" in base.columns:
+        base["clv_status_segment"] = base["clv_status"].fillna("missing")
+        segment_specs.append(("clv_status", "clv_status_segment"))
+    if {"moneyline_clv_prob_delta", "moneyline_positive_clv"}.issubset(base.columns):
+        clv_delta = pd.to_numeric(base["moneyline_clv_prob_delta"], errors="coerce")
+        clv_positive = base["moneyline_positive_clv"].apply(_coerce_bool)
+        base["moneyline_clv_result"] = pd.NA
+        base.loc[clv_delta.notna() & clv_positive.eq(True), "moneyline_clv_result"] = "positive_clv"
+        base.loc[clv_delta.notna() & clv_positive.eq(False), "moneyline_clv_result"] = "negative_or_flat_clv"
+        segment_specs.append(("moneyline_clv_result", "moneyline_clv_result"))
+
+    records: list[dict[str, float | int | str]] = []
+
+    def add_segments(scope: str, season: int | str, group: pd.DataFrame) -> None:
+        records.append(
+            _moneyline_disagreement_segment_record(
+                scope=scope,
+                season=season,
+                segment_family="all",
+                segment="all",
+                selection=group,
+            )
+        )
+        for family, column in segment_specs:
+            for segment, selection in group.dropna(subset=[column]).groupby(column, sort=False):
+                records.append(
+                    _moneyline_disagreement_segment_record(
+                        scope=scope,
+                        season=season,
+                        segment_family=family,
+                        segment=str(segment),
+                        selection=selection,
+                    )
+                )
+
+    add_segments("overall", "all", base)
+    for season, season_df in base.groupby("season", sort=True):
+        add_segments("season", int(season), season_df)
+
+    return pd.DataFrame.from_records(records, columns=MARKET_DISAGREEMENT_SEGMENT_COLUMNS)
 
 
 def _probability_edge_calibration_record(
@@ -2616,6 +2810,7 @@ def run(args: argparse.Namespace) -> None:
         min_recent_positive_season_rate=args.stability_min_recent_positive_season_rate,
     )
     disagreement_edge_bins_df = summarize_disagreement_moneyline_edge_bins(benchmark_df)
+    disagreement_segments_df = summarize_disagreement_moneyline_segments(benchmark_df)
     probability_edge_calibration_df = summarize_market_probability_edge_calibration(benchmark_df)
     spread_edge_bins_df = summarize_spread_edge_bins(dataset)
     spread_key_numbers_df = summarize_spread_key_numbers(dataset)
@@ -2659,6 +2854,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_roi_path = ANALYSIS_DIR / "market_disagreement_roi.csv"
     disagreement_stability_path = ANALYSIS_DIR / "market_disagreement_season_stability.csv"
     disagreement_edge_bins_path = ANALYSIS_DIR / "market_disagreement_edge_bins.csv"
+    disagreement_segments_path = ANALYSIS_DIR / "market_disagreement_segments.csv"
     probability_edge_calibration_path = ANALYSIS_DIR / "market_probability_edge_calibration.csv"
     spread_edge_bins_path = ANALYSIS_DIR / "market_roi_spread_edge_bins.csv"
     spread_key_numbers_path = ANALYSIS_DIR / "market_spread_key_numbers.csv"
@@ -2714,6 +2910,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_roi_df.sort_values(["threshold"]).to_csv(disagreement_roi_path, index=False)
     disagreement_stability_df.sort_values(["threshold"]).to_csv(disagreement_stability_path, index=False)
     disagreement_edge_bins_df.to_csv(disagreement_edge_bins_path, index=False)
+    disagreement_segments_df.to_csv(disagreement_segments_path, index=False)
     probability_edge_calibration_df.to_csv(probability_edge_calibration_path, index=False)
     spread_edge_bins_df.to_csv(spread_edge_bins_path, index=False)
     spread_key_numbers_df.to_csv(spread_key_numbers_path, index=False)
@@ -2768,6 +2965,7 @@ def run(args: argparse.Namespace) -> None:
         "moneyline_disagreement_stability": {},
         "moneyline_disagreement_clv_gate": {},
         "moneyline_disagreement_edge_bin_best": {},
+        "moneyline_disagreement_segment_best": {},
         "market_probability_edge_calibration_overall": {},
         "market_probability_edge_calibration_model_best": {},
         "spread_edge_bin_best": {},
@@ -2842,6 +3040,15 @@ def run(args: argparse.Namespace) -> None:
     if not valid_disagreement_bins.empty:
         best_disagreement_bin = valid_disagreement_bins.loc[valid_disagreement_bins["roi"].idxmax()]
         summary["moneyline_disagreement_edge_bin_best"] = _json_safe_record(best_disagreement_bin)
+    valid_disagreement_segments = disagreement_segments_df[
+        (disagreement_segments_df["scope"] == "overall")
+        & disagreement_segments_df["segment_family"].ne("all")
+        & (disagreement_segments_df["n_bets"] >= args.min_moneyline_edge_bin_bets)
+        & disagreement_segments_df["roi"].notna()
+    ]
+    if not valid_disagreement_segments.empty:
+        best_disagreement_segment = valid_disagreement_segments.loc[valid_disagreement_segments["roi"].idxmax()]
+        summary["moneyline_disagreement_segment_best"] = _json_safe_record(best_disagreement_segment)
     overall_probability_calibration = probability_edge_calibration_df[
         (probability_edge_calibration_df["scope"] == "overall")
         & (probability_edge_calibration_df["bin_family"] == "all")
@@ -2984,6 +3191,32 @@ def run(args: argparse.Namespace) -> None:
             "avg_prob_edge_model_side",
         ]
         display = disagreement_edge_bins_df[disagreement_edge_bins_df["scope"] == "overall"]
+        print(display[display_cols].to_string(index=False))
+
+    print("\n=== Moneyline disagreement segment summary ===")
+    if disagreement_segments_df.empty:
+        print("No disagreement segment rows matched the criteria.")
+    else:
+        display_cols = [
+            "segment_family",
+            "segment",
+            "n_bets",
+            "wins",
+            "losses",
+            "pushes",
+            "roi",
+            "hit_rate",
+            "avg_prob_edge_model_side",
+            "clv_games",
+            "positive_moneyline_clv_rate",
+        ]
+        display = disagreement_segments_df[
+            (disagreement_segments_df["scope"] == "overall")
+            & (
+                disagreement_segments_df["segment_family"].eq("all")
+                | (disagreement_segments_df["n_bets"] >= args.min_moneyline_edge_bin_bets)
+            )
+        ]
         print(display[display_cols].to_string(index=False))
 
     print("\n=== Model vs no-vig Vegas probability calibration summary ===")
@@ -3137,6 +3370,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"Disagreement ROI results written to {disagreement_roi_path.resolve()}")
     print(f"Disagreement season-stability results written to {disagreement_stability_path.resolve()}")
     print(f"Disagreement edge-bin results written to {disagreement_edge_bins_path.resolve()}")
+    print(f"Disagreement segment results written to {disagreement_segments_path.resolve()}")
     print(f"Probability edge calibration results written to {probability_edge_calibration_path.resolve()}")
     print(f"Market utility segments written to {market_segments_path.resolve()}")
     print(f"Market edge policy written to {market_policy_path.resolve()}")

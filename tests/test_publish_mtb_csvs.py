@@ -34,6 +34,10 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     _write_csv(source_root / "analysis" / "market_clv_summary.csv", "scope,segment,n_games\noverall,all,1\n")
     _write_csv(source_root / "analysis" / "market_disagreement_edge_bins.csv", "edge_bin,roi\n2-5%,0.1\n")
     _write_csv(
+        source_root / "analysis" / "market_disagreement_segments.csv",
+        "segment_family,segment,n_bets,roi\nmodel_pick_side,home,10,0.1\n",
+    )
+    _write_csv(
         source_root / "analysis" / "market_disagreement_season_stability.csv",
         "threshold,stability_pass\n0.02,true\n",
     )
@@ -96,6 +100,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "analysis" / "market_clv_detail.csv").exists()
     assert (destination_root / "analysis" / "market_clv_summary.csv").exists()
     assert (destination_root / "analysis" / "market_disagreement_edge_bins.csv").exists()
+    assert (destination_root / "analysis" / "market_disagreement_segments.csv").exists()
     assert (destination_root / "analysis" / "market_disagreement_season_stability.csv").exists()
     assert (destination_root / "analysis" / "market_probability_edge_calibration.csv").exists()
     assert (destination_root / "analysis" / "market_blend_backtest.csv").exists()
@@ -114,7 +119,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 35
+    assert len(published) == 36
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):

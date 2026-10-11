@@ -50,7 +50,7 @@ Current highlights:
 - BallDontLie `bdl_*` features are generated and ablated, but kept out of production training unless `--include-bdl-features` is passed because recent Week 4/Week 5 ablations did not show repeatable lift.
 - Team prediction outputs include market-policy guardrails so downstream consumers can distinguish strong moneyline policy picks, review-only moneyline edges, blocked spread signals, and no-bet rows.
 - Player-prop models publish QB, offense, defense, and novelty CSVs with line consensus, injury/roster validation, line variance, over-probability, EV, and conservative edge-policy fields.
-- Market benchmarking publishes ROI, model-vs-Vegas calibration, spread key-number diagnostics, CLV detail/summary artifacts, and optional per-game CLV fields in `analysis/market_benchmark.csv` when evaluated rows match pick-time snapshots.
+- Market benchmarking publishes ROI, model-vs-Vegas calibration, disagreement-only moneyline segments, spread key-number diagnostics, CLV detail/summary artifacts, and optional per-game CLV fields in `analysis/market_benchmark.csv` when evaluated rows match pick-time snapshots.
 
 ## 3. System Architecture
 
@@ -109,7 +109,7 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
 | Volatility classifier | Random forest labeling high-log-loss games by default; margin-error labels are analysis-only | `analysis/volatility_classifier.py` |
 | Calibration shrinker | Shrinks volatile games toward 0.5 and fits isotonic curves over a rolling window | `src/evaluation/calibrate_winprob.py`, `models/isotonic_calibrator.pkl` |
 | Player props | Split offense/defense/novelty models with historical line joins, over-probability calibration, edge backtests, and quality reports | `src/player_props/*.py` |
-| Market policy | Model-vs-Vegas benchmarking, CLV diagnostics, market-aware blending, spread calibration, and policy gates | `analysis/market_roi.py`, `analysis/market_clv.py`, `analysis/market_blend.py` |
+| Market policy | Model-vs-Vegas benchmarking, disagreement segment diagnostics, CLV diagnostics, market-aware blending, spread calibration, and policy gates | `analysis/market_roi.py`, `analysis/market_clv.py`, `analysis/market_blend.py` |
 
 ## 6. Running the Pipeline
 
@@ -172,7 +172,7 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
 | `predictions/history/*.csv` | Historical win-probability predictions by season/week. |
 | `predictions/evaluation/*.csv` | Team model evaluation artifacts, calibration bins, weekly metrics, team errors, feature-quality reports, and feature-family ablations. |
 | `predictions/evaluation/player_props/*.csv` | Player-prop model metrics, historical line joins, over-probability diagnostics, edge backtests, weekly quality reports, line coverage, and roster-line audits. |
-| `analysis/market_*.csv`, `analysis/model_metrics_week_NN.csv` | Market ROI, model-vs-Vegas benchmark, CLV, blend, spread calibration, policy, and website-ready metrics exports; generated locally and ignored by Git. |
+| `analysis/market_*.csv`, `analysis/model_metrics_week_NN.csv` | Market ROI, model-vs-Vegas benchmark, moneyline disagreement segments, CLV, blend, spread calibration, policy, and website-ready metrics exports; generated locally and ignored by Git. |
 | `analysis/run_comparisons/*` | Markdown report and metric trend PNGs for logged runs; generated locally and ignored by Git. |
 | `analysis/shap/*` | SHAP numpy dumps and summary plots from GPU explainability; generated locally and ignored by Git. |
 | C:\Code\mtb\data\prediction-csvs\current\*.csv | Published CSV copies for the local MattyTheBookie site when `--publish-mtb` is used. |
@@ -221,7 +221,7 @@ See [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) for comprehensiv
 After every successful evaluation, the pipeline triggers:
 
 1. `python -m analysis.market_clv` writes weekly pick-time-vs-close/latest movement diagnostics.
-2. `python -m analysis.market_roi` writes moneyline/spread ROI, model-vs-Vegas benchmarks, CLV-enriched benchmark rows, spread calibration, and market policy artifacts.
+2. `python -m analysis.market_roi` writes moneyline/spread ROI, model-vs-Vegas benchmarks, disagreement-only moneyline segment diagnostics, CLV-enriched benchmark rows, spread calibration, and market policy artifacts.
 3. `python -m analysis.market_blend` evaluates market-aware model/market probability blends.
 4. `python -m analysis.model_metrics_export` writes `analysis/model_metrics_week_NN.csv` for MattyTheBookie About-page consumption.
 5. `python -m src.analysis.compare_runs` regenerates `analysis/run_comparisons/run_report.md` plus AUC/Brier/LogLoss trend charts.

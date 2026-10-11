@@ -305,6 +305,105 @@ def test_moneyline_disagreement_edge_bins_are_bounded(monkeypatch):
     assert empty_row["n_bets"] == 0
 
 
+def test_moneyline_disagreement_segments_slice_side_odds_and_clv():
+    benchmark = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "favorite_agreement": False,
+                "model_home_pick": True,
+                "home_tie": False,
+                "model_side_actual_win": 1,
+                "model_side_profit": 1.2,
+                "model_pick_prob": 0.60,
+                "vegas_model_side_prob": 0.45,
+                "prob_edge_model_side": 0.15,
+                "model_side_moneyline": 120,
+                "model_side_decimal": 2.2,
+                "clv_status": "movement_available",
+                "moneyline_clv_prob_delta": 0.01,
+                "moneyline_positive_clv": True,
+            },
+            {
+                "season": 2025,
+                "favorite_agreement": False,
+                "model_home_pick": False,
+                "home_tie": False,
+                "model_side_actual_win": 0,
+                "model_side_profit": -1.0,
+                "model_pick_prob": 0.57,
+                "vegas_model_side_prob": 0.48,
+                "prob_edge_model_side": 0.09,
+                "model_side_moneyline": 150,
+                "model_side_decimal": 2.5,
+                "clv_status": "movement_available",
+                "moneyline_clv_prob_delta": -0.02,
+                "moneyline_positive_clv": False,
+            },
+            {
+                "season": 2025,
+                "favorite_agreement": False,
+                "model_home_pick": True,
+                "home_tie": True,
+                "model_side_actual_win": 0,
+                "model_side_profit": 0.0,
+                "model_pick_prob": 0.54,
+                "vegas_model_side_prob": 0.52,
+                "prob_edge_model_side": 0.02,
+                "model_side_moneyline": -125,
+                "model_side_decimal": 1.8,
+                "clv_status": "unavailable_missing_clv_detail",
+                "moneyline_clv_prob_delta": pd.NA,
+                "moneyline_positive_clv": pd.NA,
+            },
+            {
+                "season": 2025,
+                "favorite_agreement": True,
+                "model_home_pick": True,
+                "home_tie": False,
+                "model_side_actual_win": 1,
+                "model_side_profit": 0.8,
+                "model_pick_prob": 0.70,
+                "vegas_model_side_prob": 0.65,
+                "prob_edge_model_side": 0.05,
+                "model_side_moneyline": -130,
+                "model_side_decimal": 1.77,
+                "clv_status": "movement_available",
+                "moneyline_clv_prob_delta": 0.03,
+                "moneyline_positive_clv": True,
+            },
+        ]
+    )
+
+    segments = market_roi.summarize_disagreement_moneyline_segments(benchmark)
+
+    overall = segments[
+        segments["segment_family"].eq("all") & segments["segment"].eq("all")
+    ].iloc[0]
+    home_side = segments[
+        segments["segment_family"].eq("model_pick_side") & segments["segment"].eq("home")
+    ].iloc[0]
+    underdog = segments[
+        segments["segment_family"].eq("model_side_moneyline_status")
+        & segments["segment"].eq("underdog")
+    ].iloc[0]
+    positive_clv = segments[
+        segments["segment_family"].eq("moneyline_clv_result")
+        & segments["segment"].eq("positive_clv")
+    ].iloc[0]
+
+    assert overall["n_bets"] == 3
+    assert overall["wins"] == 1
+    assert overall["losses"] == 1
+    assert overall["pushes"] == 1
+    assert overall["roi"] == pytest.approx((1.2 - 1.0) / 3.0)
+    assert overall["positive_moneyline_clv_rate"] == pytest.approx(0.5)
+    assert home_side["n_bets"] == 2
+    assert underdog["n_bets"] == 2
+    assert positive_clv["n_bets"] == 1
+    assert positive_clv["roi"] == pytest.approx(1.2)
+
+
 def test_market_probability_edge_calibration_compares_model_to_vegas_same_side():
     benchmark = pd.DataFrame(
         [

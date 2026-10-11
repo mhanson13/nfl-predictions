@@ -80,6 +80,10 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
         Path("analysis/market_disagreement_edge_bins.csv"),
     ),
     CsvArtifact(
+        Path("analysis/market_disagreement_segments.csv"),
+        Path("analysis/market_disagreement_segments.csv"),
+    ),
+    CsvArtifact(
         Path("analysis/market_probability_edge_calibration.csv"),
         Path("analysis/market_probability_edge_calibration.csv"),
     ),
