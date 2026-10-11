@@ -1535,6 +1535,14 @@ def build_sequential_jobs(
         ]
         jobs.append(Job("market_blend", blend_cmd))
 
+        confidence_recalibration_cmd = [
+            "python",
+            "-m",
+            "analysis.market_confidence_recalibration",
+            *debug,
+        ]
+        jobs.append(Job("market_confidence_recalibration", confidence_recalibration_cmd))
+
         try:
             metrics_week = int(prediction_week)
         except (TypeError, ValueError):

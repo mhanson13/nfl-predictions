@@ -53,6 +53,18 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
         source_root / "analysis" / "market_model_confidence_recalibration.csv",
         "agreement_segment,confidence_bin,calibration_status\ndisagree,55-60%,overconfident\n",
     )
+    _write_csv(
+        source_root / "analysis" / "market_confidence_recalibration_detail.csv",
+        "game_id,strategy,strategy_home_win_prob\nabc,current_model,0.55\n",
+    )
+    _write_csv(
+        source_root / "analysis" / "market_confidence_recalibration_backtest.csv",
+        "strategy,brier\ncurrent_model,0.22\n",
+    )
+    _write_csv(
+        source_root / "analysis" / "market_confidence_recalibration_decision.csv",
+        "candidate_strategy,decision\nconfidence_shrink,no_live_change\n",
+    )
     _write_csv(source_root / "analysis" / "market_blend_backtest.csv", "game_id,blend_home_win_prob\nabc,0.55\n")
     _write_csv(source_root / "analysis" / "market_blend_summary.csv", "scope,segment,blend_brier\noverall,all,0.21\n")
     _write_csv(source_root / "analysis" / "market_blend_policy.csv", "signal,recommended\nmarket_blend_probability,false\n")
@@ -113,6 +125,9 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "analysis" / "market_probability_edge_calibration.csv").exists()
     assert (destination_root / "analysis" / "market_model_confidence_calibration.csv").exists()
     assert (destination_root / "analysis" / "market_model_confidence_recalibration.csv").exists()
+    assert (destination_root / "analysis" / "market_confidence_recalibration_detail.csv").exists()
+    assert (destination_root / "analysis" / "market_confidence_recalibration_backtest.csv").exists()
+    assert (destination_root / "analysis" / "market_confidence_recalibration_decision.csv").exists()
     assert (destination_root / "analysis" / "market_blend_backtest.csv").exists()
     assert (destination_root / "analysis" / "market_blend_summary.csv").exists()
     assert (destination_root / "analysis" / "market_blend_policy.csv").exists()
@@ -129,7 +144,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 38
+    assert len(published) == 41
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):

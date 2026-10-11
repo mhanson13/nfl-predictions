@@ -95,6 +95,18 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
         Path("analysis/market_model_confidence_recalibration.csv"),
         Path("analysis/market_model_confidence_recalibration.csv"),
     ),
+    CsvArtifact(
+        Path("analysis/market_confidence_recalibration_detail.csv"),
+        Path("analysis/market_confidence_recalibration_detail.csv"),
+    ),
+    CsvArtifact(
+        Path("analysis/market_confidence_recalibration_backtest.csv"),
+        Path("analysis/market_confidence_recalibration_backtest.csv"),
+    ),
+    CsvArtifact(
+        Path("analysis/market_confidence_recalibration_decision.csv"),
+        Path("analysis/market_confidence_recalibration_decision.csv"),
+    ),
     CsvArtifact(Path("analysis/market_blend_backtest.csv"), Path("analysis/market_blend_backtest.csv")),
     CsvArtifact(Path("analysis/market_blend_summary.csv"), Path("analysis/market_blend_summary.csv")),
     CsvArtifact(Path("analysis/market_blend_policy.csv"), Path("analysis/market_blend_policy.csv")),
