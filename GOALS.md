@@ -26,6 +26,7 @@ Source artifacts:
 - `analysis/market_disagreement_segments.csv`
 - `analysis/market_probability_edge_calibration.csv`
 - `analysis/market_model_confidence_calibration.csv`
+- `analysis/market_model_confidence_recalibration.csv`
 - `analysis/market_blend_backtest.csv`
 - `analysis/market_blend_summary.csv`
 - `analysis/market_blend_policy.csv`
@@ -209,6 +210,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `analysis/market_disagreement_segments.csv`
   - `analysis/market_probability_edge_calibration.csv`
   - `analysis/market_model_confidence_calibration.csv`
+  - `analysis/market_model_confidence_recalibration.csv`
   - `analysis/market_blend_backtest.csv`
   - `analysis/market_blend_summary.csv`
   - `analysis/market_blend_policy.csv`
@@ -232,7 +234,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
 - Current-season nflverse PBP can still lag or be unavailable. BallDontLie team-form features now cover current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail still depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
 - BallDontLie team-form features are useful as a monitored fallback source, but latest Week 4/Week 5 ablation runs showed win-probability regression and only marginal spread benefit. Keep them out of production model features until repeatable same-split lift appears.
-- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration by agreement/disagreement segment, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, a segment-aware moneyline disagreement policy gate, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
+- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration and empirical recalibration by agreement/disagreement segment, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, segment-aware and confidence-aware moneyline disagreement policy gates, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
 - Corrected spread ROI no longer shows broad profitability. Current Week 5 policy artifacts mark broad spread threshold strategies as `no_bet`; only the 2-to-3 point spread-edge bucket remains a low-confidence lean/research signal.
 
 ## Operating Roadmap
@@ -279,7 +281,8 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [ ] Add a separate spread/margin-volatility model instead of mixing margin-error labels into probability volatility.
 - [ ] Improve probability calibration, especially high-confidence picks where LogLoss/Brier penalties are largest.
 - [x] Build calibration diagnostics by model confidence tier and identify overconfident ranges that need shrinkage or recalibration: `analysis/market_model_confidence_calibration.csv`.
-- [ ] Use confidence-tier calibration diagnostics to define a tested shrinkage/recalibration rule for overconfident ranges.
+- [x] Use confidence-tier calibration diagnostics to define a tested shrinkage/recalibration rule for overconfident ranges: `analysis/market_model_confidence_recalibration.csv`, `model_confidence_gate_*` fields in `analysis/market_edge_policy.csv`, and user-facing moneyline policy statuses.
+- [ ] Use the confidence recalibration gate to decide whether the next model work should adjust the base win-probability calibrator, the market policy only, or both.
 
 ### 4. Market Benchmarking And Betting Edge
 
@@ -298,6 +301,7 @@ Current read from the Week 5 evaluation set:
 - A first walk-forward market-aware blend backtest is now published. Current blend Brier improves raw model Brier (`0.214` vs `0.219`) but still trails no-vig Vegas (`0.212`), and blend selected-side ROI is -3.6%, so both blend probability and blend moneyline policies remain `no_bet`.
 - Bounded moneyline disagreement bins are now published. The early Week 5 read shows the strongest bounded samples in the 2-5% and 10-15% bins, while the 15%+ bin is negative; do not scale confidence purely by larger probability edge until season-stability and CLV checks support it.
 - Weekly CLV detail and summary artifacts are now published from local pick-time and close/latest odds snapshots, and `analysis/market_edge_policy.csv` consumes the threshold-specific CLV summary before allowing a moneyline policy to become `strong`. Current Week 5 favorite-disagreement rows have 6 tracked games, +0.8 percentage-point average no-vig implied-probability CLV, and a 66.7% positive CLV rate, so the policy remains `review` until it reaches at least 10 tracked games.
+- Model-confidence empirical recalibration is now published for moneyline disagreement picks. High-confidence disagreement bins with enough sample and model overestimate above the policy threshold hard-block moneyline promotion and surface `blocked_model_confidence_overconfidence` in weekly prediction policy fields.
 - Broad spread threshold strategies are now policy-blocked as `no_bet`. Away edge >2 points is -1.5% ROI despite 61.0% average modeled cover probability, which confirms spread cover-probability overconfidence.
 - Corrected spread edge-bin ROI is only positive in the 2-to-3 point bucket: 368 bets, +1.2% ROI, and 52.5% hit rate. That bucket is now review-only until the empirical spread cover calibration gate passes; spread edges of 5+ points are negative and should not be promoted.
 - Spread key-number diagnostics are now published for 3, 6, 7, and 10. In the current 2-to-3 point spread-edge bucket, key-window ROI is -5.4% around 3, +9.0% around 6, +10.9% around 7, and roughly flat around 10. Treat this as a monitoring slice, not a promotion rule, until season stability and CLV confirm it.
@@ -323,6 +327,7 @@ Roadmap:
 - [x] Add season-stability gates for the moneyline disagreement policy before raising confidence beyond the current strong research signal.
 - [x] Add current-week publishing guardrails so MattyTheBookie can distinguish strong moneyline policy picks, review-only high moneyline edges, lean spread research picks, blocked spread signals, and no-bet rows.
 - [x] Compare model probability directly to no-vig Vegas probability by probability bin and publish the calibration/edge table.
+- [x] Add a confidence-aware moneyline disagreement policy gate that uses empirical recalibration bins before promoting disagreement picks.
 - [ ] Improve model performance in favorite-disagreement games versus Vegas before treating disagreements as actionable.
 - [x] Build and backtest a market-aware blend or meta-model using model probability, no-vig moneyline probability, market spread, and current model features.
 - [x] Track whether any market-aware blend adds genuine edge versus simply mirroring Vegas favorite picks.

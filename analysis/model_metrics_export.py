@@ -802,6 +802,65 @@ def build_model_metrics_rows(
                         description=description,
                         source_artifact=market_edge_policy_path,
                     )
+            confidence_status = _value(policy, "model_confidence_gate_status")
+            if confidence_status is not None and not pd.isna(confidence_status):
+                confidence_failed_bins = _value(policy, "model_confidence_gate_failed_bins")
+                confidence_worst_error = _value(policy, "model_confidence_gate_worst_error")
+                confidence_worst_bin = _value(policy, "model_confidence_gate_worst_bin")
+                for confidence_order, metric_suffix, confidence_label, confidence_value, display_value, unit, description in [
+                    (
+                        11,
+                        "confidence_calibration_status",
+                        "Moneyline disagreement confidence calibration",
+                        confidence_status,
+                        str(confidence_status),
+                        "status",
+                        "Empirical model-confidence calibration gate for selected moneyline disagreement policy.",
+                    ),
+                    (
+                        12,
+                        "confidence_failed_bins",
+                        "Moneyline disagreement overconfident bins",
+                        confidence_failed_bins,
+                        str(confidence_failed_bins),
+                        "bins",
+                        "Model confidence bins blocked by empirical overconfidence in disagreement picks.",
+                    ),
+                    (
+                        13,
+                        "confidence_worst_bin",
+                        "Moneyline disagreement worst confidence bin",
+                        confidence_worst_bin,
+                        str(confidence_worst_bin),
+                        "bin",
+                        "Worst high-confidence disagreement bin by model overestimate.",
+                    ),
+                    (
+                        14,
+                        "confidence_worst_error",
+                        "Moneyline disagreement worst overestimate",
+                        confidence_worst_error,
+                        _fmt_percent(confidence_worst_error),
+                        "percent",
+                        "Average model probability minus actual hit rate in the worst high-confidence disagreement bin.",
+                    ),
+                ]:
+                    _add_metric(
+                        rows,
+                        season=season,
+                        week=week,
+                        generated_at=generated_at,
+                        section="market_policy",
+                        sort_order=order + confidence_order,
+                        metric_key=f"{metric_key}_{metric_suffix}",
+                        label=confidence_label,
+                        value=confidence_value,
+                        display_value=display_value,
+                        unit=unit,
+                        sample_size=policy_n,
+                        description=description,
+                        source_artifact=market_edge_policy_path,
+                    )
         if signal == "spread_edge_bin":
             calibration_status = _value(policy, "spread_cover_calibration_status")
             if calibration_status is not None and not pd.isna(calibration_status):

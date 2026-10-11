@@ -532,6 +532,98 @@ def test_model_confidence_calibration_slices_agreement_and_logloss():
     assert disagree_70["model_side_roi"] == pytest.approx(1.2)
 
 
+def test_model_confidence_recalibration_flags_overconfident_disagreement_bins():
+    calibration = pd.DataFrame(
+        [
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "disagree",
+                "confidence_bin": "55-60%",
+                "min_confidence": 0.55,
+                "max_confidence": 0.60,
+                "n_games": 80,
+                "n_graded": 80,
+                "actual_model_side_win_rate": 0.46,
+                "avg_model_pick_prob": 0.57,
+                "calibration_error": 0.11,
+            },
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "disagree",
+                "confidence_bin": "60-65%",
+                "min_confidence": 0.60,
+                "max_confidence": 0.65,
+                "n_games": 70,
+                "n_graded": 70,
+                "actual_model_side_win_rate": 0.61,
+                "avg_model_pick_prob": 0.63,
+                "calibration_error": 0.02,
+            },
+        ]
+    )
+
+    recalibration = market_roi.summarize_model_confidence_recalibration(
+        calibration,
+        min_graded=25,
+        max_overestimate=0.07,
+        confidence_min_prob=0.55,
+    )
+    overconfident = recalibration[recalibration["confidence_bin"].eq("55-60%")].iloc[0]
+    calibrated = recalibration[recalibration["confidence_bin"].eq("60-65%")].iloc[0]
+
+    assert overconfident["recalibrated_model_pick_prob"] == pytest.approx(0.46)
+    assert overconfident["raw_minus_recalibrated_prob"] == pytest.approx(0.11)
+    assert bool(overconfident["recommended_for_confidence"]) is False
+    assert overconfident["calibration_status"] == "overconfident"
+    assert bool(calibrated["recommended_for_confidence"]) is True
+    assert calibrated["calibration_status"] == "calibrated_for_confidence"
+
+
+def test_model_confidence_calibration_gate_blocks_overconfident_disagreement_bins():
+    recalibration = pd.DataFrame(
+        [
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "disagree",
+                "confidence_bin": "55-60%",
+                "min_confidence": 0.55,
+                "n_graded": 80,
+                "calibration_error": 0.11,
+                "recalibrated_model_pick_prob": 0.46,
+                "raw_minus_recalibrated_prob": 0.11,
+            },
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "disagree",
+                "confidence_bin": "60-65%",
+                "min_confidence": 0.60,
+                "n_graded": 70,
+                "calibration_error": 0.03,
+                "recalibrated_model_pick_prob": 0.60,
+                "raw_minus_recalibrated_prob": 0.03,
+            },
+        ]
+    )
+
+    gate = market_roi.summarize_model_confidence_calibration_gate(
+        recalibration,
+        min_graded=25,
+        max_overestimate=0.07,
+        confidence_min_prob=0.55,
+    )
+
+    assert bool(gate["pass"]) is False
+    assert gate["status"] == "blocked_model_confidence_overconfidence"
+    assert gate["evaluated_bins"] == 2
+    assert gate["failed_bins"] == "55-60%"
+    assert gate["worst_bin"] == "55-60%"
+    assert gate["worst_error"] == pytest.approx(0.11)
+
+
 def test_moneyline_disagreement_stability_passes_with_multiseason_profitability():
     benchmark = _moneyline_stability_benchmark(
         {
@@ -979,6 +1071,61 @@ def test_market_edge_policy_blocks_moneyline_when_segment_gate_fails():
     assert moneyline["segment_gate_failed_segments"] == "5-8%"
     assert moneyline["segment_gate_worst_segment"] == "5-8%"
     assert moneyline["segment_gate_worst_roi"] == pytest.approx(-0.04)
+
+
+def test_market_edge_policy_blocks_moneyline_when_confidence_gate_fails():
+    disagreement_roi = pd.DataFrame(
+        [
+            {
+                "threshold": 0.02,
+                "n_bets": 160,
+                "wins": 86,
+                "losses": 74,
+                "pushes": 0,
+                "hit_rate": 86 / 160,
+                "avg_prob_edge_model_side": 0.06,
+                "roi": 0.04,
+            }
+        ]
+    )
+    recalibration = pd.DataFrame(
+        [
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "disagree",
+                "confidence_bin": "55-60%",
+                "min_confidence": 0.55,
+                "n_graded": 80,
+                "calibration_error": 0.11,
+                "recalibrated_model_pick_prob": 0.46,
+                "raw_minus_recalibrated_prob": 0.11,
+            }
+        ]
+    )
+
+    policy = market_roi.build_market_edge_policy(
+        disagreement_roi,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        model_confidence_recalibration=recalibration,
+        min_bets=100,
+        min_roi=0.0,
+        min_probability_edge=0.02,
+        min_spread_edge=2.0,
+        model_confidence_min_graded=25,
+        model_confidence_max_overestimate=0.07,
+        model_confidence_min_prob=0.55,
+        generated_at="2026-09-27T00:00:00+00:00",
+    )
+    moneyline = policy[policy["signal"].eq("moneyline_disagreement")].iloc[0]
+
+    assert bool(moneyline["recommended"]) is False
+    assert moneyline["recommendation_tier"] == "no_bet"
+    assert bool(moneyline["model_confidence_gate_pass"]) is False
+    assert moneyline["model_confidence_gate_status"] == "blocked_model_confidence_overconfidence"
+    assert moneyline["model_confidence_gate_failed_bins"] == "55-60%"
+    assert moneyline["model_confidence_gate_worst_error"] == pytest.approx(0.11)
 
 
 def test_market_edge_policy_limits_spread_edge_bin_to_two_to_three_points():

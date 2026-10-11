@@ -992,6 +992,22 @@ def _probability_edge_bin(value: Any) -> str:
     return "15%+"
 
 
+def _model_confidence_bin(value: Any) -> str:
+    confidence = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(confidence):
+        return "unavailable"
+    confidence = float(confidence)
+    if confidence < 0.55:
+        return "50-55%" if confidence >= 0.50 else "unavailable"
+    if confidence < 0.60:
+        return "55-60%"
+    if confidence < 0.65:
+        return "60-65%"
+    if confidence < 0.70:
+        return "65-70%"
+    return "70%+"
+
+
 def _spread_edge_bin(value: Any) -> str:
     edge = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(edge):
@@ -1047,6 +1063,8 @@ def _attach_market_policy_fields(
         "market_model_pick",
         "market_vegas_pick",
         "market_moneyline_favorite_disagreement",
+        "market_moneyline_model_pick_prob",
+        "market_moneyline_model_confidence_bin",
         "market_moneyline_prob_edge",
         "market_moneyline_edge_bin",
         "market_moneyline_policy_tier",
@@ -1091,6 +1109,10 @@ def _attach_market_policy_fields(
         preds["market_home_implied_prob_novig"],
         preds["market_away_implied_prob_novig"],
     )
+    preds["market_moneyline_model_pick_prob"] = model_pick_prob
+    preds["market_moneyline_model_confidence_bin"] = preds["market_moneyline_model_pick_prob"].apply(
+        _model_confidence_bin
+    )
     preds["market_moneyline_prob_edge"] = model_pick_prob - vegas_model_side_prob
     preds["market_moneyline_edge_bin"] = preds["market_moneyline_prob_edge"].apply(_probability_edge_bin)
 
@@ -1108,6 +1130,12 @@ def _attach_market_policy_fields(
     ml_segment_blocks_policy = bool(
         ml_segment_status
         and ml_segment_status.lower() not in {"nan", "unavailable", "segment_gate_pass"}
+    )
+    ml_confidence_status = str(ml_policy.get("model_confidence_gate_status", "") or "").strip()
+    ml_confidence_failed = _split_policy_segments(ml_policy.get("model_confidence_gate_failed_bins"))
+    ml_confidence_blocks_policy = bool(
+        ml_confidence_status
+        and ml_confidence_status.lower() not in {"nan", "unavailable", "model_confidence_calibration_pass"}
     )
     ml_candidate = (
         ml_policy_enabled
@@ -1133,10 +1161,21 @@ def _attach_market_policy_fields(
             else pd.Series(True, index=preds.index)
         )
     )
+    ml_confidence_policy_block = (
+        (not ml_policy_enabled)
+        & ml_confidence_blocks_policy
+        & preds["market_moneyline_favorite_disagreement"].astype(bool)
+        & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
+        & (
+            preds["market_moneyline_model_confidence_bin"].isin(ml_confidence_failed)
+            if ml_confidence_failed
+            else pd.Series(True, index=preds.index)
+        )
+    )
     preds["market_moneyline_policy_recommendation_flag"] = ml_recommended
     preds["market_moneyline_policy_tier"] = np.select(
-        [ml_recommended, high_edge_review, ml_clv_policy_block, ml_segment_policy_block],
-        [ml_tier, "review", ml_tier if ml_tier in {"review", "no_bet"} else "review", ml_tier],
+        [ml_recommended, high_edge_review, ml_confidence_policy_block, ml_clv_policy_block, ml_segment_policy_block],
+        [ml_tier, "review", ml_tier, ml_tier if ml_tier in {"review", "no_bet"} else "review", ml_tier],
         default="no_bet",
     )
     preds["market_moneyline_policy_status"] = np.select(
@@ -1144,6 +1183,7 @@ def _attach_market_policy_fields(
             ~moneyline_available,
             high_edge_review,
             ml_recommended,
+            ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
             preds["market_moneyline_favorite_disagreement"].astype(bool),
@@ -1152,6 +1192,7 @@ def _attach_market_policy_fields(
             "unavailable_moneyline",
             "moneyline_high_edge_review",
             "strong_moneyline_disagreement",
+            ml_confidence_status,
             ml_clv_status,
             ml_segment_status,
             "disagreement_below_policy_edge",
@@ -1214,6 +1255,7 @@ def _attach_market_policy_fields(
     preds["market_policy_primary_signal"] = np.select(
         [
             ml_recommended,
+            ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
             spread_lean,
@@ -1222,6 +1264,7 @@ def _attach_market_policy_fields(
         ],
         [
             "moneyline_disagreement",
+            "moneyline_review",
             "moneyline_review",
             "moneyline_review",
             "spread_edge_bin",
@@ -1233,6 +1276,7 @@ def _attach_market_policy_fields(
     preds["market_policy_tier"] = np.select(
         [
             ml_recommended,
+            ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
             spread_lean,
@@ -1241,6 +1285,7 @@ def _attach_market_policy_fields(
             spread_blocked_high | spread_blocked_mid,
         ],
         [
+            ml_tier,
             ml_tier,
             ml_tier if ml_tier in {"review", "no_bet"} else "review",
             ml_tier,
@@ -1254,6 +1299,7 @@ def _attach_market_policy_fields(
     preds["market_policy_status"] = np.select(
         [
             ml_recommended,
+            ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
             spread_lean,
@@ -1261,6 +1307,7 @@ def _attach_market_policy_fields(
             spread_calibration_block | spread_blocked_high | spread_blocked_mid,
         ],
         [
+            preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],

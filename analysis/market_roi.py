@@ -106,6 +106,9 @@ MARKET_CLV_MIN_AVG_PROB_DELTA = 0.0
 MONEYLINE_DISAGREEMENT_MAX_AUTO_EDGE = 0.10
 MONEYLINE_SEGMENT_GATE_MIN_BETS = 25
 MONEYLINE_SEGMENT_GATE_MIN_ROI = 0.0
+MODEL_CONFIDENCE_CALIBRATION_MIN_GRADED = 25
+MODEL_CONFIDENCE_CALIBRATION_MAX_OVERESTIMATE = 0.07
+MODEL_CONFIDENCE_CALIBRATION_CONFIDENCE_MIN_PROB = 0.55
 
 MARKET_BENCHMARK_CLV_COLUMNS = [
     "clv_detail_available",
@@ -176,6 +179,16 @@ MODEL_CONFIDENCE_CALIBRATION_COLUMNS = [
     "avg_model_side_moneyline",
 ]
 
+MODEL_CONFIDENCE_RECALIBRATION_COLUMNS = MODEL_CONFIDENCE_CALIBRATION_COLUMNS + [
+    "recalibrated_model_pick_prob",
+    "raw_minus_recalibrated_prob",
+    "recommended_for_confidence",
+    "calibration_status",
+    "policy_min_graded",
+    "policy_max_overestimate",
+    "policy_confidence_min_prob",
+]
+
 MARKET_EDGE_POLICY_COLUMNS = [
     "signal",
     "recommended",
@@ -226,6 +239,18 @@ MARKET_EDGE_POLICY_COLUMNS = [
     "segment_gate_min_bets",
     "segment_gate_min_roi",
     "segment_gate_max_probability_edge",
+    "model_confidence_gate_pass",
+    "model_confidence_gate_status",
+    "model_confidence_gate_agreement_segment",
+    "model_confidence_gate_evaluated_bins",
+    "model_confidence_gate_failed_bins",
+    "model_confidence_gate_worst_bin",
+    "model_confidence_gate_worst_error",
+    "model_confidence_gate_worst_recalibrated_prob",
+    "model_confidence_gate_worst_raw_minus_recalibrated_prob",
+    "model_confidence_gate_min_graded",
+    "model_confidence_gate_max_overestimate",
+    "model_confidence_gate_confidence_min_prob",
     "spread_cover_calibration_pass",
     "spread_cover_calibration_status",
     "spread_cover_calibration_evaluated_bins",
@@ -1649,6 +1674,163 @@ def summarize_model_confidence_calibration(
     return pd.DataFrame.from_records(records, columns=MODEL_CONFIDENCE_CALIBRATION_COLUMNS)
 
 
+def summarize_model_confidence_recalibration(
+    model_confidence_calibration: pd.DataFrame,
+    *,
+    min_graded: int = MODEL_CONFIDENCE_CALIBRATION_MIN_GRADED,
+    max_overestimate: float = MODEL_CONFIDENCE_CALIBRATION_MAX_OVERESTIMATE,
+    confidence_min_prob: float = MODEL_CONFIDENCE_CALIBRATION_CONFIDENCE_MIN_PROB,
+) -> pd.DataFrame:
+    """Convert model confidence calibration bins into empirical shrinkage guidance."""
+    if model_confidence_calibration.empty:
+        return pd.DataFrame(columns=MODEL_CONFIDENCE_RECALIBRATION_COLUMNS)
+
+    frame = model_confidence_calibration.copy()
+    for col in [
+        "min_confidence",
+        "max_confidence",
+        "n_graded",
+        "actual_model_side_win_rate",
+        "avg_model_pick_prob",
+        "calibration_error",
+    ]:
+        if col not in frame.columns:
+            frame[col] = np.nan
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+
+    frame["recalibrated_model_pick_prob"] = frame["actual_model_side_win_rate"]
+    frame["raw_minus_recalibrated_prob"] = frame["avg_model_pick_prob"] - frame["recalibrated_model_pick_prob"]
+
+    enough_sample = frame["n_graded"].ge(int(min_graded))
+    confidence_bin = frame["min_confidence"].ge(float(confidence_min_prob))
+    overconfident = frame["calibration_error"].gt(float(max_overestimate))
+    underconfident = frame["calibration_error"].lt(-float(max_overestimate))
+    calibrated_or_conservative = enough_sample & confidence_bin & ~overconfident
+
+    frame["recommended_for_confidence"] = calibrated_or_conservative
+    frame["calibration_status"] = np.select(
+        [
+            ~confidence_bin,
+            ~enough_sample,
+            overconfident,
+            underconfident,
+            calibrated_or_conservative,
+        ],
+        [
+            "diagnostic_only",
+            "insufficient_sample",
+            "overconfident",
+            "underconfident_conservative",
+            "calibrated_for_confidence",
+        ],
+        default="unavailable",
+    )
+    frame["policy_min_graded"] = int(min_graded)
+    frame["policy_max_overestimate"] = float(max_overestimate)
+    frame["policy_confidence_min_prob"] = float(confidence_min_prob)
+
+    for col in MODEL_CONFIDENCE_RECALIBRATION_COLUMNS:
+        if col not in frame.columns:
+            frame[col] = np.nan
+    return frame[MODEL_CONFIDENCE_RECALIBRATION_COLUMNS]
+
+
+def summarize_model_confidence_calibration_gate(
+    model_confidence_recalibration: pd.DataFrame | None,
+    *,
+    agreement_segment: str = "disagree",
+    min_graded: int = MODEL_CONFIDENCE_CALIBRATION_MIN_GRADED,
+    max_overestimate: float = MODEL_CONFIDENCE_CALIBRATION_MAX_OVERESTIMATE,
+    confidence_min_prob: float = MODEL_CONFIDENCE_CALIBRATION_CONFIDENCE_MIN_PROB,
+) -> dict[str, object]:
+    """Gate moneyline policy promotion when disagreement confidence bins are overconfident."""
+    result: dict[str, object] = {
+        "pass": False,
+        "status": "unavailable",
+        "agreement_segment": agreement_segment,
+        "evaluated_bins": 0,
+        "failed_bins": "",
+        "worst_bin": np.nan,
+        "worst_error": np.nan,
+        "worst_recalibrated_prob": np.nan,
+        "worst_raw_minus_recalibrated_prob": np.nan,
+        "min_graded": int(min_graded),
+        "max_overestimate": float(max_overestimate),
+        "confidence_min_prob": float(confidence_min_prob),
+    }
+    if model_confidence_recalibration is None or model_confidence_recalibration.empty:
+        return result
+
+    required = {"scope", "season", "agreement_segment", "confidence_bin", "min_confidence", "n_graded", "calibration_error"}
+    if not required.issubset(model_confidence_recalibration.columns):
+        result["status"] = "missing_required_confidence_columns"
+        return result
+
+    frame = model_confidence_recalibration.copy()
+    frame = frame[
+        frame["scope"].astype(str).eq("overall")
+        & frame["season"].astype(str).eq("all")
+        & frame["agreement_segment"].astype(str).eq(str(agreement_segment))
+    ].copy()
+    if frame.empty:
+        result["status"] = "no_matching_confidence_bins"
+        return result
+
+    frame["min_confidence"] = pd.to_numeric(frame["min_confidence"], errors="coerce")
+    frame["n_graded"] = pd.to_numeric(frame["n_graded"], errors="coerce")
+    frame["calibration_error"] = pd.to_numeric(frame["calibration_error"], errors="coerce")
+    if "recalibrated_model_pick_prob" in frame.columns:
+        frame["recalibrated_model_pick_prob"] = pd.to_numeric(
+            frame["recalibrated_model_pick_prob"], errors="coerce"
+        )
+    else:
+        frame["recalibrated_model_pick_prob"] = np.nan
+    if "raw_minus_recalibrated_prob" in frame.columns:
+        frame["raw_minus_recalibrated_prob"] = pd.to_numeric(
+            frame["raw_minus_recalibrated_prob"], errors="coerce"
+        )
+    else:
+        frame["raw_minus_recalibrated_prob"] = np.nan
+
+    sampled = frame[
+        frame["min_confidence"].ge(float(confidence_min_prob))
+        & frame["n_graded"].ge(int(min_graded))
+        & frame["calibration_error"].notna()
+    ].copy()
+    if sampled.empty:
+        result["status"] = "insufficient_high_confidence_sample"
+        return result
+
+    result["evaluated_bins"] = int(len(sampled))
+    overconfident = sampled[sampled["calibration_error"].gt(float(max_overestimate))].copy()
+    if overconfident.empty:
+        result["pass"] = True
+        result["status"] = "model_confidence_calibration_pass"
+        return result
+
+    overconfident = overconfident.sort_values(["calibration_error", "n_graded"], ascending=[False, False], kind="stable")
+    worst = overconfident.iloc[0]
+    result.update(
+        {
+            "status": "blocked_model_confidence_overconfidence",
+            "failed_bins": ";".join(overconfident["confidence_bin"].astype(str).tolist()),
+            "worst_bin": str(worst["confidence_bin"]),
+            "worst_error": float(worst["calibration_error"]),
+            "worst_recalibrated_prob": (
+                float(worst["recalibrated_model_pick_prob"])
+                if pd.notna(worst["recalibrated_model_pick_prob"])
+                else np.nan
+            ),
+            "worst_raw_minus_recalibrated_prob": (
+                float(worst["raw_minus_recalibrated_prob"])
+                if pd.notna(worst["raw_minus_recalibrated_prob"])
+                else np.nan
+            ),
+        }
+    )
+    return result
+
+
 def summarize_market_utility_segments(benchmark: pd.DataFrame) -> pd.DataFrame:
     """Summarize where model-vs-market picks have or lack historical utility."""
     columns = [
@@ -2555,10 +2737,12 @@ def _market_policy_record(
     stability: pd.Series | None = None,
     moneyline_clv: dict[str, object] | None = None,
     moneyline_segment_gate: dict[str, object] | None = None,
+    model_confidence_gate: dict[str, object] | None = None,
     spread_cover_calibration: dict[str, object] | None = None,
 ) -> dict[str, object]:
     moneyline_clv = moneyline_clv or {}
     moneyline_segment_gate = moneyline_segment_gate or {}
+    model_confidence_gate = model_confidence_gate or {}
     spread_cover_calibration = spread_cover_calibration or {}
     return {
         "signal": signal,
@@ -2610,6 +2794,22 @@ def _market_policy_record(
         "segment_gate_min_bets": moneyline_segment_gate.get("min_bets", np.nan),
         "segment_gate_min_roi": moneyline_segment_gate.get("min_roi", np.nan),
         "segment_gate_max_probability_edge": moneyline_segment_gate.get("max_probability_edge", np.nan),
+        "model_confidence_gate_pass": model_confidence_gate.get("pass", np.nan),
+        "model_confidence_gate_status": model_confidence_gate.get("status", np.nan),
+        "model_confidence_gate_agreement_segment": model_confidence_gate.get("agreement_segment", np.nan),
+        "model_confidence_gate_evaluated_bins": model_confidence_gate.get("evaluated_bins", np.nan),
+        "model_confidence_gate_failed_bins": model_confidence_gate.get("failed_bins", np.nan),
+        "model_confidence_gate_worst_bin": model_confidence_gate.get("worst_bin", np.nan),
+        "model_confidence_gate_worst_error": model_confidence_gate.get("worst_error", np.nan),
+        "model_confidence_gate_worst_recalibrated_prob": model_confidence_gate.get(
+            "worst_recalibrated_prob", np.nan
+        ),
+        "model_confidence_gate_worst_raw_minus_recalibrated_prob": model_confidence_gate.get(
+            "worst_raw_minus_recalibrated_prob", np.nan
+        ),
+        "model_confidence_gate_min_graded": model_confidence_gate.get("min_graded", np.nan),
+        "model_confidence_gate_max_overestimate": model_confidence_gate.get("max_overestimate", np.nan),
+        "model_confidence_gate_confidence_min_prob": model_confidence_gate.get("confidence_min_prob", np.nan),
         "spread_cover_calibration_pass": spread_cover_calibration.get("pass", np.nan),
         "spread_cover_calibration_status": spread_cover_calibration.get("status", np.nan),
         "spread_cover_calibration_evaluated_bins": spread_cover_calibration.get("evaluated_bins", np.nan),
@@ -2838,6 +3038,7 @@ def build_market_edge_policy(
     moneyline_stability: pd.DataFrame | None = None,
     moneyline_clv_summary: pd.DataFrame | None = None,
     moneyline_segments: pd.DataFrame | None = None,
+    model_confidence_recalibration: pd.DataFrame | None = None,
     spread_cover_recalibration: pd.DataFrame | None = None,
     min_bets: int = 100,
     min_roi: float = 0.0,
@@ -2848,6 +3049,9 @@ def build_market_edge_policy(
     clv_min_tracked_games: int = MARKET_CLV_MIN_TRACKED_GAMES,
     clv_min_positive_rate: float = MARKET_CLV_MIN_POSITIVE_RATE,
     clv_min_avg_prob_delta: float = MARKET_CLV_MIN_AVG_PROB_DELTA,
+    model_confidence_min_graded: int = MODEL_CONFIDENCE_CALIBRATION_MIN_GRADED,
+    model_confidence_max_overestimate: float = MODEL_CONFIDENCE_CALIBRATION_MAX_OVERESTIMATE,
+    model_confidence_min_prob: float = MODEL_CONFIDENCE_CALIBRATION_CONFIDENCE_MIN_PROB,
     spread_calibration_min_bets: int = SPREAD_COVER_CALIBRATION_MIN_BETS,
     spread_calibration_max_abs_error: float = SPREAD_COVER_CALIBRATION_MAX_ABS_ERROR,
     spread_calibration_confidence_min_prob: float = SPREAD_COVER_CALIBRATION_CONFIDENCE_MIN_PROB,
@@ -2962,6 +3166,29 @@ def build_market_edge_policy(
     moneyline_selection = "no recommended moneyline disagreement threshold"
     if moneyline_row is not None:
         moneyline_selection = f"prob_edge >= {float(moneyline_row['threshold']):.2f}"
+    model_confidence_gate_required = model_confidence_recalibration is not None
+    model_confidence_gate = summarize_model_confidence_calibration_gate(
+        model_confidence_recalibration,
+        agreement_segment="disagree",
+        min_graded=model_confidence_min_graded,
+        max_overestimate=model_confidence_max_overestimate,
+        confidence_min_prob=model_confidence_min_prob,
+    )
+    if model_confidence_gate_required and moneyline_row is not None:
+        model_confidence_pass = bool(model_confidence_gate.get("pass", False))
+        if not model_confidence_pass:
+            confidence_status = str(model_confidence_gate.get("status", "unavailable") or "unavailable")
+            if confidence_status in {
+                "unavailable",
+                "no_matching_confidence_bins",
+                "insufficient_high_confidence_sample",
+                "missing_required_confidence_columns",
+            }:
+                if moneyline_recommended:
+                    moneyline_tier_override = "review"
+            else:
+                moneyline_tier_override = "no_bet"
+            moneyline_recommended = False
     rows.append(
         _market_policy_record(
             signal="moneyline_disagreement",
@@ -2978,6 +3205,7 @@ def build_market_edge_policy(
             stability=moneyline_stability_row,
             moneyline_clv=moneyline_clv if moneyline_clv_gate_required else None,
             moneyline_segment_gate=moneyline_segment_gate if moneyline_segment_gate_required else None,
+            model_confidence_gate=model_confidence_gate if model_confidence_gate_required else None,
         )
     )
 
@@ -3128,6 +3356,12 @@ def run(args: argparse.Namespace) -> None:
     disagreement_segments_df = summarize_disagreement_moneyline_segments(benchmark_df)
     probability_edge_calibration_df = summarize_market_probability_edge_calibration(benchmark_df)
     model_confidence_calibration_df = summarize_model_confidence_calibration(benchmark_df)
+    model_confidence_recalibration_df = summarize_model_confidence_recalibration(
+        model_confidence_calibration_df,
+        min_graded=args.model_confidence_calibration_min_graded,
+        max_overestimate=args.model_confidence_calibration_max_overestimate,
+        confidence_min_prob=args.model_confidence_calibration_confidence_min_prob,
+    )
     spread_edge_bins_df = summarize_spread_edge_bins(dataset)
     spread_key_numbers_df = summarize_spread_key_numbers(dataset)
     spread_calibration_df = summarize_spread_cover_calibration(dataset, sigma)
@@ -3151,6 +3385,7 @@ def run(args: argparse.Namespace) -> None:
         moneyline_stability=disagreement_stability_df,
         moneyline_clv_summary=market_clv_summary_df,
         moneyline_segments=disagreement_segments_df,
+        model_confidence_recalibration=model_confidence_recalibration_df,
         spread_cover_recalibration=spread_recalibration_df,
         min_bets=args.policy_min_bets,
         min_roi=args.policy_min_roi,
@@ -3161,6 +3396,9 @@ def run(args: argparse.Namespace) -> None:
         clv_min_tracked_games=args.clv_min_tracked_games,
         clv_min_positive_rate=args.clv_min_positive_rate,
         clv_min_avg_prob_delta=args.clv_min_avg_prob_delta,
+        model_confidence_min_graded=args.model_confidence_calibration_min_graded,
+        model_confidence_max_overestimate=args.model_confidence_calibration_max_overestimate,
+        model_confidence_min_prob=args.model_confidence_calibration_confidence_min_prob,
         spread_calibration_min_bets=args.spread_calibration_min_bets,
         spread_calibration_max_abs_error=args.spread_calibration_max_abs_error,
         spread_calibration_confidence_min_prob=args.spread_calibration_confidence_min_prob,
@@ -3176,6 +3414,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_segments_path = ANALYSIS_DIR / "market_disagreement_segments.csv"
     probability_edge_calibration_path = ANALYSIS_DIR / "market_probability_edge_calibration.csv"
     model_confidence_calibration_path = ANALYSIS_DIR / "market_model_confidence_calibration.csv"
+    model_confidence_recalibration_path = ANALYSIS_DIR / "market_model_confidence_recalibration.csv"
     spread_edge_bins_path = ANALYSIS_DIR / "market_roi_spread_edge_bins.csv"
     spread_key_numbers_path = ANALYSIS_DIR / "market_spread_key_numbers.csv"
     spread_calibration_path = ANALYSIS_DIR / "market_spread_calibration.csv"
@@ -3233,6 +3472,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_segments_df.to_csv(disagreement_segments_path, index=False)
     probability_edge_calibration_df.to_csv(probability_edge_calibration_path, index=False)
     model_confidence_calibration_df.to_csv(model_confidence_calibration_path, index=False)
+    model_confidence_recalibration_df.to_csv(model_confidence_recalibration_path, index=False)
     spread_edge_bins_df.to_csv(spread_edge_bins_path, index=False)
     spread_key_numbers_df.to_csv(spread_key_numbers_path, index=False)
     spread_calibration_df.to_csv(spread_calibration_path, index=False)
@@ -3263,6 +3503,13 @@ def run(args: argparse.Namespace) -> None:
             "clv_min_tracked_games": int(args.clv_min_tracked_games),
             "clv_min_positive_rate": float(args.clv_min_positive_rate),
             "clv_min_avg_prob_delta": float(args.clv_min_avg_prob_delta),
+            "model_confidence_calibration_min_graded": int(args.model_confidence_calibration_min_graded),
+            "model_confidence_calibration_max_overestimate": float(
+                args.model_confidence_calibration_max_overestimate
+            ),
+            "model_confidence_calibration_confidence_min_prob": float(
+                args.model_confidence_calibration_confidence_min_prob
+            ),
             "stability_min_season_bets": int(args.stability_min_season_bets),
             "stability_min_qualified_seasons": int(args.stability_min_qualified_seasons),
             "stability_min_positive_season_rate": float(args.stability_min_positive_season_rate),
@@ -3294,6 +3541,7 @@ def run(args: argparse.Namespace) -> None:
         "market_probability_edge_calibration_overall": {},
         "market_probability_edge_calibration_model_best": {},
         "market_model_confidence_calibration_worst": {},
+        "market_model_confidence_calibration_gate": {},
         "spread_edge_bin_best": {},
         "spread_key_number_policy_bucket": {},
         "spread_cover_calibration_gate": {},
@@ -3420,6 +3668,16 @@ def run(args: argparse.Namespace) -> None:
     if not valid_confidence_bins.empty:
         worst_confidence_bin = valid_confidence_bins.loc[valid_confidence_bins["abs_calibration_error"].idxmax()]
         summary["market_model_confidence_calibration_worst"] = _json_safe_record(worst_confidence_bin)
+    model_confidence_gate = summarize_model_confidence_calibration_gate(
+        model_confidence_recalibration_df,
+        agreement_segment="disagree",
+        min_graded=args.model_confidence_calibration_min_graded,
+        max_overestimate=args.model_confidence_calibration_max_overestimate,
+        confidence_min_prob=args.model_confidence_calibration_confidence_min_prob,
+    )
+    summary["market_model_confidence_calibration_gate"] = {
+        key: _json_safe_value(value) for key, value in model_confidence_gate.items()
+    }
     valid_edge_bins = spread_edge_bins_df[
         (spread_edge_bins_df["scope"] == "overall")
         & (spread_edge_bins_df["n_bets"] >= args.min_spread_edge_bin_bets)
@@ -3619,6 +3877,26 @@ def run(args: argparse.Namespace) -> None:
         ]
         print(display[display_cols].to_string(index=False))
 
+    print("\n=== Model confidence recalibration gate ===")
+    if model_confidence_recalibration_df.empty:
+        print("No model confidence recalibration rows matched the criteria.")
+    else:
+        display_cols = [
+            "agreement_segment",
+            "confidence_bin",
+            "n_graded",
+            "avg_model_pick_prob",
+            "recalibrated_model_pick_prob",
+            "raw_minus_recalibrated_prob",
+            "calibration_status",
+            "recommended_for_confidence",
+        ]
+        display = model_confidence_recalibration_df[
+            (model_confidence_recalibration_df["scope"] == "overall")
+            & model_confidence_recalibration_df["agreement_segment"].isin(["all", "disagree"])
+        ]
+        print(display[display_cols].to_string(index=False))
+
     print("\n=== Spread ROI summary ===")
     if spread_df.empty:
         print("No spread bets matched the criteria.")
@@ -3737,6 +4015,9 @@ def run(args: argparse.Namespace) -> None:
             "segment_gate_status",
             "segment_gate_worst_segment",
             "segment_gate_worst_roi",
+            "model_confidence_gate_status",
+            "model_confidence_gate_failed_bins",
+            "model_confidence_gate_worst_error",
         ]
         print(market_policy_df[display_cols].to_string(index=False))
 
@@ -3748,6 +4029,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"Disagreement segment results written to {disagreement_segments_path.resolve()}")
     print(f"Probability edge calibration results written to {probability_edge_calibration_path.resolve()}")
     print(f"Model confidence calibration results written to {model_confidence_calibration_path.resolve()}")
+    print(f"Model confidence recalibration results written to {model_confidence_recalibration_path.resolve()}")
     print(f"Market utility segments written to {market_segments_path.resolve()}")
     print(f"Market edge policy written to {market_policy_path.resolve()}")
     print(f"\nMoneyline results written to {moneyline_path.resolve()}")
@@ -3870,6 +4152,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=MARKET_CLV_MIN_AVG_PROB_DELTA,
         help="Minimum average no-vig implied-probability CLV delta required before a moneyline policy can be strong.",
+    )
+    parser.add_argument(
+        "--model-confidence-calibration-min-graded",
+        type=int,
+        default=MODEL_CONFIDENCE_CALIBRATION_MIN_GRADED,
+        help="Minimum graded games in a model-confidence bin before it can gate moneyline policy.",
+    )
+    parser.add_argument(
+        "--model-confidence-calibration-max-overestimate",
+        type=float,
+        default=MODEL_CONFIDENCE_CALIBRATION_MAX_OVERESTIMATE,
+        help="Maximum allowed model overestimate in high-confidence moneyline disagreement bins.",
+    )
+    parser.add_argument(
+        "--model-confidence-calibration-confidence-min-prob",
+        type=float,
+        default=MODEL_CONFIDENCE_CALIBRATION_CONFIDENCE_MIN_PROB,
+        help="Minimum selected-side model probability treated as high confidence for moneyline calibration gates.",
     )
     parser.add_argument(
         "--spread-calibration-min-bets",
