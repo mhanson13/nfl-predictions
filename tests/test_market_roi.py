@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import numpy as np
 import pandas as pd
 
 from analysis import market_roi
@@ -452,6 +453,83 @@ def test_market_probability_edge_calibration_compares_model_to_vegas_same_side()
     assert overall["vegas_brier"] == pytest.approx(0.3125)
     assert overall["brier_delta_model_minus_vegas"] == pytest.approx(-0.0525)
     assert model_bin["n_games"] == 2
+
+
+def test_model_confidence_calibration_slices_agreement_and_logloss():
+    benchmark = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "model_pick_prob": 0.62,
+                "vegas_model_side_prob": 0.56,
+                "prob_edge_model_side": 0.06,
+                "home_tie": False,
+                "model_side_actual_win": 1,
+                "favorite_agreement": True,
+                "model_side_profit": 0.8,
+                "model_side_moneyline": -125,
+            },
+            {
+                "season": 2026,
+                "model_pick_prob": 0.64,
+                "vegas_model_side_prob": 0.48,
+                "prob_edge_model_side": 0.16,
+                "home_tie": False,
+                "model_side_actual_win": 0,
+                "favorite_agreement": False,
+                "model_side_profit": -1.0,
+                "model_side_moneyline": 150,
+            },
+            {
+                "season": 2026,
+                "model_pick_prob": 0.72,
+                "vegas_model_side_prob": 0.60,
+                "prob_edge_model_side": 0.12,
+                "home_tie": False,
+                "model_side_actual_win": 1,
+                "favorite_agreement": False,
+                "model_side_profit": 1.2,
+                "model_side_moneyline": 120,
+            },
+            {
+                "season": 2026,
+                "model_pick_prob": 0.74,
+                "vegas_model_side_prob": 0.70,
+                "prob_edge_model_side": 0.04,
+                "home_tie": True,
+                "model_side_actual_win": 0,
+                "favorite_agreement": True,
+                "model_side_profit": 0.0,
+                "model_side_moneyline": -160,
+            },
+        ]
+    )
+
+    calibration = market_roi.summarize_model_confidence_calibration(benchmark)
+    all_60_65 = calibration[
+        (calibration["scope"] == "overall")
+        & (calibration["agreement_segment"] == "all")
+        & (calibration["confidence_bin"] == "60-65%")
+    ].iloc[0]
+    disagree_70 = calibration[
+        (calibration["scope"] == "overall")
+        & (calibration["agreement_segment"] == "disagree")
+        & (calibration["confidence_bin"] == "70%+")
+    ].iloc[0]
+
+    expected_brier = ((0.62 - 1.0) ** 2 + (0.64 - 0.0) ** 2) / 2
+    expected_logloss = -((np.log(0.62) + np.log(1.0 - 0.64)) / 2)
+
+    assert all_60_65["n_games"] == 2
+    assert all_60_65["n_graded"] == 2
+    assert all_60_65["accuracy"] == pytest.approx(0.5)
+    assert all_60_65["avg_model_pick_prob"] == pytest.approx(0.63)
+    assert all_60_65["calibration_error"] == pytest.approx(0.13)
+    assert all_60_65["brier"] == pytest.approx(expected_brier)
+    assert all_60_65["log_loss"] == pytest.approx(expected_logloss)
+    assert all_60_65["favorite_agreement_rate"] == pytest.approx(0.5)
+    assert disagree_70["n_games"] == 1
+    assert disagree_70["model_side_roi"] == pytest.approx(1.2)
 
 
 def test_moneyline_disagreement_stability_passes_with_multiseason_profitability():

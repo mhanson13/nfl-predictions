@@ -150,6 +150,32 @@ MARKET_DISAGREEMENT_SEGMENT_COLUMNS = [
     "positive_moneyline_clv_rate",
 ]
 
+MODEL_CONFIDENCE_CALIBRATION_COLUMNS = [
+    "scope",
+    "season",
+    "agreement_segment",
+    "confidence_bin",
+    "min_confidence",
+    "max_confidence",
+    "n_games",
+    "n_graded",
+    "wins",
+    "losses",
+    "pushes",
+    "accuracy",
+    "actual_model_side_win_rate",
+    "favorite_agreement_rate",
+    "avg_model_pick_prob",
+    "avg_vegas_model_side_prob",
+    "avg_prob_edge_model_side",
+    "calibration_error",
+    "abs_calibration_error",
+    "brier",
+    "log_loss",
+    "model_side_roi",
+    "avg_model_side_moneyline",
+]
+
 MARKET_EDGE_POLICY_COLUMNS = [
     "signal",
     "recommended",
@@ -1486,6 +1512,141 @@ def _bin_label(value: float, bins: Iterable[tuple[float, float, str]]) -> str | 
         if lower_match and upper_match:
             return label
     return None
+
+
+def _model_confidence_calibration_record(
+    *,
+    scope: str,
+    season: int | str,
+    agreement_segment: str,
+    confidence_bin: str,
+    min_confidence: float,
+    max_confidence: float,
+    selection: pd.DataFrame,
+) -> dict[str, float | int | str]:
+    n_games = int(len(selection))
+    max_output = np.nan if np.isinf(max_confidence) else float(max_confidence)
+    if n_games == 0:
+        return {
+            "scope": scope,
+            "season": season,
+            "agreement_segment": agreement_segment,
+            "confidence_bin": confidence_bin,
+            "min_confidence": float(min_confidence),
+            "max_confidence": max_output,
+            "n_games": 0,
+            "n_graded": 0,
+            "wins": 0,
+            "losses": 0,
+            "pushes": 0,
+            "accuracy": np.nan,
+            "actual_model_side_win_rate": np.nan,
+            "favorite_agreement_rate": np.nan,
+            "avg_model_pick_prob": np.nan,
+            "avg_vegas_model_side_prob": np.nan,
+            "avg_prob_edge_model_side": np.nan,
+            "calibration_error": np.nan,
+            "abs_calibration_error": np.nan,
+            "brier": np.nan,
+            "log_loss": np.nan,
+            "model_side_roi": np.nan,
+            "avg_model_side_moneyline": np.nan,
+        }
+
+    pushes = int(selection["home_tie"].sum())
+    graded = selection[~selection["home_tie"]].copy()
+    n_graded = int(len(graded))
+    wins = int(graded["model_side_actual_win"].sum()) if n_graded else 0
+    losses = n_graded - wins
+    actual_rate = float(wins / n_graded) if n_graded else np.nan
+    avg_model_prob = float(selection["model_pick_prob"].mean())
+    calibration_error = avg_model_prob - actual_rate if not np.isnan(actual_rate) else np.nan
+    if n_graded:
+        outcome = graded["model_side_actual_win"].astype(float)
+        model_prob = graded["model_pick_prob"].astype(float).clip(1e-9, 1.0 - 1e-9)
+        brier = float(np.mean(np.square(model_prob - outcome)))
+        log_loss = float(-np.mean(outcome * np.log(model_prob) + (1.0 - outcome) * np.log(1.0 - model_prob)))
+    else:
+        brier = np.nan
+        log_loss = np.nan
+
+    return {
+        "scope": scope,
+        "season": season,
+        "agreement_segment": agreement_segment,
+        "confidence_bin": confidence_bin,
+        "min_confidence": float(min_confidence),
+        "max_confidence": max_output,
+        "n_games": n_games,
+        "n_graded": n_graded,
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "accuracy": actual_rate,
+        "actual_model_side_win_rate": actual_rate,
+        "favorite_agreement_rate": float(selection["favorite_agreement"].mean()),
+        "avg_model_pick_prob": avg_model_prob,
+        "avg_vegas_model_side_prob": float(selection["vegas_model_side_prob"].mean()),
+        "avg_prob_edge_model_side": float(selection["prob_edge_model_side"].mean()),
+        "calibration_error": calibration_error,
+        "abs_calibration_error": abs(calibration_error) if not np.isnan(calibration_error) else np.nan,
+        "brier": brier,
+        "log_loss": log_loss,
+        "model_side_roi": float(selection["model_side_profit"].sum() / n_games),
+        "avg_model_side_moneyline": float(selection["model_side_moneyline"].mean()),
+    }
+
+
+def summarize_model_confidence_calibration(
+    benchmark: pd.DataFrame,
+    bins: Iterable[tuple[float, float, str]] = MARKET_MODEL_CONFIDENCE_BINS,
+) -> pd.DataFrame:
+    """Summarize selected-side calibration by model confidence and favorite agreement."""
+    if benchmark.empty:
+        return pd.DataFrame(columns=MODEL_CONFIDENCE_CALIBRATION_COLUMNS)
+
+    base = benchmark[
+        benchmark["model_pick_prob"].notna()
+        & benchmark["model_side_actual_win"].notna()
+        & benchmark["favorite_agreement"].notna()
+    ].copy()
+    if base.empty:
+        return pd.DataFrame(columns=MODEL_CONFIDENCE_CALIBRATION_COLUMNS)
+
+    records: list[dict[str, float | int | str]] = []
+
+    def add_rows(scope: str, season: int | str, group: pd.DataFrame) -> None:
+        segment_groups = [
+            ("all", group),
+            ("agree", group[group["favorite_agreement"].astype(bool)]),
+            ("disagree", group[~group["favorite_agreement"].astype(bool)]),
+        ]
+        for agreement_segment, segment_df in segment_groups:
+            for min_confidence, max_confidence, confidence_bin in bins:
+                if np.isinf(max_confidence):
+                    selection = segment_df[segment_df["model_pick_prob"] >= min_confidence]
+                else:
+                    selection = segment_df[
+                        (segment_df["model_pick_prob"] >= min_confidence)
+                        & (segment_df["model_pick_prob"] < max_confidence)
+                    ]
+                records.append(
+                    _model_confidence_calibration_record(
+                        scope=scope,
+                        season=season,
+                        agreement_segment=agreement_segment,
+                        confidence_bin=confidence_bin,
+                        min_confidence=min_confidence,
+                        max_confidence=max_confidence,
+                        selection=selection,
+                    )
+                )
+
+    add_rows("overall", "all", base)
+    for season, season_df in base.groupby("season", sort=True):
+        add_rows("season", int(season), season_df)
+
+    return pd.DataFrame.from_records(records, columns=MODEL_CONFIDENCE_CALIBRATION_COLUMNS)
 
 
 def summarize_market_utility_segments(benchmark: pd.DataFrame) -> pd.DataFrame:
@@ -2966,6 +3127,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_edge_bins_df = summarize_disagreement_moneyline_edge_bins(benchmark_df)
     disagreement_segments_df = summarize_disagreement_moneyline_segments(benchmark_df)
     probability_edge_calibration_df = summarize_market_probability_edge_calibration(benchmark_df)
+    model_confidence_calibration_df = summarize_model_confidence_calibration(benchmark_df)
     spread_edge_bins_df = summarize_spread_edge_bins(dataset)
     spread_key_numbers_df = summarize_spread_key_numbers(dataset)
     spread_calibration_df = summarize_spread_cover_calibration(dataset, sigma)
@@ -3013,6 +3175,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_edge_bins_path = ANALYSIS_DIR / "market_disagreement_edge_bins.csv"
     disagreement_segments_path = ANALYSIS_DIR / "market_disagreement_segments.csv"
     probability_edge_calibration_path = ANALYSIS_DIR / "market_probability_edge_calibration.csv"
+    model_confidence_calibration_path = ANALYSIS_DIR / "market_model_confidence_calibration.csv"
     spread_edge_bins_path = ANALYSIS_DIR / "market_roi_spread_edge_bins.csv"
     spread_key_numbers_path = ANALYSIS_DIR / "market_spread_key_numbers.csv"
     spread_calibration_path = ANALYSIS_DIR / "market_spread_calibration.csv"
@@ -3069,6 +3232,7 @@ def run(args: argparse.Namespace) -> None:
     disagreement_edge_bins_df.to_csv(disagreement_edge_bins_path, index=False)
     disagreement_segments_df.to_csv(disagreement_segments_path, index=False)
     probability_edge_calibration_df.to_csv(probability_edge_calibration_path, index=False)
+    model_confidence_calibration_df.to_csv(model_confidence_calibration_path, index=False)
     spread_edge_bins_df.to_csv(spread_edge_bins_path, index=False)
     spread_key_numbers_df.to_csv(spread_key_numbers_path, index=False)
     spread_calibration_df.to_csv(spread_calibration_path, index=False)
@@ -3129,6 +3293,7 @@ def run(args: argparse.Namespace) -> None:
         "moneyline_disagreement_segment_best": {},
         "market_probability_edge_calibration_overall": {},
         "market_probability_edge_calibration_model_best": {},
+        "market_model_confidence_calibration_worst": {},
         "spread_edge_bin_best": {},
         "spread_key_number_policy_bucket": {},
         "spread_cover_calibration_gate": {},
@@ -3246,6 +3411,15 @@ def run(args: argparse.Namespace) -> None:
             valid_model_probability_bins["brier_delta_model_minus_vegas"].idxmin()
         ]
         summary["market_probability_edge_calibration_model_best"] = _json_safe_record(best_probability_bin)
+    valid_confidence_bins = model_confidence_calibration_df[
+        (model_confidence_calibration_df["scope"] == "overall")
+        & (model_confidence_calibration_df["agreement_segment"].isin(["all", "disagree"]))
+        & (model_confidence_calibration_df["n_graded"] >= args.min_probability_calibration_bin_games)
+        & model_confidence_calibration_df["abs_calibration_error"].notna()
+    ]
+    if not valid_confidence_bins.empty:
+        worst_confidence_bin = valid_confidence_bins.loc[valid_confidence_bins["abs_calibration_error"].idxmax()]
+        summary["market_model_confidence_calibration_worst"] = _json_safe_record(worst_confidence_bin)
     valid_edge_bins = spread_edge_bins_df[
         (spread_edge_bins_df["scope"] == "overall")
         & (spread_edge_bins_df["n_bets"] >= args.min_spread_edge_bin_bets)
@@ -3424,6 +3598,27 @@ def run(args: argparse.Namespace) -> None:
         ]
         print(display[display_cols].to_string(index=False))
 
+    print("\n=== Model confidence calibration summary ===")
+    if model_confidence_calibration_df.empty:
+        print("No model confidence calibration rows matched the criteria.")
+    else:
+        display_cols = [
+            "agreement_segment",
+            "confidence_bin",
+            "n_graded",
+            "accuracy",
+            "avg_model_pick_prob",
+            "calibration_error",
+            "brier",
+            "log_loss",
+            "model_side_roi",
+        ]
+        display = model_confidence_calibration_df[
+            (model_confidence_calibration_df["scope"] == "overall")
+            & model_confidence_calibration_df["agreement_segment"].isin(["all", "disagree"])
+        ]
+        print(display[display_cols].to_string(index=False))
+
     print("\n=== Spread ROI summary ===")
     if spread_df.empty:
         print("No spread bets matched the criteria.")
@@ -3552,6 +3747,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"Disagreement edge-bin results written to {disagreement_edge_bins_path.resolve()}")
     print(f"Disagreement segment results written to {disagreement_segments_path.resolve()}")
     print(f"Probability edge calibration results written to {probability_edge_calibration_path.resolve()}")
+    print(f"Model confidence calibration results written to {model_confidence_calibration_path.resolve()}")
     print(f"Market utility segments written to {market_segments_path.resolve()}")
     print(f"Market edge policy written to {market_policy_path.resolve()}")
     print(f"\nMoneyline results written to {moneyline_path.resolve()}")

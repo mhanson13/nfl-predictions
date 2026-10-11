@@ -45,6 +45,10 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
         source_root / "analysis" / "market_probability_edge_calibration.csv",
         "bin_family,bin_label,model_brier,vegas_brier\nall,all,0.22,0.21\n",
     )
+    _write_csv(
+        source_root / "analysis" / "market_model_confidence_calibration.csv",
+        "agreement_segment,confidence_bin,brier,log_loss\nall,70%+,0.22,0.63\n",
+    )
     _write_csv(source_root / "analysis" / "market_blend_backtest.csv", "game_id,blend_home_win_prob\nabc,0.55\n")
     _write_csv(source_root / "analysis" / "market_blend_summary.csv", "scope,segment,blend_brier\noverall,all,0.21\n")
     _write_csv(source_root / "analysis" / "market_blend_policy.csv", "signal,recommended\nmarket_blend_probability,false\n")
@@ -103,6 +107,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "analysis" / "market_disagreement_segments.csv").exists()
     assert (destination_root / "analysis" / "market_disagreement_season_stability.csv").exists()
     assert (destination_root / "analysis" / "market_probability_edge_calibration.csv").exists()
+    assert (destination_root / "analysis" / "market_model_confidence_calibration.csv").exists()
     assert (destination_root / "analysis" / "market_blend_backtest.csv").exists()
     assert (destination_root / "analysis" / "market_blend_summary.csv").exists()
     assert (destination_root / "analysis" / "market_blend_policy.csv").exists()
@@ -119,7 +124,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 36
+    assert len(published) == 37
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):

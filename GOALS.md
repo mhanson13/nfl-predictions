@@ -25,6 +25,7 @@ Source artifacts:
 - `analysis/market_disagreement_edge_bins.csv`
 - `analysis/market_disagreement_segments.csv`
 - `analysis/market_probability_edge_calibration.csv`
+- `analysis/market_model_confidence_calibration.csv`
 - `analysis/market_blend_backtest.csv`
 - `analysis/market_blend_summary.csv`
 - `analysis/market_blend_policy.csv`
@@ -207,6 +208,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `analysis/market_disagreement_edge_bins.csv`
   - `analysis/market_disagreement_segments.csv`
   - `analysis/market_probability_edge_calibration.csv`
+  - `analysis/market_model_confidence_calibration.csv`
   - `analysis/market_blend_backtest.csv`
   - `analysis/market_blend_summary.csv`
   - `analysis/market_blend_policy.csv`
@@ -230,7 +232,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
 - Current-season nflverse PBP can still lag or be unavailable. BallDontLie team-form features now cover current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail still depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
 - BallDontLie team-form features are useful as a monitored fallback source, but latest Week 4/Week 5 ablation runs showed win-probability regression and only marginal spread benefit. Keep them out of production model features until repeatable same-split lift appears.
-- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, a segment-aware moneyline disagreement policy gate, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
+- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration by agreement/disagreement segment, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, a segment-aware moneyline disagreement policy gate, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
 - Corrected spread ROI no longer shows broad profitability. Current Week 5 policy artifacts mark broad spread threshold strategies as `no_bet`; only the 2-to-3 point spread-edge bucket remains a low-confidence lean/research signal.
 
 ## Operating Roadmap
@@ -276,7 +278,8 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [x] Rework volatility classifier to RF, log-loss-only labels, and 0.5 percentile default.
 - [ ] Add a separate spread/margin-volatility model instead of mixing margin-error labels into probability volatility.
 - [ ] Improve probability calibration, especially high-confidence picks where LogLoss/Brier penalties are largest.
-- [ ] Build calibration diagnostics by model confidence tier and identify overconfident ranges that need shrinkage or recalibration.
+- [x] Build calibration diagnostics by model confidence tier and identify overconfident ranges that need shrinkage or recalibration: `analysis/market_model_confidence_calibration.csv`.
+- [ ] Use confidence-tier calibration diagnostics to define a tested shrinkage/recalibration rule for overconfident ranges.
 
 ### 4. Market Benchmarking And Betting Edge
 

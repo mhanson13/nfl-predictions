@@ -87,6 +87,10 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
         Path("analysis/market_probability_edge_calibration.csv"),
         Path("analysis/market_probability_edge_calibration.csv"),
     ),
+    CsvArtifact(
+        Path("analysis/market_model_confidence_calibration.csv"),
+        Path("analysis/market_model_confidence_calibration.csv"),
+    ),
     CsvArtifact(Path("analysis/market_blend_backtest.csv"), Path("analysis/market_blend_backtest.csv")),
     CsvArtifact(Path("analysis/market_blend_summary.csv"), Path("analysis/market_blend_summary.csv")),
     CsvArtifact(Path("analysis/market_blend_policy.csv"), Path("analysis/market_blend_policy.csv")),
