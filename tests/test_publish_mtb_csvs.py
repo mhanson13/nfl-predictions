@@ -68,6 +68,15 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     _write_csv(source_root / "analysis" / "market_blend_backtest.csv", "game_id,blend_home_win_prob\nabc,0.55\n")
     _write_csv(source_root / "analysis" / "market_blend_summary.csv", "scope,segment,blend_brier\noverall,all,0.21\n")
     _write_csv(source_root / "analysis" / "market_blend_policy.csv", "signal,recommended\nmarket_blend_probability,false\n")
+    _write_csv(source_root / "analysis" / "market_disagreement_games.csv", "game_id,model_team\nabc,DOG\n")
+    _write_csv(
+        source_root / "analysis" / "market_disagreement_diagnostics.csv",
+        "segment_family,segment,n_games,model_roi\nall,all,10,0.1\n",
+    )
+    _write_csv(
+        source_root / "analysis" / "market_disagreement_recommendations.csv",
+        "action,segment_family,segment\ncandidate_model_side_segment,all,all\n",
+    )
     _write_csv(source_root / "analysis" / "market_spread_key_numbers.csv", "key_number,edge_bucket,roi\n3,2-3,0.01\n")
     _write_csv(source_root / "analysis" / "market_spread_calibration.csv", "cover_prob_bin,calibration_error\n80%+,0.8\n")
     _write_csv(
@@ -131,6 +140,9 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "analysis" / "market_blend_backtest.csv").exists()
     assert (destination_root / "analysis" / "market_blend_summary.csv").exists()
     assert (destination_root / "analysis" / "market_blend_policy.csv").exists()
+    assert (destination_root / "analysis" / "market_disagreement_games.csv").exists()
+    assert (destination_root / "analysis" / "market_disagreement_diagnostics.csv").exists()
+    assert (destination_root / "analysis" / "market_disagreement_recommendations.csv").exists()
     assert (destination_root / "analysis" / "market_spread_key_numbers.csv").exists()
     assert (destination_root / "analysis" / "market_spread_calibration.csv").exists()
     assert (destination_root / "analysis" / "market_spread_cover_recalibration.csv").exists()
@@ -144,7 +156,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 41
+    assert len(published) == 44
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):

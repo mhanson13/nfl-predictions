@@ -1,6 +1,6 @@
 # NFL Predictions Goals
 
-Last reviewed: 2026-10-07
+Last reviewed: 2026-10-11
 
 This file is the live roadmap and status board for the NFL prediction pipeline. Keep it tied to current artifacts, not historical plans. Do not mark work complete unless the code, generated output, or documentation exists in the repo.
 
@@ -33,6 +33,9 @@ Source artifacts:
 - `analysis/market_blend_backtest.csv`
 - `analysis/market_blend_summary.csv`
 - `analysis/market_blend_policy.csv`
+- `analysis/market_disagreement_games.csv`
+- `analysis/market_disagreement_diagnostics.csv`
+- `analysis/market_disagreement_recommendations.csv`
 - `analysis/market_roi_spread.csv`
 - `analysis/market_roi_spread_edge_bins.csv`
 - `analysis/market_spread_key_numbers.csv`
@@ -78,18 +81,18 @@ Source artifacts:
 - `analysis/run_comparisons/run_report.md`
 - `README.md`
 
-Latest full evaluation snapshot from the Week 5 pipeline run on 2026-10-06:
+Latest full evaluation snapshot from the Week 5 pipeline run on 2026-10-11:
 
 | Metric | Current | Near-Term Goal |
 |---|---:|---:|
 | Games / samples | 2283 | Track per run |
-| Accuracy | 0.649 | >= 0.670 |
-| F1 | 0.687 | >= 0.710 |
-| AUC | 0.703 | >= 0.720 |
-| Brier | 0.220 | <= 0.210 |
-| LogLoss | 0.630 | <= 0.610 |
-| Margin MAE | 10.23 | <= 9.75 |
-| Margin RMSE | 13.28 | <= 12.75 |
+| Accuracy | 0.654 | >= 0.670 |
+| F1 | 0.693 | >= 0.710 |
+| AUC | 0.706 | >= 0.720 |
+| Brier | 0.217 | <= 0.210 |
+| LogLoss | 0.623 | <= 0.610 |
+| Margin MAE | 10.15 | <= 9.75 |
+| Margin RMSE | 13.07 | <= 12.75 |
 
 Current read: the model is usable but below the earlier aspirational AUC/Brier targets. Treat prior AUC values near 1.0 as invalid or stale unless backed by the current evaluation pipeline.
 
@@ -220,6 +223,9 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `analysis/market_blend_backtest.csv`
   - `analysis/market_blend_summary.csv`
   - `analysis/market_blend_policy.csv`
+  - `analysis/market_disagreement_games.csv`
+  - `analysis/market_disagreement_diagnostics.csv`
+  - `analysis/market_disagreement_recommendations.csv`
   - `analysis/market_roi_spread_edge_bins.csv`
   - `analysis/market_spread_key_numbers.csv`
   - `analysis/market_spread_calibration.csv`
@@ -240,7 +246,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
 - Current-season nflverse PBP can still lag or be unavailable. BallDontLie team-form features now cover current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail still depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
 - BallDontLie team-form features are useful as a monitored fallback source, but latest Week 4/Week 5 ablation runs showed win-probability regression and only marginal spread benefit. Keep them out of production model features until repeatable same-split lift appears.
-- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration and empirical recalibration by agreement/disagreement segment, walk-forward confidence-recalibration strategy decisions, walk-forward market-aware blend backtests, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, segment-aware and confidence-aware moneyline disagreement policy gates, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
+- Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration and empirical recalibration by agreement/disagreement segment, walk-forward confidence-recalibration strategy decisions, walk-forward market-aware blend backtests, favorite-disagreement game diagnostics/recommendations, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, segment-aware and confidence-aware moneyline disagreement policy gates, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
 - Corrected spread ROI no longer shows broad profitability. Current Week 5 policy artifacts mark broad spread threshold strategies as `no_bet`; only the 2-to-3 point spread-edge bucket remains a low-confidence lean/research signal.
 
 ## Operating Roadmap
@@ -279,9 +285,9 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [ ] Continue reviewing `feature_family_ablation.csv` after each full pipeline run.
 - [ ] Treat `bdl_*` features as production-proven only after at least 3 full live-week runs show same-split lift or no material regression: target `baseline_plus_bdl` or `baseline_plus_bdl_no_sparse_sack_rate` should improve or hold AUC/Brier/LogLoss while also improving spread MAE by a repeatable margin.
 - [ ] If later ablation proves only a narrow BDL subset is useful, add a named subset gate instead of enabling the entire `bdl_*` family.
-- [ ] Improve current AUC from ~0.703 to >=0.720 without leakage.
-- [ ] Improve Brier from ~0.220 to <=0.210.
-- [ ] Improve margin MAE from ~10.23 to <=9.75.
+- [ ] Improve current AUC from ~0.706 to >=0.720 without leakage.
+- [ ] Improve Brier from ~0.217 to <=0.210.
+- [ ] Improve margin MAE from ~10.15 to <=9.75.
 - [ ] Re-check feature lift after every material feature-family change.
 - [x] Rework volatility classifier to RF, log-loss-only labels, and 0.5 percentile default.
 - [ ] Add a separate spread/margin-volatility model instead of mixing margin-error labels into probability volatility.
@@ -300,16 +306,17 @@ Current read from the Week 5 evaluation set:
 - SU model accuracy is 65.4% over 2,283 market-matched games.
 - No-vig Vegas favorite accuracy is about 66.1% over the same games.
 - Model and Vegas favorite agree on about 86.9% of games.
-- In 299 favorite-disagreement games, the model is 47.2% SU and Vegas is 52.8%, but model-side moneyline ROI is +4.3% overall because the model side is usually plus-money.
-- The historical moneyline disagreement candidate `prob_edge >= 0.02` has 293 bets, +5.1% ROI, and a 47.4% hit rate at average model-side odds near +102, but the current live policy is `review` because the CLV sample is still sparse.
-- Moneyline disagreement policy now requires season-stability and current-week CLV gates before publication. The current `prob_edge >= 0.02` policy passes stability with 7 qualified seasons, a 71.4% positive qualified-season rate, a 100.0% recent positive qualified-season rate over the two qualified recent seasons, and a 14.3% severe-negative season rate, but fails the minimum CLV sample gate with only 6 tracked Week 5 games.
-- Higher moneyline disagreement thresholds are not automatically safer: `prob_edge >= 0.08` currently fails due to insufficient recent qualified seasons, `prob_edge >= 0.10` fails due to weak positive-season rate, and `prob_edge >= 0.15` fails due to insufficient qualified seasons.
+- In 305 favorite-disagreement games, the model is 47.2% SU and Vegas is 52.8%, but model-side moneyline ROI is +4.2% overall because the model side is usually plus-money.
+- The current historical moneyline disagreement policy candidate is `prob_edge >= 0.05`: 266 bets, +5.3% ROI, 47.0% hit rate, and average model-side odds near +112. It remains `no_bet` because season stability, CLV sample, segment, and confidence-overestimate gates do not all pass.
+- Moneyline disagreement policy now requires season-stability and current-week CLV gates before publication. The current `prob_edge >= 0.05` policy has 6 qualified seasons, a 50.0% positive qualified-season rate, a 0.0% recent positive qualified-season rate, and a 33.3% severe-negative season rate, and it has only 2 tracked Week 5 CLV games.
+- Higher moneyline disagreement thresholds are not automatically safer: `prob_edge >= 0.08` is roughly flat (+0.1% ROI), `prob_edge >= 0.10` is positive but lower-sample (+4.6% ROI), and `prob_edge >= 0.15` is negative (-8.1% ROI).
 - Model-vs-no-vig-Vegas probability calibration is now published. Current selected-side Brier is worse than Vegas overall (`0.218` vs `0.211`), and the `15%+` model edge bin is materially overconfident: 62.2% average model probability, 43.8% average no-vig Vegas same-side probability, 42.6% actual win rate, and -5.3% model-side ROI.
-- A first walk-forward market-aware blend backtest is now published. Current blend Brier improves raw model Brier (`0.214` vs `0.219`) but still trails no-vig Vegas (`0.212`), and blend selected-side ROI is -3.6%, so both blend probability and blend moneyline policies remain `no_bet`.
-- Bounded moneyline disagreement bins are now published. The early Week 5 read shows the strongest bounded samples in the 2-5% and 10-15% bins, while the 15%+ bin is negative; do not scale confidence purely by larger probability edge until season-stability and CLV checks support it.
-- Weekly CLV detail and summary artifacts are now published from local pick-time and close/latest odds snapshots, and `analysis/market_edge_policy.csv` consumes the threshold-specific CLV summary before allowing a moneyline policy to become `strong`. Current Week 5 favorite-disagreement rows have 6 tracked games, +0.8 percentage-point average no-vig implied-probability CLV, and a 66.7% positive CLV rate, so the policy remains `review` until it reaches at least 10 tracked games.
+- A first walk-forward market-aware blend backtest is now published. Current blend Brier improves raw model Brier (`0.214` vs `0.218`) but still trails no-vig Vegas (`0.212`), and blend selected-side ROI improves raw model and Vegas ROI but remains negative (-2.3%), so `market_blend_policy.csv` still marks blend probability and blend moneyline as `no_bet`.
+- Bounded moneyline disagreement bins are now published. The current Week 5 read shows the strongest bounded samples in the 5-8% and 10-15% bins, while the 8-10% and 15%+ bins are negative; do not scale confidence purely by larger probability edge until season-stability and CLV checks support it.
+- Weekly CLV detail and summary artifacts are now published from local pick-time and close/latest odds snapshots, and `analysis/market_edge_policy.csv` consumes the threshold-specific CLV summary before allowing a moneyline policy to become `strong`. Current Week 5 favorite-disagreement rows have 2 tracked games, +0.7 percentage-point average no-vig implied-probability CLV, and a 100.0% positive CLV rate, so the policy remains blocked until the tracked-game sample is large enough.
 - Model-confidence empirical recalibration is now published for moneyline disagreement picks. High-confidence disagreement bins with enough sample and model overestimate above the policy threshold hard-block moneyline promotion and surface `blocked_model_confidence_overconfidence` in weekly prediction policy fields.
-- Walk-forward confidence recalibration strategy decisions are now published. Current read: no-vig Vegas beats the current model on probability metrics and should remain a benchmark warning, the fixed 50/50 market blend is research-only, full confidence shrinkage is `no_live_change`, and disagreement-only shrinkage is `base_probability_research_only` because it slightly improves Brier/LogLoss but materially worsens disagreement ROI.
+- Walk-forward confidence recalibration strategy decisions are now published. Current read: no-vig Vegas beats the current model on probability metrics and should remain a benchmark warning; the fixed 50/50 market blend is now a `market_blend_probability_and_policy_candidate` in the confidence-decision artifact; full confidence shrinkage is `no_live_change`; and disagreement-only shrinkage is `base_probability_research_only` because it slightly improves Brier/LogLoss but materially worsens disagreement ROI.
+- Favorite-disagreement diagnostics are now published. The strongest current model-side research slices are `prob_edge_bin=5-8%` (47 games, +29.2% ROI, 61.7% SU), `model_side_odds_bucket=+100 to +120` (121 games, +14.5% ROI), and `prob_edge_bin=10-15%` (112 games, +13.3% ROI). The `prob_edge_bin=8-10%` and `model_confidence_bin=60-65%` slices are explicit avoid/block candidates.
 - Broad spread threshold strategies are now policy-blocked as `no_bet`. Away edge >2 points is -1.5% ROI despite 61.0% average modeled cover probability, which confirms spread cover-probability overconfidence.
 - Corrected spread edge-bin ROI is only positive in the 2-to-3 point bucket: 368 bets, +1.2% ROI, and 52.5% hit rate. That bucket is now review-only until the empirical spread cover calibration gate passes; spread edges of 5+ points are negative and should not be promoted.
 - Spread key-number diagnostics are now published for 3, 6, 7, and 10. In the current 2-to-3 point spread-edge bucket, key-window ROI is -5.4% around 3, +9.0% around 6, +10.9% around 7, and roughly flat around 10. Treat this as a monitoring slice, not a promotion rule, until season stability and CLV confirm it.
@@ -337,7 +344,10 @@ Roadmap:
 - [x] Compare model probability directly to no-vig Vegas probability by probability bin and publish the calibration/edge table.
 - [x] Add a confidence-aware moneyline disagreement policy gate that uses empirical recalibration bins before promoting disagreement picks.
 - [x] Add a walk-forward confidence recalibration strategy backtest and decision artifact before making any live probability change.
+- [x] Add favorite-disagreement diagnostic and research-recommendation artifacts: `analysis/market_disagreement_games.csv`, `analysis/market_disagreement_diagnostics.csv`, and `analysis/market_disagreement_recommendations.csv`.
 - [ ] Improve model performance in favorite-disagreement games versus Vegas before treating disagreements as actionable.
+- [ ] Reconcile favorite-disagreement diagnostic candidate segments with `market_edge_policy.csv` before allowing any segment to move from research to live recommendation.
+- [ ] Reconcile `market_confidence_recalibration_decision.csv` and `market_blend_policy.csv` so the 50/50 blend candidate has one explicit experiment/policy path.
 - [x] Build and backtest a market-aware blend or meta-model using model probability, no-vig moneyline probability, market spread, and current model features.
 - [x] Track whether any market-aware blend adds genuine edge versus simply mirroring Vegas favorite picks.
 - [x] Keep spread edge analysis as a separate betting-signal track from straight-up winner model accuracy.

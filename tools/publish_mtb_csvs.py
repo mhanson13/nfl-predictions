@@ -110,6 +110,15 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(Path("analysis/market_blend_backtest.csv"), Path("analysis/market_blend_backtest.csv")),
     CsvArtifact(Path("analysis/market_blend_summary.csv"), Path("analysis/market_blend_summary.csv")),
     CsvArtifact(Path("analysis/market_blend_policy.csv"), Path("analysis/market_blend_policy.csv")),
+    CsvArtifact(Path("analysis/market_disagreement_games.csv"), Path("analysis/market_disagreement_games.csv")),
+    CsvArtifact(
+        Path("analysis/market_disagreement_diagnostics.csv"),
+        Path("analysis/market_disagreement_diagnostics.csv"),
+    ),
+    CsvArtifact(
+        Path("analysis/market_disagreement_recommendations.csv"),
+        Path("analysis/market_disagreement_recommendations.csv"),
+    ),
     CsvArtifact(Path("analysis/market_roi_spread_edge_bins.csv"), Path("analysis/market_roi_spread_edge_bins.csv")),
     CsvArtifact(Path("analysis/market_spread_key_numbers.csv"), Path("analysis/market_spread_key_numbers.csv")),
     CsvArtifact(Path("analysis/market_spread_calibration.csv"), Path("analysis/market_spread_calibration.csv")),
