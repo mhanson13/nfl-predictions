@@ -2,23 +2,23 @@
 
 ## Model Performance
 
-The latest validated win-probability evaluation run is **winprob_model (run_328)** from 2026-10-07. It logged AUC=0.704, Brier=0.220, LogLoss=0.630, Accuracy=0.649, F1=0.687, MAE=10.23, and RMSE=13.30. Compared to the earliest current-schema baseline (winprob_model / run_212), AUC changed by -0.004 and Brier changed by +0.001 (lower Brier is better).
+The latest validated win-probability evaluation run is **winprob_model (run_331)** from 2026-10-08. It logged AUC=0.703, Brier=0.218, LogLoss=0.625, Accuracy=0.652, F1=0.691, MAE=10.14, and RMSE=13.08. Compared to the earliest current-schema baseline (winprob_model / run_212), AUC changed by -0.005 and Brier changed by -0.001 (lower Brier is better).
 
 ### Metrics Snapshot
 | Metric | Value |
 |--------|-------|
-| Accuracy | 0.649 |
-| AUC | 0.704 |
-| Brier | 0.220 |
-| LogLoss | 0.630 |
-| MAE | 10.23 |
-| RMSE | 13.30 |
+| Accuracy | 0.652 |
+| AUC | 0.703 |
+| Brier | 0.218 |
+| LogLoss | 0.625 |
+| MAE | 10.14 |
+| RMSE | 13.08 |
 | n | 2283 |
 
 ### Why it matters
-- **AUC ~0.704** - ranking quality for winners vs. losers.
-- **Brier ~0.220** - probability calibration/error for game winners.
-- **F1 ~0.687** - balance between precision and recall on home-win calls.
+- **AUC ~0.703** - ranking quality for winners vs. losers.
+- **Brier ~0.218** - probability calibration/error for game winners.
+- **F1 ~0.691** - balance between precision and recall on home-win calls.
 
 ### Explainability (GPU SHAP)
 We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm which engineered signals (QB availability deltas, passing EPA trends, opponent-adjusted efficiency, red-zone execution, and pressure metrics) drove these gains.
@@ -28,77 +28,73 @@ We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm wh
 
 This repository contains a fully scripted NFL prediction workflow:
 
-1. **Ingest** schedules, play-by-play, weather, injuries, and market data from public APIs (nflverse, ESPN, NFL.com, NOAA, Visual Crossing, BallDontLie, Yahoo, etc.).
+1. **Ingest** schedules, play-by-play, weather, injuries, player props, and market data from nflverse, ESPN, NFL.com, NOAA, Visual Crossing, BallDontLie, PropLine, The Odds API, and Yahoo when approved.
 2. **Engineer matchup features** that describe travel, rest, weather deltas, QB availability, red-zone efficiency, pressure rates, passing EPA trends, and opponent-adjusted strength.
-3. **Train and calibrate** models for win probability, spread/margin, and volatility (high-error) detection.
-4. **Generate predictions** for historical seasons and upcoming slates, then shrink and calibrate probabilities using volatility-aware isotonic models.
-5. **Analyze results** through automated run comparisons, GPU SHAP explainability, README updates, and a Streamlit command center.
+3. **Train and calibrate** models for win probability, spread/margin, volatility detection, and player-prop markets.
+4. **Generate predictions** for historical seasons and upcoming slates, with live-run guards that exclude already-started games.
+5. **Analyze results** through feature ablation, market benchmarking, CLV diagnostics, GPU SHAP explainability, README updates, and MattyTheBookie publishing.
 
-Everything is versioned so that the same command line always produces identical artifacts, assuming the same raw data snapshots.
+Raw data, processed data, model files, predictions, and generated analysis outputs are intentionally ignored by Git. Source code, tests, docs, and pipeline definitions are versioned; generated artifacts are reproducible from the pipeline and stay local unless published to MattyTheBookie.
 
 ## Installation
 
 Step-by-step environment, data, and pipeline instructions live in [INSTALL.md](INSTALL.md).
 
-## 2. Current Model Performance
+## 2. Current Operating State
 
-The latest logged win-probability run is **winprob_model (run_109)** from 2025-12-08 with:
+The current validated model is usable but below the aspirational targets in [GOALS.md](GOALS.md). Treat older claims of near-perfect AUC/Brier values as stale unless they are reproduced by the current evaluation pipeline.
 
-| Metric  | Value |
-|---------|-------|
-| Accuracy | 0.865 |
-| AUC      | 0.946 |
-| Brier    | 0.133 |
-| LogLoss  | 0.443 |
-| MAE      | 7.14 |
-| RMSE     | 9.23 |
+Current highlights:
 
-Key takeaways:
-
-- **AUC ~0.946** – our probability ranking is in the 95th percentile of academic NFL studies.
-- **Brier ~0.133** – probabilities are tightly calibrated after volatility shrinkage + isotonic scaling.
-- **Accuracy ~0.865** – reflects strong directional performance despite league parity.
-
-Explainability: GPU-accelerated TreeSHAP (nalysis/shap/*.png) highlights the features that drive gains (QB health deltas, passing EPA rolling differentials, opponent-adjusted efficiency, weather deltas, red-zone rates, pressure metrics).
+- BallDontLie is the preferred commercial feed; SportsDataIO is a fallback and is disabled by default unless explicitly enabled.
+- BallDontLie `bdl_*` features are generated and ablated, but kept out of production training unless `--include-bdl-features` is passed because recent Week 4/Week 5 ablations did not show repeatable lift.
+- Team prediction outputs include market-policy guardrails so downstream consumers can distinguish strong moneyline policy picks, review-only moneyline edges, blocked spread signals, and no-bet rows.
+- Player-prop models publish QB, offense, defense, and novelty CSVs with line consensus, injury/roster validation, line variance, over-probability, EV, and conservative edge-policy fields.
+- Market benchmarking publishes ROI, model-vs-Vegas calibration, spread key-number diagnostics, CLV detail/summary artifacts, and optional per-game CLV fields in `analysis/market_benchmark.csv` when evaluated rows match pick-time snapshots.
 
 ## 3. System Architecture
 
-`
-raw data (nflverse / ESPN / NOAA / BallDontLie / Yahoo / Visual Crossing)
-        └─> src/data/*.py fetchers  ──┐
-                                       ├─> data/raw/*.parquet (with caching + fastparquet fallbacks)
-consolidated schedule/weather/rosters ─┘
-        └─> src/features/build_features.py
-                └─> data/processed/matchup_features.parquet (team-game rows, engineered signals)
-        └─> src/models/train.py (win_prob & spread) + analysis/volatility_classifier.py
-                └─> models/*.pkl / analysis/volatility_classifier_dataset.csv
-        └─> src/predict/predict_upcoming.py + src/predict/predict_history.py
-                └─> predictions/*.csv (teams & players, Mountain Time kickoff)
-        └─> src/evaluation/*.py + src/analysis/*.py (calibration, run comparisons, SHAP, README sync)
-        └─> streamlit_app.py (dashboard with Ops / Transparency / Predictions / Performance Retro tabs)
-`
+```text
+raw data (nflverse / ESPN / NOAA / Visual Crossing / BallDontLie / PropLine / Odds API / Yahoo)
+        -> src/data/*.py fetchers
+        -> data/raw/*.parquet (cached locally; ignored by Git)
+        -> src/data/player_identity.py + src/player_availability.py
+        -> data/processed/player_identity.parquet + current_player_availability.parquet
+        -> src/features/build_features.py + src/features/balldontlie_team_form.py
+        -> data/processed/matchup_features.parquet
+        -> src/models/train.py + analysis/volatility_classifier.py
+        -> models/*.pkl
+        -> src/player_props/*.py
+        -> predictions/player_props_*.csv + predictions/evaluation/player_props/*.csv
+        -> src/predict/predict_upcoming.py + src/predict/predict_history.py
+        -> predictions/*.csv
+        -> analysis.market_clv / analysis.market_roi / analysis.market_blend / analysis.model_metrics_export
+        -> analysis/*.csv (generated locally; ignored by Git)
+        -> tools.publish_mtb_csvs + tools.import_mtb_predictions
+        -> C:\Code\mtb\data\prediction-csvs\...
+```
 
 ## 4. Feature Engineering Highlights
 
-src/features/build_features.py merges dozens of raw sources into a single matchup matrix. Key feature families include:
+`src/features/build_features.py` merges dozens of raw sources into a single matchup matrix. Key feature families include:
 
-1. **QB-specific injury features** (src/features/qb_health.py)
+1. **QB-specific injury features** (`src/features/qb_health.py`)
    - qb_status_flag, qb_status_delta_rolling3, qb_missed_last_game, qb_games_started_rolling5
    - Built from nflverse injuries + roster depth, no future leakage.
 
-2. **Passing EPA rolling differentials** (src/features/passing_epa_features.py)
+2. **Passing EPA rolling differentials** (`src/features/passing_epa_features.py`)
    - pass_epa_per_db, rolling-3/5 averages, league-adjusted diffs.
    - Derived from combined nflverse + ESPN play-by-play.
 
-3. **Opponent-adjusted efficiency (DVOA-like)** (src/features/adjusted_efficiency.py)
+3. **Opponent-adjusted efficiency (DVOA-like)** (`src/features/adjusted_efficiency.py`)
    - off_adj_eff_rolling3, def_adj_eff_rolling3.
    - Uses team stats + opponent averages to estimate over- or under-performance.
 
-4. **Red-zone efficiency** (src/features/redzone_features.py)
+4. **Red-zone efficiency** (`src/features/redzone_features.py`)
    - Trips / touchdowns for and against plus rolling conversion rates.
    - Gracefully handles zero trips and bye weeks.
 
-5. **Pressure & pass-block metrics** (src/features/pressure_features.py)
+5. **Pressure & pass-block metrics** (`src/features/pressure_features.py`)
    - pressures_allowed_per_db_rolling3, sack_rate_allowed_rolling3, and defensive counterparts.
    - Normalized by dropbacks to keep indoor/outdoor comparisons fair.
 
@@ -108,67 +104,79 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
 
 | Model | Description | File(s) |
 |-------|-------------|---------|
-| Win probability | XGBoost + optional isotonic calibration (--calibrate-winprob, models/winprob_gb.pkl) | src/models/train.py |
-| Spread / margin | Gradient boosting regressor with quantile heads (models/spread_gb.pkl) | src/models/train.py |
-| Volatility classifier | Random forest labeling high-log-loss games by default, with optional margin-error labels for analysis | nalysis/volatility_classifier.py |
-| Calibration shrinker | src/evaluation/calibrate_winprob.py shrinks volatile games toward 0.5 and fits isotonic curves over a rolling window | models/isotonic_calibrator.pkl |
+| Win probability | XGBoost + optional isotonic calibration (`--calibrate-winprob`, `models/winprob_gb.pkl`) | `src/models/train.py` |
+| Spread / margin | Gradient boosting regressor with quantile heads (`models/spread_gb.pkl`) | `src/models/train.py` |
+| Volatility classifier | Random forest labeling high-log-loss games by default; margin-error labels are analysis-only | `analysis/volatility_classifier.py` |
+| Calibration shrinker | Shrinks volatile games toward 0.5 and fits isotonic curves over a rolling window | `src/evaluation/calibrate_winprob.py`, `models/isotonic_calibrator.pkl` |
+| Player props | Split offense/defense/novelty models with historical line joins, over-probability calibration, edge backtests, and quality reports | `src/player_props/*.py` |
+| Market policy | Model-vs-Vegas benchmarking, CLV diagnostics, market-aware blending, spread calibration, and policy gates | `analysis/market_roi.py`, `analysis/market_clv.py`, `analysis/market_blend.py` |
 
 ## 6. Running the Pipeline
 
 1. **Environment**
-   - Python 3.10+ (Anaconda 
-flgpu env shown below)
-   - pip install -r requirements.txt
-   - Set API keys in secrets.env (BallDontLie, Yahoo, Visual Crossing, etc.).
+   - Python 3.10+; the active local environment is typically the Anaconda `nflgpu` env.
+   - Install dependencies with `pip install -r requirements.txt`.
+   - Set API keys in `secrets.env` for BallDontLie, PropLine, Visual Crossing, The Odds API, Yahoo when approved, and any optional fallback feeds.
 
 2. **Full run**
    ```powershell
    python -m tools.run_pipeline `
      --start-year 2017 `
-     --train-start-year 2016 `
+     --train-start-year 2017 `
      --max-parallel-data 8 `
      --data-start-delay 1 `
      --use-async `
      --use-gpu `
      --skip-logit `
-     --prediction-week 1 `
+     --prediction-week 5 `
      --live-run `
      --publish-mtb `
      --mtb-repo-dir C:\Code\mtb `
      --debug
    ```
-   - Data fetchers run in parallel (respecting API quotas).
-   - Use `--prediction-week 1 --live-run` to force Week 1 predictions and exclude that slate from training/calibration/evaluation.
+   - Replace `5` with the target NFL week.
+   - Data fetchers run in parallel, with `--max-parallel-data 8` and `--data-start-delay 1` as the current operating defaults.
+   - Use `--prediction-week 5 --live-run` with the target week substituted to force a live slate, exclude that week from training/calibration/evaluation, and avoid regenerating predictions for games that already kicked off.
    - Use `--publish-mtb` to copy current prediction, evaluation, ROI, and volatility CSVs into the local MattyTheBookie repo and refresh its normalized JSON.
-   - Sequential stage builds features, trains models, predicts history/upcoming, calibrates, evaluates, and runs post-analysis (compare runs + SHAP + README update).
+   - BallDontLie is preferred when `BALLDONTLIE_API_KEY` exists. SportsDataIO is skipped unless `--enable-sportsdataio` is passed.
+   - PropLine player-prop odds run for explicit prediction weeks when `PROPLINE_API_KEY` is configured.
+   - Sequential stages build features, train team and prop models, predict history/upcoming, evaluate, run market CLV/ROI/blend diagnostics, export website metrics, compare runs, generate SHAP artifacts, update this README, and publish to MTB when requested.
    - Native Windows stack-overflow exit codes (0xC0000409) are tolerated for predict_upcoming if the outputs were written (due to a PyArrow teardown bug).
 
 3. **Targeted steps**
-   - Fetch ESPN schedules: python -m src.data.nflsdv --season 2025 --schedules --force
-   - Build features only: python -m src.features.build_features --season 2023 2024 2025
-   - Win-prob training: python -m src.models.train --target win_prob --use-gpu --calibrate
-   - Predict upcoming week: python -m src.predict.predict_upcoming --season 2025 --week auto --debug
+   - Refresh BallDontLie live context: `python -m src.data.balldontlie --seasons 2026 --weeks 5 --feeds active_players games standings injuries stats season_stats team_stats team_season_stats --overwrite --debug`
+   - Build player identity: `python -m src.data.player_identity --debug`
+   - Build features only: `python -m src.features.build_features --season 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 --debug`
+   - Win-prob training: `python -m src.models.train --target win_prob --train-start-year 2017 --use-gpu --calibrate`
+   - Predict upcoming week: `python -m src.predict.predict_upcoming --season 2026 --week 5 --exclude-started --debug`
+   - Rebuild market diagnostics: `python -m analysis.market_clv --season 2026 --week 5` then `python -m analysis.market_roi --debug`
+   - Rebuild player-prop quality reports: `python -m src.player_props.quality_report --season 2026 --week 5 --debug`
 
 4. **Fastparquet fallback**
-   - Whenever PyArrow reports “Repetition level histogram size mismatch,” fallbacks automatically read with ngine="fastparquet" and log the file path. No manual action is needed unless the raw parquet itself is corrupt.
+   - Whenever PyArrow reports "Repetition level histogram size mismatch," fallbacks automatically read with `engine="fastparquet"` and log the file path. No manual action is needed unless the raw parquet itself is corrupt.
 
 ## 7. Outputs
 
 | Path | Description |
 |------|-------------|
-| data/raw/*.parquet | Cached ingestion results (one file per feed). |
-| data/processed/matchup_features.parquet | Final team-game matrix with all engineered features. |
-| models/winprob_gb.pkl, models/spread_gb.pkl, models/isotonic_calibrator.pkl | Serialized models and calibration artifacts. |
-| nalysis/volatility_classifier_dataset.csv | Labeled volatility dataset with probabilities, thresholds, and manual overrides. |
-| predictions/predictions.csv | Upcoming week team predictions (kickoff in Mountain Time, volatility metadata). |
-| predictions/predictions_full.csv | Full feature dump for upcoming games (used for debugging/analytics). |
-| predictions/predictions_players_*.csv | Player-level projections (QB, offense, defense). |
-| predictions/history/*.csv | Historical win-probability predictions by season/week. |
-| predictions/evaluation/*.csv | Calibration bins, weekly metrics, team errors, etc. |
+| `data/raw/*.parquet` | Cached ingestion results, one file per feed; generated locally and ignored by Git. |
+| `data/processed/matchup_features.parquet` | Final team-game matrix with engineered features; generated locally and ignored by Git. |
+| `data/processed/player_identity.parquet` | Cross-source player identity table linking GSIS, ESPN, BallDontLie, Sportradar, and sportsbook aliases. |
+| `data/processed/current_player_availability.parquet` | Weekly availability table built from ESPN, nflverse, and BallDontLie context. |
+| `models/winprob_gb.pkl`, `models/spread_gb.pkl`, `models/isotonic_calibrator.pkl` | Serialized team models and calibration artifacts; ignored by Git. |
+| `models/player_props/*/*_model.pkl` | Serialized player-prop market models; ignored by Git. |
+| `predictions/predictions.csv` | Upcoming week team predictions with Mountain Time kickoff, market policy, and volatility metadata. |
+| `predictions/predictions_full.csv` | Full feature dump for upcoming games, used for debugging and analytics. |
+| `predictions/predictions_players_*.csv` | Legacy rate-based player projections for QB, offense, and defense. |
+| `predictions/player_props_qb.csv`, `predictions/player_props_offense.csv`, `predictions/player_props_defense.csv`, `predictions/player_props_novelty.csv` | Trained player-prop prediction exports with sportsbook lines, quality flags, EV fields, and conservative recommendation policy. |
+| `predictions/history/*.csv` | Historical win-probability predictions by season/week. |
+| `predictions/evaluation/*.csv` | Team model evaluation artifacts, calibration bins, weekly metrics, team errors, feature-quality reports, and feature-family ablations. |
+| `predictions/evaluation/player_props/*.csv` | Player-prop model metrics, historical line joins, over-probability diagnostics, edge backtests, weekly quality reports, line coverage, and roster-line audits. |
+| `analysis/market_*.csv`, `analysis/model_metrics_week_NN.csv` | Market ROI, model-vs-Vegas benchmark, CLV, blend, spread calibration, policy, and website-ready metrics exports; generated locally and ignored by Git. |
+| `analysis/run_comparisons/*` | Markdown report and metric trend PNGs for logged runs; generated locally and ignored by Git. |
+| `analysis/shap/*` | SHAP numpy dumps and summary plots from GPU explainability; generated locally and ignored by Git. |
 | C:\Code\mtb\data\prediction-csvs\current\*.csv | Published CSV copies for the local MattyTheBookie site when `--publish-mtb` is used. |
 | C:\Code\mtb\data\predictions\current.json | Normalized MattyTheBookie prediction JSON refreshed after CSV publish unless `--skip-mtb-import` is used. |
-| nalysis/run_comparisons/* | Markdown report + metric trend PNGs for every logged run. |
-| nalysis/shap/* | SHAP numpy dumps and summary plots from GPU explainability. |
 
 ## 8. Validation Infrastructure
 
@@ -208,39 +216,42 @@ The platform includes comprehensive validation infrastructure for rigorous model
 
 See [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) for comprehensive methodology documentation.
 
-## 8. Post-run Analysis
+## 9. Post-run Analysis
 
 After every successful evaluation, the pipeline triggers:
 
-1. python -m src.analysis.compare_runs – regenerates nalysis/run_comparisons/run_report.md plus AUC/Brier/LogLoss trend charts.
-2. python -m src.analysis.shap_gpu – samples 2,000 games, loads the booster + feature order from models/winprob_gb.pkl, and recomputes SHAP values/plots. The script now aligns feature names with the model to avoid XGBoost chunk mismatches.
-3. python -m src.analysis.update_readme_metrics – rewrites the “Model Performance” section above with the best run from predictions/evaluation/overall_metrics.csv.
+1. `python -m analysis.market_clv` writes weekly pick-time-vs-close/latest movement diagnostics.
+2. `python -m analysis.market_roi` writes moneyline/spread ROI, model-vs-Vegas benchmarks, CLV-enriched benchmark rows, spread calibration, and market policy artifacts.
+3. `python -m analysis.market_blend` evaluates market-aware model/market probability blends.
+4. `python -m analysis.model_metrics_export` writes `analysis/model_metrics_week_NN.csv` for MattyTheBookie About-page consumption.
+5. `python -m src.analysis.compare_runs` regenerates `analysis/run_comparisons/run_report.md` plus AUC/Brier/LogLoss trend charts.
+6. `python -m src.analysis.shap_gpu` samples evaluated games, loads the booster and feature order from `models/winprob_gb.pkl`, and recomputes SHAP values/plots.
+7. `python -m src.analysis.update_readme_metrics` rewrites the "Model Performance" section above with the latest valid run from `predictions/evaluation/overall_metrics.csv`.
 
 Failures in these optional steps are reported as warnings so the main pipeline still completes.
 
-## 9. Streamlit Command Center
+## 10. Streamlit Command Center
 
 Launch via streamlit run streamlit_app.py. Tabs:
 
-1. **Pipeline Ops** – trigger individual jobs or the entire pipeline, monitor latest run metrics, and see API caching status.
-2. **Transparency** – KPI cards (accuracy, AUC, Brier, LogLoss, MAE/RMSE) with hover tooltips, summary of each CSV inside nalysis/, and explanations of dataset roles.
-3. **Predictions** – current-week leaderboards (team win probabilities, offense total yards, QB passing yards, defense sacks, TD totals) with filters for games sampled and rank thresholds; Mountain Time kickoffs are displayed inline.
-4. **Performance Retro** – week-level accuracy/MAE charts plus offense/QB/defense evaluation tables; dropdown lets you select prior weeks, and the data table sorts by season/week.
+1. **Pipeline Ops** - trigger individual jobs or the entire pipeline, monitor latest run metrics, and see API caching status.
+2. **Transparency** - KPI cards (accuracy, AUC, Brier, LogLoss, MAE/RMSE) with hover tooltips, summary of generated `analysis/` outputs, and explanations of dataset roles.
+3. **Predictions** - current-week leaderboards for team win probabilities, player projections, player props, defensive sacks, and touchdown markets with filters for games sampled and rank thresholds; Mountain Time kickoffs are displayed inline.
+4. **Performance Retro** - week-level accuracy/MAE charts plus offense/QB/defense evaluation tables; dropdown lets you select prior weeks, and the data table sorts by season/week.
 
-## 10. Troubleshooting & Tips
+## 11. Troubleshooting & Tips
 
-- **Windows stack overflow (0xC0000409)** – caused by PyArrow tearing down GPU contexts; the pipeline now ignores this code for predict_upcoming if outputs exist. If you see the error elsewhere, re-run the command manually to capture stdout.
-- **Missing raw files** – delete the corrupt parquet and re-run the corresponding fetcher (e.g., spn_schedule.parquet via src.data.nflsdv). The scripts will re-download and overwrite caches.
-- **Different Python versions** – 	ools/run_pipeline.py now uses the same interpreter (sys.executable) for every job so that python on PATH cannot point to the wrong environment.
-- **SHAP chunk mismatch** – fixed by enforcing the model’s feature order, but if you modify training features, retrain the model and re-run python -m src.analysis.shap_gpu.
-- **Large README edits** – written in UTF-8; avoid non-ASCII characters unless necessary.
+- **Windows stack overflow (0xC0000409)** - caused by PyArrow tearing down GPU contexts; the pipeline now ignores this code for predict_upcoming if outputs exist. If you see the error elsewhere, re-run the command manually to capture stdout.
+- **Missing raw files** - delete the corrupt parquet and re-run the corresponding fetcher. The scripts will re-download and overwrite caches.
+- **Different Python versions** - `tools/run_pipeline.py` uses the same interpreter (`sys.executable`) for every job so that `python` on PATH cannot point to the wrong environment.
+- **SHAP chunk mismatch** - fixed by enforcing the model's feature order, but if you modify training features, retrain the model and re-run `python -m src.analysis.shap_gpu`.
+- **Dirty Git status after pipeline runs** - `data/`, `models/`, `predictions/`, and generated `analysis` artifacts are ignored. If Git is dirty after a run, it should usually be source/docs/tests rather than regenerated outputs.
+- **Large README edits** - written in UTF-8; avoid non-ASCII characters unless necessary.
 
-## 11. Contributing
+## 12. Contributing
 
-1. Create or activate the 
-flgpu environment.
-2. Run formatting/linting if desired (
-uff, lack, etc. - not enforced here).
+1. Create or activate the `nflgpu` environment.
+2. Run formatting/linting if desired (`ruff`, `black`, etc. - not enforced here).
 3. Keep commits focused; do not revert user-owned changes.
 4. Update README.md and GOALS.md whenever you add feature families, architectural elements, or roadmap items.
 
@@ -285,7 +296,3 @@ Datasets referenced or included in this project may be subject to separate sourc
 ## Trademark
 
 NFL is a registered trademark of the National Football League. This project is not affiliated with or endorsed by the NFL.
-
----
-
-For questions or run approvals, contact the maintainer via the phone number documented in the conversation history (respond "Yes" or "No" when prompted). Happy modeling!

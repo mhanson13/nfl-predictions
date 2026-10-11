@@ -99,9 +99,31 @@ SPREAD_COVER_CALIBRATION_MIN_BETS = 50
 SPREAD_COVER_CALIBRATION_MAX_ABS_ERROR = 0.05
 SPREAD_COVER_CALIBRATION_CONFIDENCE_MIN_PROB = 0.65
 MARKET_CLV_SUMMARY_PATH = ANALYSIS_DIR / "market_clv_summary.csv"
+MARKET_CLV_DETAIL_PATH = ANALYSIS_DIR / "market_clv_detail.csv"
 MARKET_CLV_MIN_TRACKED_GAMES = 10
 MARKET_CLV_MIN_POSITIVE_RATE = 0.52
 MARKET_CLV_MIN_AVG_PROB_DELTA = 0.0
+
+MARKET_BENCHMARK_CLV_COLUMNS = [
+    "clv_detail_available",
+    "clv_status",
+    "clv_model_pick_side",
+    "clv_model_pick_team",
+    "clv_model_pick_prob",
+    "clv_model_side_pick_moneyline",
+    "clv_model_side_close_moneyline",
+    "clv_model_side_pick_implied_prob_novig",
+    "clv_model_side_close_implied_prob_novig",
+    "moneyline_clv_decimal_delta",
+    "moneyline_clv_prob_delta",
+    "moneyline_positive_clv",
+    "clv_model_vs_pick_prob_edge",
+    "clv_model_vs_close_prob_edge",
+    "clv_pick_selected_spread",
+    "clv_close_selected_spread",
+    "spread_clv_points",
+    "spread_positive_clv",
+]
 
 MARKET_EDGE_POLICY_COLUMNS = [
     "signal",
@@ -467,6 +489,97 @@ def build_market_benchmark(df: pd.DataFrame) -> pd.DataFrame:
         ),
     )
     return benchmark
+
+
+def load_market_clv_detail(path: Path) -> pd.DataFrame:
+    """Load optional per-game CLV detail for benchmark enrichment."""
+    if not path.exists():
+        return pd.DataFrame()
+    detail = pd.read_csv(path)
+    if "game_id" not in detail.columns:
+        raise ValueError(f"{path} must include game_id")
+    for col in ["season", "week"]:
+        if col in detail.columns:
+            detail[col] = pd.to_numeric(detail[col], errors="coerce").astype("Int64")
+    return detail
+
+
+def attach_market_clv_detail(benchmark: pd.DataFrame, clv_detail: pd.DataFrame) -> pd.DataFrame:
+    """Attach reliable pick-time-vs-close CLV fields to per-game benchmark rows."""
+    enriched = benchmark.copy()
+    if enriched.empty:
+        for col in MARKET_BENCHMARK_CLV_COLUMNS:
+            enriched[col] = pd.Series(dtype=object)
+        return enriched
+
+    if clv_detail.empty:
+        enriched["clv_detail_available"] = False
+        enriched["clv_status"] = "unavailable_missing_clv_detail"
+        for col in MARKET_BENCHMARK_CLV_COLUMNS:
+            if col not in enriched.columns:
+                enriched[col] = np.nan
+        return enriched
+
+    rename_map = {
+        "model_pick_side": "clv_model_pick_side",
+        "model_pick_team": "clv_model_pick_team",
+        "model_pick_prob": "clv_model_pick_prob",
+        "model_side_pick_moneyline": "clv_model_side_pick_moneyline",
+        "model_side_close_moneyline": "clv_model_side_close_moneyline",
+        "model_side_pick_implied_prob_novig": "clv_model_side_pick_implied_prob_novig",
+        "model_side_close_implied_prob_novig": "clv_model_side_close_implied_prob_novig",
+        "model_vs_pick_prob_edge": "clv_model_vs_pick_prob_edge",
+        "model_vs_close_prob_edge": "clv_model_vs_close_prob_edge",
+        "pick_selected_spread": "clv_pick_selected_spread",
+        "close_selected_spread": "clv_close_selected_spread",
+    }
+    passthrough_cols = [
+        "clv_status",
+        "moneyline_clv_decimal_delta",
+        "moneyline_clv_prob_delta",
+        "moneyline_positive_clv",
+        "spread_clv_points",
+        "spread_positive_clv",
+    ]
+    source_cols = [
+        col
+        for col in ["season", "week", "game_id", *rename_map.keys(), *passthrough_cols]
+        if col in clv_detail.columns
+    ]
+    detail = clv_detail[source_cols].rename(columns=rename_map).copy()
+    merge_keys = ["game_id"]
+    if {"season", "week"}.issubset(enriched.columns) and {"season", "week"}.issubset(detail.columns):
+        for frame in [enriched, detail]:
+            frame["season"] = pd.to_numeric(frame["season"], errors="coerce").astype("Int64")
+            frame["week"] = pd.to_numeric(frame["week"], errors="coerce").astype("Int64")
+        merge_keys = ["season", "week", "game_id"]
+    detail = detail.drop_duplicates(merge_keys, keep="last")
+
+    enriched = enriched.merge(detail, on=merge_keys, how="left", validate="many_to_one")
+    enriched["clv_detail_available"] = enriched["clv_status"].notna()
+    enriched["clv_status"] = enriched["clv_status"].fillna("unavailable_missing_clv_detail")
+
+    expected_side = pd.Series(
+        np.where(enriched["model_home_pick"].fillna(False).astype(bool), "home", "away"),
+        index=enriched.index,
+    )
+    detail_side = enriched.get("clv_model_pick_side", pd.Series(pd.NA, index=enriched.index)).astype("string")
+    side_mismatch = detail_side.notna() & detail_side.ne(expected_side)
+    if side_mismatch.any():
+        invalid_cols = [
+            col
+            for col in MARKET_BENCHMARK_CLV_COLUMNS
+            if col not in {"clv_detail_available", "clv_status", "clv_model_pick_side", "clv_model_pick_team"}
+        ]
+        for col in invalid_cols:
+            if col in enriched.columns:
+                enriched.loc[side_mismatch, col] = np.nan
+        enriched.loc[side_mismatch, "clv_status"] = "unavailable_model_side_mismatch"
+
+    for col in MARKET_BENCHMARK_CLV_COLUMNS:
+        if col not in enriched.columns:
+            enriched[col] = np.nan
+    return enriched
 
 
 def _benchmark_record(
@@ -2481,6 +2594,13 @@ def run(args: argparse.Namespace) -> None:
     moneyline_df = summarize_moneyline(dataset, args.moneyline_thresholds)
     spread_df = summarize_spread(dataset, args.spread_thresholds, sigma)
     benchmark_df = build_market_benchmark(dataset)
+    if args.market_clv_detail.exists():
+        clv_detail_df = load_market_clv_detail(args.market_clv_detail)
+    else:
+        clv_detail_df = pd.DataFrame()
+        if args.debug:
+            print(f"[market_roi] CLV detail not found at {args.market_clv_detail}; benchmark CLV fields unavailable.")
+    benchmark_df = attach_market_clv_detail(benchmark_df, clv_detail_df)
     benchmark_summary_df = summarize_market_benchmark(benchmark_df)
     disagreement_roi_df = summarize_disagreement_moneyline_roi(benchmark_df, args.benchmark_edge_thresholds)
     disagreement_stability_df = summarize_disagreement_moneyline_season_stability(
@@ -2581,6 +2701,7 @@ def run(args: argparse.Namespace) -> None:
         "model_side_profit",
         "vegas_side_moneyline",
         "vegas_side_profit",
+        *MARKET_BENCHMARK_CLV_COLUMNS,
         "pred_home_margin",
         "market_home_margin",
         "spread_edge_points",
@@ -2616,6 +2737,7 @@ def run(args: argparse.Namespace) -> None:
             "policy_min_roi": float(args.policy_min_roi),
             "policy_min_probability_edge": float(args.policy_min_probability_edge),
             "policy_min_spread_edge": float(args.policy_min_spread_edge),
+            "market_clv_detail": str(args.market_clv_detail),
             "market_clv_summary": str(args.market_clv_summary),
             "clv_min_tracked_games": int(args.clv_min_tracked_games),
             "clv_min_positive_rate": float(args.clv_min_positive_rate),
@@ -3096,6 +3218,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="Minimum predicted margin edge in points for spread policy candidates.",
+    )
+    parser.add_argument(
+        "--market-clv-detail",
+        type=Path,
+        default=MARKET_CLV_DETAIL_PATH,
+        help="Optional weekly per-game CLV detail merged into market_benchmark.csv when available.",
     )
     parser.add_argument(
         "--market-clv-summary",

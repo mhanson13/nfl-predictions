@@ -143,6 +143,105 @@ def test_market_benchmark_disagreement_summary_and_roi(monkeypatch):
     assert roi["roi"] == pytest.approx(1.2)
 
 
+def test_market_benchmark_attaches_matching_clv_detail(monkeypatch):
+    odds = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_02_AWAY_HOME",
+                "home_moneyline": 120,
+                "away_moneyline": -140,
+                "spread_line": -1.5,
+                "home_spread_odds": -110,
+                "away_spread_odds": -110,
+            }
+        ]
+    )
+    monkeypatch.setattr(market_roi, "load_market_lines", lambda columns: odds[list(columns)])
+    dataset = market_roi.prepare_dataset(
+        _predictions_row(home_win_prob=0.60, pred_home_margin=2.0, home_margin=3.0)
+    )
+    benchmark = market_roi.build_market_benchmark(dataset)
+    clv_detail = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 2,
+                "game_id": "2026_02_AWAY_HOME",
+                "model_pick_side": "home",
+                "model_pick_team": "HOME",
+                "model_pick_prob": 0.60,
+                "model_side_pick_moneyline": 130,
+                "model_side_close_moneyline": 120,
+                "model_side_pick_implied_prob_novig": 0.43,
+                "model_side_close_implied_prob_novig": 0.45,
+                "moneyline_clv_decimal_delta": 0.10,
+                "moneyline_clv_prob_delta": 0.02,
+                "moneyline_positive_clv": True,
+                "model_vs_pick_prob_edge": 0.17,
+                "model_vs_close_prob_edge": 0.15,
+                "pick_selected_spread": 2.0,
+                "close_selected_spread": 1.5,
+                "spread_clv_points": 0.5,
+                "spread_positive_clv": True,
+                "clv_status": "movement_available",
+            }
+        ]
+    )
+
+    enriched = market_roi.attach_market_clv_detail(benchmark, clv_detail)
+    row = enriched.iloc[0]
+
+    assert bool(row["clv_detail_available"]) is True
+    assert row["clv_status"] == "movement_available"
+    assert row["clv_model_pick_side"] == "home"
+    assert row["clv_model_side_pick_moneyline"] == 130
+    assert row["clv_model_side_close_moneyline"] == 120
+    assert row["moneyline_clv_prob_delta"] == pytest.approx(0.02)
+    assert bool(row["moneyline_positive_clv"]) is True
+    assert row["spread_clv_points"] == pytest.approx(0.5)
+
+
+def test_market_benchmark_rejects_clv_detail_when_model_side_changed(monkeypatch):
+    odds = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_02_AWAY_HOME",
+                "home_moneyline": 120,
+                "away_moneyline": -140,
+                "spread_line": -1.5,
+                "home_spread_odds": -110,
+                "away_spread_odds": -110,
+            }
+        ]
+    )
+    monkeypatch.setattr(market_roi, "load_market_lines", lambda columns: odds[list(columns)])
+    dataset = market_roi.prepare_dataset(
+        _predictions_row(home_win_prob=0.60, pred_home_margin=2.0, home_margin=3.0)
+    )
+    benchmark = market_roi.build_market_benchmark(dataset)
+    clv_detail = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 2,
+                "game_id": "2026_02_AWAY_HOME",
+                "model_pick_side": "away",
+                "moneyline_clv_prob_delta": 0.02,
+                "spread_clv_points": 0.5,
+                "clv_status": "movement_available",
+            }
+        ]
+    )
+
+    enriched = market_roi.attach_market_clv_detail(benchmark, clv_detail)
+    row = enriched.iloc[0]
+
+    assert bool(row["clv_detail_available"]) is True
+    assert row["clv_status"] == "unavailable_model_side_mismatch"
+    assert pd.isna(row["moneyline_clv_prob_delta"])
+    assert pd.isna(row["spread_clv_points"])
+
+
 def test_market_utility_segments_include_disagreement_and_edge_bins(monkeypatch):
     odds = pd.DataFrame(
         [
