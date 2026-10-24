@@ -16,10 +16,10 @@ from src.analysis.shap_gpu import _load_model, _prepare_feature_matrix
 def _make_feature_df(n: int = 100) -> pd.DataFrame:
     rng = np.random.default_rng(0)
     return pd.DataFrame({
-        "epa_home": rng.normal(0, 1, n),
-        "epa_away": rng.normal(0, 1, n),
-        "completions_home": rng.normal(20, 5, n),
-        "completions_away": rng.normal(20, 5, n),
+        "pass_epa_rolling_home": rng.normal(0, 1, n),
+        "pass_epa_rolling_away": rng.normal(0, 1, n),
+        "rest_days_home": rng.normal(7, 1, n),
+        "rest_days_away": rng.normal(7, 1, n),
     })
 
 

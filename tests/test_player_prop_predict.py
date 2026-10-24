@@ -9,6 +9,7 @@ from src.player_props.features import build_player_prop_features, build_player_p
 from src.player_props.predict import (
     _attach_edge_recommendations,
     _attach_prop_odds,
+    _prepare_nflverse_injuries,
     _read_frame_if_exists,
     build_novelty_prediction_candidates,
     build_prediction_candidates,
@@ -1573,6 +1574,40 @@ def test_predict_player_props_flags_injury_exclusions(tmp_path):
     assert bool(row["injury_exclusion_flag"]) is True
     assert row["prop_quality_flag"] == "injury_exclusion"
     assert bool(row["bettable_flag"]) is False
+
+
+def test_prepare_nflverse_injuries_does_not_carry_prior_week_reports_forward():
+    injuries = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 2,
+                "gsis_id": "qb-1",
+                "team": "CIN",
+                "full_name": "QB One",
+                "report_status": "Questionable",
+                "practice_status": "Full Participation in Practice",
+                "report_primary_injury": "Back",
+            },
+            {
+                "season": 2026,
+                "week": 7,
+                "gsis_id": "rb-1",
+                "team": "CIN",
+                "full_name": "RB One",
+                "report_status": "Questionable",
+                "practice_status": "Limited Participation in Practice",
+                "report_primary_injury": "Ankle",
+            },
+        ]
+    )
+
+    prepared = _prepare_nflverse_injuries(injuries, season=2026, week=7)
+
+    assert set(prepared["player_id"]) == {"rb-1"}
+    row = prepared.iloc[0]
+    assert row["injury_report_week"] == 7
+    assert row["prop_quality_flag"] == "injury_review"
 
 
 def test_predict_player_props_blocks_confirmed_roster_mismatch(tmp_path):

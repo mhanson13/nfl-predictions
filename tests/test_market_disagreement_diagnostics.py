@@ -137,3 +137,115 @@ def test_build_disagreement_recommendations_uses_season_stability():
     assert overall["action"] == "candidate_model_side_segment"
     assert overall["recommendation_tier"] == "research"
     assert overall["qualified_seasons"] == 3
+
+
+def test_reconcile_market_edge_policy_blocks_avoid_probability_edge_segment():
+    policy = pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": True,
+                "recommendation_tier": "strong",
+                "threshold": 0.05,
+            }
+        ]
+    )
+    recommendations = pd.DataFrame(
+        [
+            {
+                "action": "candidate_model_side_segment",
+                "segment_family": "prob_edge_bin",
+                "segment": "5-8%",
+            },
+            {
+                "action": "avoid_model_side_segment",
+                "segment_family": "prob_edge_bin",
+                "segment": "8-10%",
+            },
+        ]
+    )
+
+    reconciled = diag.reconcile_market_edge_policy(
+        policy,
+        recommendations,
+        max_probability_edge=0.10,
+    )
+    row = reconciled.iloc[0]
+
+    assert bool(row["recommended"]) is False
+    assert row["recommendation_tier"] == "no_bet"
+    assert bool(row["disagreement_recommendation_gate_pass"]) is False
+    assert row["disagreement_recommendation_gate_status"] == "blocked_diagnostic_avoid_segment"
+    assert row["disagreement_recommendation_gate_segments"] == "5-8%;8-10%"
+    assert row["disagreement_recommendation_gate_candidate_segments"] == "5-8%"
+    assert row["disagreement_recommendation_gate_blocked_segments"] == "8-10%"
+
+
+def test_reconcile_market_edge_policy_passes_candidate_probability_edge_segment():
+    policy = pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": True,
+                "recommendation_tier": "strong",
+                "threshold": 0.05,
+            }
+        ]
+    )
+    recommendations = pd.DataFrame(
+        [
+            {
+                "action": "candidate_model_side_segment",
+                "segment_family": "prob_edge_bin",
+                "segment": "5-8%",
+            }
+        ]
+    )
+
+    reconciled = diag.reconcile_market_edge_policy(
+        policy,
+        recommendations,
+        max_probability_edge=0.08,
+    )
+    row = reconciled.iloc[0]
+
+    assert bool(row["recommended"]) is True
+    assert row["recommendation_tier"] == "strong"
+    assert bool(row["disagreement_recommendation_gate_pass"]) is True
+    assert row["disagreement_recommendation_gate_status"] == "diagnostic_candidate_segment_pass"
+    assert row["disagreement_recommendation_gate_candidate_segments"] == "5-8%"
+
+
+def test_reconcile_market_edge_policy_handles_threshold_at_max_probability_edge():
+    policy = pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": True,
+                "recommendation_tier": "strong",
+                "threshold": 0.10,
+            }
+        ]
+    )
+    recommendations = pd.DataFrame(
+        [
+            {
+                "action": "candidate_model_side_segment",
+                "segment_family": "prob_edge_bin",
+                "segment": "10-15%",
+            }
+        ]
+    )
+
+    reconciled = diag.reconcile_market_edge_policy(
+        policy,
+        recommendations,
+        max_probability_edge=0.10,
+    )
+    row = reconciled.iloc[0]
+
+    assert bool(row["recommended"]) is True
+    assert bool(row["disagreement_recommendation_gate_pass"]) is True
+    assert row["disagreement_recommendation_gate_status"] == "diagnostic_candidate_segment_pass"
+    assert row["disagreement_recommendation_gate_segments"] == "10-15%;15%+"
+    assert row["disagreement_recommendation_gate_candidate_segments"] == "10-15%"

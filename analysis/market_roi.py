@@ -2935,14 +2935,18 @@ def _moneyline_probability_edge_segment_labels(
     max_edge: float,
 ) -> list[str]:
     labels: list[str] = []
+    min_value = float(min_edge)
+    max_value = float(max_edge)
+    if not np.isfinite(max_value) or max_value <= min_value:
+        max_value = np.inf
     for lower, upper, label in MARKET_PROB_EDGE_BINS:
         if np.isneginf(lower):
             continue
         lower_value = float(lower)
         upper_value = float(upper)
-        if lower_value >= float(max_edge):
+        if not np.isinf(max_value) and lower_value >= max_value:
             continue
-        if upper_value <= float(min_edge):
+        if upper_value <= min_value:
             continue
         labels.append(label)
     return labels

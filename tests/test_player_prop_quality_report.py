@@ -230,6 +230,72 @@ def test_line_coverage_counts_published_lines_as_matchable_when_identity_path_at
     assert book["matchable_prediction_rows"] == 1
 
 
+def test_line_coverage_marks_matched_book_as_available_not_selected_when_another_book_was_selected():
+    predictions = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_03_CAR_ATL",
+                "market": "qb_passing_yards",
+                "player_name": "QB One",
+                "line": 245.5,
+                "sportsbook": "draftkings",
+            },
+        ]
+    )
+    odds = pd.DataFrame(
+        [
+            {
+                "home_team": "ATL Falcons",
+                "away_team": "CAR Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_pass_yds",
+                "outcome_name": "Over",
+                "player_name": "QB One",
+                "price": -110,
+                "point": 245.5,
+                "commence_time": "2026-09-24T00:15:00Z",
+                "market_last_update": "2026-09-22T12:00:00Z",
+            },
+            {
+                "home_team": "ATL Falcons",
+                "away_team": "CAR Panthers",
+                "bookmaker_key": "hardrock",
+                "market_key": "player_pass_yds",
+                "outcome_name": "Over",
+                "player_name": "QB One",
+                "price": -105,
+                "point": 245.5,
+                "commence_time": "2026-09-24T00:15:00Z",
+                "market_last_update": "2026-09-22T12:30:00Z",
+            },
+        ]
+    )
+
+    coverage = build_line_coverage_report(
+        predictions,
+        odds,
+        season=2026,
+        week=3,
+        vendors=["draftkings", "hardrock"],
+        generated_at="2026-09-22T00:15:00+00:00",
+    )
+
+    hardrock = coverage[
+        coverage["scope"].eq("market_sportsbook")
+        & coverage["market"].eq("qb_passing_yards")
+        & coverage["sportsbook"].eq("hardrock")
+    ].iloc[0]
+
+    assert hardrock["matchable_prediction_rows"] == 1
+    assert hardrock["published_line_rows"] == 0
+    assert hardrock["selected_elsewhere_rows"] == 1
+    assert hardrock["coverage_status"] == "available_not_selected"
+    assert hardrock["raw_games"] == 1
+    assert hardrock["earliest_kickoff"] == "2026-09-24T00:15:00+00:00"
+    assert hardrock["latest_market_update"] == "2026-09-22T12:30:00+00:00"
+    assert hardrock["hours_until_earliest_kickoff"] == 48.0
+
+
 def test_line_coverage_does_not_count_identity_matched_offer_as_missing_prediction():
     predictions = pd.DataFrame(
         [

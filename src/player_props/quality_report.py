@@ -77,6 +77,11 @@ COVERAGE_COLUMNS = [
     "coverage_status",
     "raw_rows",
     "raw_unmodeled_market_rows",
+    "raw_games",
+    "earliest_kickoff",
+    "latest_kickoff",
+    "latest_market_update",
+    "hours_until_earliest_kickoff",
     "prepared_line_rows",
     "exact_prepared_line_rows",
     "fallback_prepared_line_rows",
@@ -88,6 +93,7 @@ COVERAGE_COLUMNS = [
     "published_line_rows",
     "exact_published_line_rows",
     "fallback_published_line_rows",
+    "selected_elsewhere_rows",
     "prediction_rows_without_offered_line",
     "offered_pairs_not_in_predictions",
     "player_name_overlap_no_game",
@@ -618,6 +624,41 @@ def _published_line_prediction_ids(predictions: pd.DataFrame, sportsbook: str | 
     return set(predictions.loc[line_mask, "_prediction_row_id"].dropna().astype(int).tolist())
 
 
+def _iso_timestamp_min(values: pd.Series) -> str | float:
+    parsed = pd.to_datetime(values, errors="coerce", utc=True)
+    parsed = parsed.dropna()
+    if parsed.empty:
+        return np.nan
+    return parsed.min().isoformat()
+
+
+def _iso_timestamp_max(values: pd.Series) -> str | float:
+    parsed = pd.to_datetime(values, errors="coerce", utc=True)
+    parsed = parsed.dropna()
+    if parsed.empty:
+        return np.nan
+    return parsed.max().isoformat()
+
+
+def _hours_until_timestamp(timestamp: object, generated_at: str) -> float:
+    target = pd.to_datetime(pd.Series([timestamp]), errors="coerce", utc=True).iloc[0]
+    generated = pd.to_datetime(pd.Series([generated_at]), errors="coerce", utc=True).iloc[0]
+    if pd.isna(target) or pd.isna(generated):
+        return np.nan
+    return float((target - generated).total_seconds() / 3600.0)
+
+
+def _raw_game_count(frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    if "game_id" in frame.columns:
+        return int(frame["game_id"].nunique(dropna=True))
+    cols = [col for col in ["home_team", "away_team", "commence_time", "event_id"] if col in frame.columns]
+    if not cols:
+        return 0
+    return int(len(frame[cols].dropna(how="all").drop_duplicates()))
+
+
 def _name_key_collision_groups(raw: pd.DataFrame) -> int:
     required = {"market", "sportsbook", "player_name_key", "player_name"}
     if raw.empty or not required.issubset(raw.columns):
@@ -666,21 +707,27 @@ def _coverage_row(
         odds = odds[odds["sportsbook"].eq(sportsbook_filter)]
 
     odds_keys = _offer_keys(odds)
-    matched_ids = _matchable_prediction_ids(pred, odds)
+    odds_matched_ids = _matchable_prediction_ids(pred, odds)
+    matched_ids = set(odds_matched_ids)
 
     line_mask = _has_value(pred, "line")
     fallback_line = line_mask & _fallback_line_mask(pred)
     exact_line = line_mask & ~fallback_line
+    published_any_ids = _published_line_prediction_ids(pred)
     if sportsbook_filter is not None:
         selected_sportsbook = pred.get("sportsbook", pd.Series(pd.NA, index=pred.index)).eq(sportsbook_filter)
         published_line_rows = int((line_mask & selected_sportsbook).sum())
         exact_published_line_rows = int((exact_line & selected_sportsbook).sum())
         fallback_published_line_rows = int((fallback_line & selected_sportsbook).sum())
+        published_this_book_ids = _published_line_prediction_ids(pred, sportsbook_filter)
+        selected_elsewhere_rows = int(len((odds_matched_ids - published_this_book_ids) & published_any_ids))
     else:
         published_line_rows = int(line_mask.sum())
         exact_published_line_rows = int(exact_line.sum())
         fallback_published_line_rows = int(fallback_line.sum())
-    matched_ids.update(_published_line_prediction_ids(pred, sportsbook_filter))
+        published_this_book_ids = published_any_ids
+        selected_elsewhere_rows = 0
+    matched_ids.update(published_this_book_ids)
     matchable_prediction_rows = len(matched_ids)
 
     pred_players = set(pred.get("player_name_key", pd.Series(dtype="object")).dropna().astype(str))
@@ -693,6 +740,11 @@ def _coverage_row(
     )
 
     raw_rows = int(len(raw))
+    raw_games = _raw_game_count(raw)
+    earliest_kickoff = _iso_timestamp_min(raw["commence_time"]) if "commence_time" in raw.columns else np.nan
+    latest_kickoff = _iso_timestamp_max(raw["commence_time"]) if "commence_time" in raw.columns else np.nan
+    latest_market_update = _iso_timestamp_max(raw["market_last_update"]) if "market_last_update" in raw.columns else np.nan
+    hours_until_earliest_kickoff = _hours_until_timestamp(earliest_kickoff, generated_at)
     prepared_line_rows = int(len(odds))
     prepared_fallback = _fallback_line_mask(odds)
     fallback_prepared_line_rows = int(prepared_fallback.sum())
@@ -713,6 +765,8 @@ def _coverage_row(
         coverage_status = "offered_no_predictions"
     elif matchable_prediction_rows == 0:
         coverage_status = "prepared_but_unmatched"
+    elif sportsbook_filter is not None and published_line_rows == 0 and selected_elsewhere_rows > 0:
+        coverage_status = "available_not_selected"
     else:
         coverage_status = "matched_not_published"
 
@@ -725,6 +779,11 @@ def _coverage_row(
         "coverage_status": coverage_status,
         "raw_rows": raw_rows,
         "raw_unmodeled_market_rows": int(raw.get("market", pd.Series(dtype="object")).isna().sum()),
+        "raw_games": raw_games,
+        "earliest_kickoff": earliest_kickoff,
+        "latest_kickoff": latest_kickoff,
+        "latest_market_update": latest_market_update,
+        "hours_until_earliest_kickoff": hours_until_earliest_kickoff,
         "prepared_line_rows": prepared_line_rows,
         "exact_prepared_line_rows": exact_prepared_line_rows,
         "fallback_prepared_line_rows": fallback_prepared_line_rows,
@@ -736,6 +795,7 @@ def _coverage_row(
         "published_line_rows": published_line_rows,
         "exact_published_line_rows": exact_published_line_rows,
         "fallback_published_line_rows": fallback_published_line_rows,
+        "selected_elsewhere_rows": selected_elsewhere_rows,
         "prediction_rows_without_offered_line": int(max(len(pred) - matchable_prediction_rows, 0)),
         "offered_pairs_not_in_predictions": int(len(offered_pairs - prediction_pairs - identity_matched_pairs)),
         "player_name_overlap_no_game": int(len((pred_players & odds_players) - matched_players)),

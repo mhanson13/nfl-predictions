@@ -2169,7 +2169,10 @@ def _prepare_nflverse_injuries(injuries: pd.DataFrame, *, season: int, week: int
     out = injuries.copy()
     out["season"] = pd.to_numeric(out["season"], errors="coerce")
     out["week"] = pd.to_numeric(out["week"], errors="coerce")
-    out = out[out["season"].eq(int(season)) & out["week"].le(int(week))]
+    # A player missing from the current injury report should be treated as cleared.
+    # Carrying earlier-week nflverse rows forward leaves stale "injury_review"
+    # flags on current-week prop boards.
+    out = out[out["season"].eq(int(season)) & out["week"].eq(int(week))]
     if out.empty:
         return pd.DataFrame(columns=["player_id"] + INJURY_COLUMNS)
 

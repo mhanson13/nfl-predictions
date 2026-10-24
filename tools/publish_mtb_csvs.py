@@ -27,6 +27,7 @@ class CsvArtifact:
     source: Path
     destination: Path
     required: bool = False
+    week_archive: bool = False
 
 
 CURRENT_CSV_ARTIFACTS = [
@@ -63,6 +64,14 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(
         Path("predictions/evaluation/merged_predictions_actuals.csv"),
         Path("evaluation/merged_predictions_actuals.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/live_prediction_vs_actual.csv"),
+        Path("evaluation/live_prediction_vs_actual.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/live_prediction_vs_actual_summary.csv"),
+        Path("evaluation/live_prediction_vs_actual_summary.csv"),
     ),
     CsvArtifact(Path("analysis/market_roi_moneyline.csv"), Path("analysis/market_roi_moneyline.csv")),
     CsvArtifact(Path("analysis/market_roi_spread.csv"), Path("analysis/market_roi_spread.csv")),
@@ -212,6 +221,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Fail if any selected CSV is missing. By default only predictions.csv is required.",
     )
     parser.add_argument(
+        "--overwrite-week-archive",
+        action="store_true",
+        help="Overwrite existing season/week archive CSVs. By default archive snapshots are immutable.",
+    )
+    parser.add_argument(
+        "--allow-partial-week-archive",
+        action="store_true",
+        help=(
+            "Write season/week archive CSVs even when current predictions contain fewer games than "
+            "the full processed schedule for that week."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print planned copies without writing files.",
@@ -265,17 +287,90 @@ def build_artifact_plan(
                         / f"prop_roster_line_audit_week_{week:02d}.csv",
                         Path("evaluation") / "player_props" / f"prop_roster_line_audit_week_{week:02d}.csv",
                     ),
+                    CsvArtifact(
+                        Path("predictions")
+                        / "evaluation"
+                        / f"live_prediction_vs_actual_week_{week:02d}.csv",
+                        Path("evaluation") / f"live_prediction_vs_actual_week_{week:02d}.csv",
+                    ),
+                    CsvArtifact(
+                        Path("predictions")
+                        / "evaluation"
+                        / f"live_prediction_vs_actual_summary_week_{week:02d}.csv",
+                        Path("evaluation") / f"live_prediction_vs_actual_summary_week_{week:02d}.csv",
+                    ),
+                    CsvArtifact(
+                        Path("predictions")
+                        / "evaluation"
+                        / f"live_prediction_vs_actual_segments_week_{week:02d}.csv",
+                        Path("evaluation") / f"live_prediction_vs_actual_segments_week_{week:02d}.csv",
+                    ),
                 ]
             )
 
     if season is not None and week is not None:
         week_root = Path("seasons") / str(season) / f"week_{week:02d}"
         artifacts.extend(
-            CsvArtifact(artifact.source, week_root / artifact.destination.name, artifact.required)
+            CsvArtifact(
+                artifact.source,
+                week_root / artifact.destination.name,
+                artifact.required,
+                week_archive=True,
+            )
             for artifact in CURRENT_CSV_ARTIFACTS
         )
 
     return artifacts
+
+
+def _prediction_game_count(path: Path) -> int | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        import pandas as pd
+    except ImportError:
+        return None
+    try:
+        frame = pd.read_csv(path, usecols=lambda col: col == "game_id")
+    except Exception:
+        return None
+    if "game_id" not in frame.columns:
+        return len(frame)
+    return int(frame["game_id"].dropna().astype(str).nunique())
+
+
+def _processed_schedule_game_count(source_root: Path, season: int | None, week: int | None) -> int | None:
+    if season is None or week is None:
+        return None
+    schedule_path = source_root / "data" / "processed" / "matchup_features.parquet"
+    if not schedule_path.exists():
+        return None
+    try:
+        import pandas as pd
+    except ImportError:
+        return None
+    try:
+        frame = pd.read_parquet(schedule_path, columns=["season", "week", "game_id"])
+    except Exception:
+        return None
+    required = {"season", "week", "game_id"}
+    if not required.issubset(frame.columns):
+        return None
+    selected = frame[
+        (pd.to_numeric(frame["season"], errors="coerce") == int(season))
+        & (pd.to_numeric(frame["week"], errors="coerce") == int(week))
+    ]
+    if selected.empty:
+        return None
+    return int(selected["game_id"].dropna().astype(str).nunique())
+
+
+def _week_archive_is_partial(source_root: Path, season: int | None, week: int | None) -> tuple[bool, int | None, int | None]:
+    prediction_count = _prediction_game_count(source_root / "predictions" / "predictions.csv")
+    schedule_count = _processed_schedule_game_count(source_root, season, week)
+    if prediction_count is None or schedule_count is None:
+        return False, prediction_count, schedule_count
+    return prediction_count < schedule_count, prediction_count, schedule_count
 
 
 def _resolve_destination_root(repo_dir: Path, dest_dir: Path) -> Path:
@@ -304,6 +399,8 @@ def publish_csvs(
     season: int | None = None,
     week: int | None = None,
     strict: bool = False,
+    overwrite_week_archive: bool = False,
+    allow_partial_week_archive: bool = False,
     dry_run: bool = False,
 ) -> list[PublishedCsv]:
     source_root = source_root.resolve()
@@ -312,6 +409,8 @@ def publish_csvs(
     published: list[PublishedCsv] = []
     missing: list[Path] = []
     copy_plan: list[tuple[CsvArtifact, Path, Path]] = []
+    archive_is_partial, prediction_count, schedule_count = _week_archive_is_partial(source_root, season, week)
+    archive_partial_warning_printed = False
 
     for artifact in artifacts:
         source_path = source_root / artifact.source
@@ -325,6 +424,20 @@ def publish_csvs(
 
         if not source_path.is_file():
             raise ValueError(f"CSV artifact path is not a file: {source_path}")
+
+        if artifact.week_archive:
+            if destination_path.exists() and not overwrite_week_archive:
+                print(f"[publish_mtb] Preserving existing week archive CSV: {destination_path}")
+                continue
+            if archive_is_partial and not allow_partial_week_archive:
+                if not archive_partial_warning_printed:
+                    print(
+                        "[publish_mtb] Skipping season/week archive snapshot because current predictions "
+                        f"look partial ({prediction_count}/{schedule_count} scheduled games). "
+                        "Use --allow-partial-week-archive to archive anyway."
+                    )
+                    archive_partial_warning_printed = True
+                continue
 
         copy_plan.append((artifact, source_path, destination_path))
 
@@ -356,6 +469,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         season=args.season,
         week=args.week,
         strict=args.strict,
+        overwrite_week_archive=args.overwrite_week_archive,
+        allow_partial_week_archive=args.allow_partial_week_archive,
         dry_run=args.dry_run,
     )
     action = "Planned" if args.dry_run else "Published"

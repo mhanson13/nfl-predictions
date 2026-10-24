@@ -1028,6 +1028,42 @@ def _spread_edge_bin(value: Any) -> str:
     return "10+"
 
 
+def _diagnostic_moneyline_odds_bucket(value: Any) -> str:
+    odds = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(odds):
+        return "unavailable"
+    odds = float(odds)
+    if odds <= -200:
+        return "<=-200"
+    if odds <= -150:
+        return "-199 to -150"
+    if odds <= -120:
+        return "-149 to -120"
+    if odds < 100:
+        return "-119 to +99"
+    if odds <= 120:
+        return "+100 to +120"
+    if odds <= 200:
+        return "+121 to +200"
+    return "+201+"
+
+
+def _diagnostic_market_side_probability_bin(value: Any) -> str:
+    probability = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(probability):
+        return "unavailable"
+    probability = float(probability)
+    if probability < 0.35:
+        return "<35%"
+    if probability < 0.40:
+        return "35-40%"
+    if probability < 0.45:
+        return "40-45%"
+    if probability < 0.50:
+        return "45-50%"
+    return "50%+"
+
+
 def _split_policy_segments(value: Any) -> set[str]:
     if value is None or pd.isna(value):
         return set()
@@ -1067,6 +1103,10 @@ def _attach_market_policy_fields(
         "market_moneyline_model_confidence_bin",
         "market_moneyline_prob_edge",
         "market_moneyline_edge_bin",
+        "market_moneyline_model_side_odds_bucket",
+        "market_moneyline_vegas_model_side_prob_bin",
+        "market_moneyline_diagnostic_candidate_segment_flag",
+        "market_moneyline_diagnostic_blocked_segment_flag",
         "market_moneyline_policy_tier",
         "market_moneyline_policy_status",
         "market_moneyline_policy_recommendation_flag",
@@ -1115,6 +1155,18 @@ def _attach_market_policy_fields(
     )
     preds["market_moneyline_prob_edge"] = model_pick_prob - vegas_model_side_prob
     preds["market_moneyline_edge_bin"] = preds["market_moneyline_prob_edge"].apply(_probability_edge_bin)
+    model_side_moneyline = np.where(
+        model_home_pick,
+        preds["market_home_moneyline"],
+        preds["market_away_moneyline"],
+    )
+    preds["market_moneyline_model_side_odds_bucket"] = pd.Series(model_side_moneyline, index=preds.index).apply(
+        _diagnostic_moneyline_odds_bucket
+    )
+    preds["market_moneyline_vegas_model_side_prob_bin"] = pd.Series(
+        vegas_model_side_prob,
+        index=preds.index,
+    ).apply(_diagnostic_market_side_probability_bin)
 
     ml_policy = policy.get("moneyline_disagreement", {})
     ml_policy_enabled = _bool_from_value(ml_policy.get("recommended", False))
@@ -1137,13 +1189,49 @@ def _attach_market_policy_fields(
         ml_confidence_status
         and ml_confidence_status.lower() not in {"nan", "unavailable", "model_confidence_calibration_pass"}
     )
+    ml_diagnostic_status = str(ml_policy.get("disagreement_recommendation_gate_status", "") or "").strip()
+    ml_diagnostic_candidates = _split_policy_segments(
+        ml_policy.get("disagreement_recommendation_gate_candidate_segments")
+    )
+    ml_diagnostic_blocked = _split_policy_segments(
+        ml_policy.get("disagreement_recommendation_gate_blocked_segments")
+    )
+    ml_diagnostic_required = bool(
+        ml_diagnostic_status
+        and ml_diagnostic_status.lower()
+        not in {"nan", "unavailable", "missing_disagreement_recommendations"}
+    )
+    ml_diagnostic_candidate_match = (
+        preds["market_moneyline_edge_bin"].isin(ml_diagnostic_candidates)
+        if ml_diagnostic_candidates
+        else pd.Series(not ml_diagnostic_required, index=preds.index)
+    )
+    ml_diagnostic_blocked_match = (
+        preds["market_moneyline_edge_bin"].isin(ml_diagnostic_blocked)
+        if ml_diagnostic_blocked
+        else pd.Series(False, index=preds.index)
+    )
+    preds["market_moneyline_diagnostic_candidate_segment_flag"] = ml_diagnostic_candidate_match
+    preds["market_moneyline_diagnostic_blocked_segment_flag"] = ml_diagnostic_blocked_match
     ml_candidate = (
         ml_policy_enabled
         & preds["market_moneyline_favorite_disagreement"].astype(bool)
         & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
     )
     high_edge_review = ml_candidate & preds["market_moneyline_prob_edge"].ge(ml_max_auto_edge)
-    ml_recommended = ml_candidate & ~high_edge_review
+    ml_diagnostic_row_block = (
+        ml_candidate
+        & ~high_edge_review
+        & ml_diagnostic_required
+        & (ml_diagnostic_blocked_match | ~ml_diagnostic_candidate_match)
+    )
+    ml_recommended = ml_candidate & ~high_edge_review & ~ml_diagnostic_row_block
+    ml_diagnostic_policy_block = (
+        preds["market_moneyline_favorite_disagreement"].astype(bool)
+        & preds["market_moneyline_prob_edge"].ge(float(ml_threshold) if pd.notna(ml_threshold) else np.inf)
+        & ml_diagnostic_required
+        & (ml_diagnostic_blocked_match | ~ml_diagnostic_candidate_match)
+    )
     ml_clv_policy_block = (
         (not ml_policy_enabled)
         & ml_clv_blocks_policy
@@ -1174,8 +1262,22 @@ def _attach_market_policy_fields(
     )
     preds["market_moneyline_policy_recommendation_flag"] = ml_recommended
     preds["market_moneyline_policy_tier"] = np.select(
-        [ml_recommended, high_edge_review, ml_confidence_policy_block, ml_clv_policy_block, ml_segment_policy_block],
-        [ml_tier, "review", ml_tier, ml_tier if ml_tier in {"review", "no_bet"} else "review", ml_tier],
+        [
+            ml_recommended,
+            high_edge_review,
+            ml_confidence_policy_block,
+            ml_clv_policy_block,
+            ml_segment_policy_block,
+            ml_diagnostic_policy_block,
+        ],
+        [
+            ml_tier,
+            "review",
+            ml_tier,
+            ml_tier if ml_tier in {"review", "no_bet"} else "review",
+            ml_tier,
+            "no_bet",
+        ],
         default="no_bet",
     )
     preds["market_moneyline_policy_status"] = np.select(
@@ -1186,6 +1288,8 @@ def _attach_market_policy_fields(
             ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
+            ml_diagnostic_policy_block & ml_diagnostic_blocked_match,
+            ml_diagnostic_policy_block,
             preds["market_moneyline_favorite_disagreement"].astype(bool),
         ],
         [
@@ -1195,6 +1299,8 @@ def _attach_market_policy_fields(
             ml_confidence_status,
             ml_clv_status,
             ml_segment_status,
+            "blocked_diagnostic_avoid_segment",
+            "not_in_diagnostic_candidate_segment",
             "disagreement_below_policy_edge",
         ],
         default="no_bet",
@@ -1258,12 +1364,14 @@ def _attach_market_policy_fields(
             ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
+            ml_diagnostic_policy_block,
             spread_lean,
             high_edge_review,
             spread_calibration_block | spread_blocked_high | spread_blocked_mid,
         ],
         [
             "moneyline_disagreement",
+            "moneyline_review",
             "moneyline_review",
             "moneyline_review",
             "moneyline_review",
@@ -1279,6 +1387,7 @@ def _attach_market_policy_fields(
             ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
+            ml_diagnostic_policy_block,
             spread_lean,
             high_edge_review,
             spread_calibration_block,
@@ -1289,6 +1398,7 @@ def _attach_market_policy_fields(
             ml_tier,
             ml_tier if ml_tier in {"review", "no_bet"} else "review",
             ml_tier,
+            "no_bet",
             spread_tier,
             "review",
             "review",
@@ -1302,11 +1412,13 @@ def _attach_market_policy_fields(
             ml_confidence_policy_block,
             ml_clv_policy_block,
             ml_segment_policy_block,
+            ml_diagnostic_policy_block,
             spread_lean,
             high_edge_review,
             spread_calibration_block | spread_blocked_high | spread_blocked_mid,
         ],
         [
+            preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],
             preds["market_moneyline_policy_status"],

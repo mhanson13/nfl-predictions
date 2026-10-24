@@ -530,6 +530,56 @@ def test_attach_market_policy_fields_marks_moneyline_and_blocks_spread(tmp_path)
     assert preds.loc[2, "market_policy_tier"] == "blocked"
 
 
+def test_attach_market_policy_fields_limits_moneyline_to_diagnostic_candidate_segments(tmp_path):
+    policy_path = tmp_path / "market_edge_policy.csv"
+    pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": True,
+                "recommendation_tier": "strong",
+                "threshold": 0.05,
+                "disagreement_recommendation_gate_status": "diagnostic_candidate_segment_pass",
+                "disagreement_recommendation_gate_candidate_segments": "5-8%",
+            },
+        ]
+    ).to_csv(policy_path, index=False)
+    preds = pd.DataFrame(
+        [
+            {
+                "home_team": "DAL",
+                "away_team": "TB",
+                "home_win_prob": 0.50,
+                "pred_home_margin": 1.0,
+                "odds_draftkings_home_moneyline": 120,
+                "odds_draftkings_away_moneyline": -140,
+                "odds_draftkings_home_spread": 1.0,
+                "odds_draftkings_away_spread": -1.0,
+            },
+            {
+                "home_team": "JAX",
+                "away_team": "PHI",
+                "home_win_prob": 0.53,
+                "pred_home_margin": 1.0,
+                "odds_draftkings_home_moneyline": 120,
+                "odds_draftkings_away_moneyline": -140,
+                "odds_draftkings_home_spread": 1.0,
+                "odds_draftkings_away_spread": -1.0,
+            },
+        ]
+    )
+
+    _attach_market_policy_fields(preds, policy_path=policy_path)
+
+    assert preds.loc[0, "market_moneyline_edge_bin"] == "5-8%"
+    assert bool(preds.loc[0, "market_moneyline_diagnostic_candidate_segment_flag"]) is True
+    assert bool(preds.loc[0, "market_moneyline_policy_recommendation_flag"]) is True
+    assert preds.loc[1, "market_moneyline_edge_bin"] == "8-10%"
+    assert bool(preds.loc[1, "market_moneyline_diagnostic_candidate_segment_flag"]) is False
+    assert bool(preds.loc[1, "market_moneyline_policy_recommendation_flag"]) is False
+    assert preds.loc[1, "market_moneyline_policy_status"] == "not_in_diagnostic_candidate_segment"
+
+
 def test_attach_market_policy_fields_surfaces_clv_blocked_moneyline_policy(tmp_path):
     policy_path = tmp_path / "market_edge_policy.csv"
     pd.DataFrame(

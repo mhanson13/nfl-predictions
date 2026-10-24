@@ -24,6 +24,7 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
     edge_bins_path = tmp_path / "analysis" / "market_roi_spread_edge_bins.csv"
     key_numbers_path = tmp_path / "analysis" / "market_spread_key_numbers.csv"
     policy_path = tmp_path / "analysis" / "market_edge_policy.csv"
+    live_summary_path = tmp_path / "predictions" / "evaluation" / "live_prediction_vs_actual_summary_week_03.csv"
 
     _write_csv(
         overall_path,
@@ -220,6 +221,31 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
             },
         ],
     )
+    _write_csv(
+        live_summary_path,
+        [
+            {
+                "scope": "overall",
+                "segment_column": "overall",
+                "segment_value": "all",
+                "n_games": 16,
+                "accuracy": 0.625,
+                "f1": 0.667,
+                "auc": 0.700,
+                "brier": 0.221,
+                "log_loss": 0.641,
+                "mae_margin": 9.75,
+                "rmse_margin": 12.5,
+                "ats_graded": 14,
+                "ats_hit_rate": 0.5714,
+                "moneyline_graded": 16,
+                "moneyline_roi": 0.052,
+                "moneyline_clv_tracked": 10,
+                "avg_moneyline_clv_prob_delta": 0.011,
+                "positive_moneyline_clv_rate": 0.60,
+            }
+        ],
+    )
 
     metrics = build_model_metrics_rows(
         season=2026,
@@ -236,6 +262,7 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
         market_spread_edge_bins_path=edge_bins_path,
         market_spread_key_numbers_path=key_numbers_path,
         market_edge_policy_path=policy_path,
+        live_results_summary_path=live_summary_path,
         start_season=2017,
         exclude_from_season=2026,
         exclude_from_week=3,
@@ -243,6 +270,12 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
 
     by_key = metrics.set_index("metric_key")
     assert by_key.loc["accuracy", "display_value"] == "65.4%"
+    assert by_key.loc["live_published_games", "display_value"] == "16"
+    assert by_key.loc["live_published_accuracy", "display_value"] == "62.5%"
+    assert by_key.loc["live_published_moneyline_roi", "display_value"] == "5.2%"
+    assert by_key.loc["live_published_avg_moneyline_clv_prob_delta", "display_value"] == "1.1%"
+    assert by_key.loc["live_published_positive_moneyline_clv_rate", "display_value"] == "60.0%"
+    assert by_key.loc["live_published_accuracy", "section"] == "live_published_holdout"
     assert by_key.loc["vegas_favorite_accuracy", "display_value"] == "66.2%"
     assert by_key.loc["model_vegas_disagreement_games", "display_value"] == "281"
     assert by_key.loc["clv_moneyline_disagreement_avg_prob_delta", "display_value"] == "1.2%"
@@ -269,3 +302,55 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
     assert by_key.loc["best_spread_edge_bin", "display_value"] == "3-5 pts"
     assert by_key.loc["spread_key_3_policy_bucket_roi", "display_value"] == "1.2%"
     assert by_key.loc["evaluation_start_season", "value"] == 2017
+
+
+def test_build_model_metrics_rows_uses_latest_finalized_live_summary(tmp_path):
+    live_summary_dir = tmp_path / "predictions" / "evaluation"
+    _write_csv(
+        live_summary_dir / "live_prediction_vs_actual_summary_week_06.csv",
+        [
+            {
+                "scope": "overall",
+                "segment_column": "overall",
+                "segment_value": "all",
+                "n_games": 12,
+                "accuracy": 0.5833333333,
+                "f1": 0.6153846154,
+                "auc": 0.7428571429,
+                "brier": 0.2199,
+                "log_loss": 0.6279,
+                "mae_margin": 6.6732,
+                "ats_graded": 11,
+                "ats_hit_rate": 0.4,
+                "moneyline_graded": 12,
+                "moneyline_roi": -0.0024,
+            }
+        ],
+    )
+
+    missing = tmp_path / "missing.csv"
+    metrics = build_model_metrics_rows(
+        season=2026,
+        week=7,
+        generated_at="2026-10-23T12:00:00+00:00",
+        overall_metrics_path=missing,
+        market_benchmark_summary_path=missing,
+        market_clv_summary_path=missing,
+        market_disagreement_roi_path=missing,
+        market_probability_edge_calibration_path=missing,
+        market_blend_summary_path=missing,
+        market_blend_policy_path=missing,
+        market_spread_roi_path=missing,
+        market_spread_edge_bins_path=missing,
+        market_spread_key_numbers_path=missing,
+        market_edge_policy_path=missing,
+        live_results_summary_dir=live_summary_dir,
+    )
+
+    by_key = metrics.set_index("metric_key")
+    assert by_key.loc["live_published_games", "display_value"] == "12"
+    assert by_key.loc["live_published_accuracy", "display_value"] == "58.3%"
+    assert (
+        by_key.loc["live_published_accuracy", "source_artifact"]
+        == (live_summary_dir / "live_prediction_vs_actual_summary_week_06.csv").as_posix()
+    )

@@ -124,3 +124,43 @@ def test_recalibration_summary_and_decision_compare_against_current_model():
     assert candidate["overall_brier_delta_vs_current"] < 0.0
     assert bool(candidate["passes_overall_probability_gate"]) is False
     assert candidate["decision"] == "base_probability_research_only"
+
+
+def test_reconcile_market_blend_policy_marks_confidence_candidate_without_live_recommendation():
+    policy = pd.DataFrame(
+        [
+            {
+                "signal": "market_blend_probability",
+                "recommended": False,
+                "recommendation_tier": "no_bet",
+            },
+            {
+                "signal": "market_blend_moneyline",
+                "recommended": False,
+                "recommendation_tier": "no_bet",
+            },
+        ]
+    )
+    decision = pd.DataFrame(
+        [
+            {
+                "candidate_strategy": "vegas_blend_50_50",
+                "decision": "market_blend_probability_and_policy_candidate",
+                "recommended_layer": "market_blend",
+                "overall_brier_delta_vs_current": -0.003,
+                "disagreement_roi_delta_vs_current": 0.02,
+            }
+        ]
+    )
+
+    reconciled = recal.reconcile_market_blend_policy(policy, decision)
+    by_signal = reconciled.set_index("signal")
+
+    assert bool(by_signal.loc["market_blend_probability", "recommended"]) is False
+    assert by_signal.loc["market_blend_probability", "confidence_recalibration_status"] == (
+        "probability_experiment_candidate"
+    )
+    assert by_signal.loc["market_blend_moneyline", "confidence_recalibration_status"] == (
+        "moneyline_policy_experiment_candidate"
+    )
+    assert bool(by_signal.loc["market_blend_moneyline", "confidence_recalibration_policy_candidate"]) is True

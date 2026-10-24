@@ -1073,6 +1073,41 @@ def test_market_edge_policy_blocks_moneyline_when_segment_gate_fails():
     assert moneyline["segment_gate_worst_roi"] == pytest.approx(-0.04)
 
 
+def test_moneyline_segment_gate_handles_threshold_at_max_probability_edge():
+    moneyline_row = pd.Series({"threshold": 0.10})
+    segments = pd.DataFrame(
+        [
+            {
+                "scope": "overall",
+                "segment_family": "probability_edge",
+                "segment": "10-15%",
+                "n_bets": 60,
+                "roi": 0.04,
+            },
+            {
+                "scope": "overall",
+                "segment_family": "probability_edge",
+                "segment": "15%+",
+                "n_bets": 55,
+                "roi": 0.01,
+            },
+        ]
+    )
+
+    gate = market_roi.summarize_moneyline_segment_gate(
+        segments,
+        moneyline_row,
+        min_bets=25,
+        min_roi=0.0,
+        max_probability_edge=0.10,
+    )
+
+    assert bool(gate["pass"]) is True
+    assert gate["status"] == "segment_gate_pass"
+    assert gate["segments"] == "10-15%;15%+"
+    assert gate["qualified_segments"] == 2
+
+
 def test_market_edge_policy_blocks_moneyline_when_confidence_gate_fails():
     disagreement_roi = pd.DataFrame(
         [

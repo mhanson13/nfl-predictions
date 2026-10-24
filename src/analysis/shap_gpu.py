@@ -23,7 +23,6 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import shap
 import xgboost as xgb
 
 plt.switch_backend("Agg")
@@ -114,6 +113,8 @@ def main() -> None:
         return
     sample = X.sample(n=min(len(X), SAMPLE_SIZE), random_state=42)
     print(f"[shap_gpu] Computing SHAP for {len(sample)} rows and {len(feat_cols)} features.")
+    import shap
+
     dmatrix = xgb.DMatrix(sample, feature_names=list(sample.columns))
     explainer = shap.TreeExplainer(booster)
     shap_values = explainer.shap_values(dmatrix)

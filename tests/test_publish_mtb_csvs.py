@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from tools.publish_mtb_csvs import publish_csvs
@@ -27,6 +28,26 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     _write_csv(
         source_root / "predictions" / "evaluation" / "feature_family_ablation.csv",
         "target,feature_set,primary_value\nwin_prob,baseline_plus_bdl,0.7\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "live_prediction_vs_actual.csv",
+        "season,week,game_id,su_result\n2026,2,abc,win\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "live_prediction_vs_actual_summary.csv",
+        "season,week,scope,n_games\n2026,2,overall,1\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "live_prediction_vs_actual_week_02.csv",
+        "season,week,game_id,su_result\n2026,2,abc,win\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "live_prediction_vs_actual_summary_week_02.csv",
+        "season,week,scope,n_games\n2026,2,overall,1\n",
+    )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "live_prediction_vs_actual_segments_week_02.csv",
+        "season,week,scope,segment_column,segment_value,n_games\n2026,2,segment,market_policy_tier,no_bet,1\n",
     )
     _write_csv(source_root / "analysis" / "market_roi_spread.csv", "market,roi\nspread,0.1\n")
     _write_csv(source_root / "analysis" / "market_benchmark_summary.csv", "segment,n_games\nall,10\n")
@@ -124,6 +145,8 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "current" / "player_props_novelty.csv").exists()
     assert (destination_root / "evaluation" / "overall_metrics.csv").exists()
     assert (destination_root / "evaluation" / "feature_family_ablation.csv").exists()
+    assert (destination_root / "evaluation" / "live_prediction_vs_actual.csv").exists()
+    assert (destination_root / "evaluation" / "live_prediction_vs_actual_summary.csv").exists()
     assert (destination_root / "analysis" / "market_roi_spread.csv").exists()
     assert (destination_root / "analysis" / "market_benchmark_summary.csv").exists()
     assert (destination_root / "analysis" / "market_clv_detail.csv").exists()
@@ -153,10 +176,13 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "player_props" / "prop_quality_summary_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_line_coverage_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_roster_line_audit_week_02.csv").exists()
+    assert (destination_root / "evaluation" / "live_prediction_vs_actual_week_02.csv").exists()
+    assert (destination_root / "evaluation" / "live_prediction_vs_actual_summary_week_02.csv").exists()
+    assert (destination_root / "evaluation" / "live_prediction_vs_actual_segments_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 44
+    assert len(published) == 49
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):
@@ -194,3 +220,58 @@ def test_publish_csvs_rejects_destination_outside_repo(tmp_path):
 
     with pytest.raises(ValueError, match="inside the MattyTheBookie repo"):
         publish_csvs(source_root=source_root, repo_dir=mtb_repo, dest_dir=outside_dir)
+
+
+def test_publish_csvs_preserves_existing_week_archive_by_default(tmp_path):
+    source_root = tmp_path / "nfl-predictions"
+    mtb_repo = tmp_path / "mtb"
+    mtb_repo.mkdir()
+    destination_root = mtb_repo / "data" / "prediction-csvs"
+
+    _write_csv(source_root / "predictions" / "predictions.csv", "game_id\nnew\n")
+    _write_csv(
+        destination_root / "seasons" / "2026" / "week_07" / "predictions.csv",
+        "game_id\nold\n",
+    )
+
+    publish_csvs(
+        source_root=source_root,
+        repo_dir=mtb_repo,
+        include_diagnostics=False,
+        season=2026,
+        week=7,
+    )
+
+    assert (destination_root / "current" / "predictions.csv").read_text(encoding="utf-8") == "game_id\nnew\n"
+    assert (
+        destination_root / "seasons" / "2026" / "week_07" / "predictions.csv"
+    ).read_text(encoding="utf-8") == "game_id\nold\n"
+
+
+def test_publish_csvs_skips_partial_week_archive_by_default(tmp_path):
+    source_root = tmp_path / "nfl-predictions"
+    mtb_repo = tmp_path / "mtb"
+    mtb_repo.mkdir()
+    destination_root = mtb_repo / "data" / "prediction-csvs"
+
+    _write_csv(source_root / "predictions" / "predictions.csv", "game_id\n2026_07_PIT_NO\n")
+    matchup_features = pd.DataFrame(
+        [
+            {"season": 2026, "week": 7, "game_id": "2026_07_NE_CHI"},
+            {"season": 2026, "week": 7, "game_id": "2026_07_PIT_NO"},
+        ]
+    )
+    schedule_path = source_root / "data" / "processed" / "matchup_features.parquet"
+    schedule_path.parent.mkdir(parents=True, exist_ok=True)
+    matchup_features.to_parquet(schedule_path, index=False)
+
+    publish_csvs(
+        source_root=source_root,
+        repo_dir=mtb_repo,
+        include_diagnostics=False,
+        season=2026,
+        week=7,
+    )
+
+    assert (destination_root / "current" / "predictions.csv").exists()
+    assert not (destination_root / "seasons" / "2026" / "week_07" / "predictions.csv").exists()

@@ -23,9 +23,11 @@ import pandas as pd
 ANALYSIS_DIR = Path("analysis")
 DEFAULT_BENCHMARK_PATH = ANALYSIS_DIR / "market_benchmark.csv"
 DEFAULT_BLEND_PATH = ANALYSIS_DIR / "market_blend_backtest.csv"
+DEFAULT_POLICY_PATH = ANALYSIS_DIR / "market_edge_policy.csv"
 DEFAULT_GAMES_OUTPUT = ANALYSIS_DIR / "market_disagreement_games.csv"
 DEFAULT_DIAGNOSTICS_OUTPUT = ANALYSIS_DIR / "market_disagreement_diagnostics.csv"
 DEFAULT_RECOMMENDATIONS_OUTPUT = ANALYSIS_DIR / "market_disagreement_recommendations.csv"
+DEFAULT_MAX_AUTO_PROB_EDGE = 0.10
 
 CONFIDENCE_BINS = [
     (0.50, 0.55, "50-55%"),
@@ -42,6 +44,19 @@ PROB_EDGE_BINS = [
     (0.08, 0.10, "8-10%"),
     (0.10, 0.15, "10-15%"),
     (0.15, np.inf, "15%+"),
+]
+
+POLICY_RECONCILE_COLUMNS = [
+    "disagreement_recommendation_gate_pass",
+    "disagreement_recommendation_gate_status",
+    "disagreement_recommendation_gate_family",
+    "disagreement_recommendation_gate_segments",
+    "disagreement_recommendation_gate_candidate_segments",
+    "disagreement_recommendation_gate_blocked_segments",
+    "disagreement_recommendation_gate_candidate_count",
+    "disagreement_recommendation_gate_blocked_count",
+    "disagreement_recommendation_gate_max_probability_edge",
+    "disagreement_recommendation_gate_source_artifact",
 ]
 
 MARKET_SIDE_PROB_BINS = [
@@ -126,6 +141,23 @@ def _bucket(value: float, bins: list[tuple[float, float, str]], *, fallback: str
         if value >= lower and (value < upper if not np.isinf(upper) else True):
             return label
     return fallback
+
+
+def _prob_edge_segment_labels(*, min_edge: float, max_edge: float) -> list[str]:
+    labels: list[str] = []
+    min_value = float(min_edge)
+    max_value = float(max_edge)
+    if not np.isfinite(max_value) or max_value <= min_value:
+        max_value = np.inf
+    for lower, upper, label in PROB_EDGE_BINS:
+        lower_value = float(lower)
+        upper_value = float(upper)
+        if not np.isinf(max_value) and lower_value >= max_value:
+            continue
+        if upper_value <= min_value:
+            continue
+        labels.append(label)
+    return labels
 
 
 def _odds_bucket(odds: float) -> str:
@@ -515,6 +547,127 @@ def build_disagreement_recommendations(
     return out.reset_index(drop=True)
 
 
+def _recommendation_segments(recommendations: pd.DataFrame, *, action: str, family: str) -> set[str]:
+    required = {"action", "segment_family", "segment"}
+    if recommendations.empty or not required.issubset(recommendations.columns):
+        return set()
+    selected = recommendations[
+        recommendations["action"].astype(str).eq(action)
+        & recommendations["segment_family"].astype(str).eq(family)
+    ]
+    return {
+        str(segment)
+        for segment in selected["segment"].dropna().astype(str)
+        if segment and segment.lower() not in {"nan", "none"}
+    }
+
+
+def reconcile_market_edge_policy(
+    policy: pd.DataFrame,
+    recommendations: pd.DataFrame,
+    *,
+    max_probability_edge: float = DEFAULT_MAX_AUTO_PROB_EDGE,
+    source_artifact: str = "analysis/market_disagreement_recommendations.csv",
+) -> pd.DataFrame:
+    """Reconcile threshold moneyline policy with diagnostic segment recommendations."""
+    out = policy.copy()
+    for col in POLICY_RECONCILE_COLUMNS:
+        if col not in out.columns:
+            out[col] = pd.NA
+    if out.empty or "signal" not in out.columns:
+        return out
+
+    moneyline_mask = out["signal"].astype(str).eq("moneyline_disagreement")
+    if not moneyline_mask.any():
+        return out
+
+    idx = out.index[moneyline_mask][0]
+    threshold = pd.to_numeric(pd.Series([out.at[idx, "threshold"]]), errors="coerce").iloc[0]
+    if pd.isna(threshold):
+        labels: list[str] = []
+        status = "no_policy_threshold"
+    else:
+        labels = _prob_edge_segment_labels(
+            min_edge=float(threshold),
+            max_edge=float(max_probability_edge),
+        )
+        status = "unavailable"
+
+    candidate_segments = _recommendation_segments(
+        recommendations,
+        action="candidate_model_side_segment",
+        family="prob_edge_bin",
+    )
+    blocked_segments = _recommendation_segments(
+        recommendations,
+        action="avoid_model_side_segment",
+        family="prob_edge_bin",
+    )
+    label_set = set(labels)
+    matching_candidates = sorted(label_set.intersection(candidate_segments), key=labels.index)
+    matching_blocked = sorted(label_set.intersection(blocked_segments), key=labels.index)
+
+    if not labels:
+        status = status if status != "unavailable" else "no_actionable_probability_edge_segments"
+        gate_pass = False
+        tier_override = "review"
+    elif recommendations.empty:
+        status = "missing_disagreement_recommendations"
+        gate_pass = False
+        tier_override = "review"
+    elif matching_blocked:
+        status = "blocked_diagnostic_avoid_segment"
+        gate_pass = False
+        tier_override = "no_bet"
+    elif not matching_candidates:
+        status = "no_diagnostic_candidate_segment"
+        gate_pass = False
+        tier_override = "review"
+    else:
+        status = "diagnostic_candidate_segment_pass"
+        gate_pass = True
+        tier_override = None
+
+    out.at[idx, "disagreement_recommendation_gate_pass"] = bool(gate_pass)
+    out.at[idx, "disagreement_recommendation_gate_status"] = status
+    out.at[idx, "disagreement_recommendation_gate_family"] = "prob_edge_bin"
+    out.at[idx, "disagreement_recommendation_gate_segments"] = ";".join(labels)
+    out.at[idx, "disagreement_recommendation_gate_candidate_segments"] = ";".join(matching_candidates)
+    out.at[idx, "disagreement_recommendation_gate_blocked_segments"] = ";".join(matching_blocked)
+    out.at[idx, "disagreement_recommendation_gate_candidate_count"] = int(len(matching_candidates))
+    out.at[idx, "disagreement_recommendation_gate_blocked_count"] = int(len(matching_blocked))
+    out.at[idx, "disagreement_recommendation_gate_max_probability_edge"] = float(max_probability_edge)
+    out.at[idx, "disagreement_recommendation_gate_source_artifact"] = source_artifact
+
+    was_recommended = str(out.at[idx, "recommended"]).strip().lower() in {"true", "1", "1.0", "yes"}
+    if was_recommended and not gate_pass:
+        out.at[idx, "recommended"] = False
+        out.at[idx, "recommendation_tier"] = tier_override
+    elif not gate_pass and str(out.at[idx, "recommendation_tier"]).strip().lower() in {"strong", "lean"}:
+        out.at[idx, "recommendation_tier"] = tier_override
+
+    return out
+
+
+def reconcile_policy_file(
+    *,
+    policy_path: Path = DEFAULT_POLICY_PATH,
+    recommendations: pd.DataFrame,
+    max_probability_edge: float = DEFAULT_MAX_AUTO_PROB_EDGE,
+) -> pd.DataFrame:
+    if not policy_path.exists():
+        return pd.DataFrame()
+    policy = pd.read_csv(policy_path)
+    reconciled = reconcile_market_edge_policy(
+        policy,
+        recommendations,
+        max_probability_edge=max_probability_edge,
+        source_artifact=str(DEFAULT_RECOMMENDATIONS_OUTPUT),
+    )
+    reconciled.to_csv(policy_path, index=False)
+    return reconciled
+
+
 def run(args: argparse.Namespace) -> None:
     benchmark = load_benchmark(args.benchmark)
     blend = load_blend_detail(args.blend_detail) if args.blend_detail else pd.DataFrame()
@@ -532,6 +685,13 @@ def run(args: argparse.Namespace) -> None:
     games.to_csv(args.games_output, index=False)
     diagnostics.to_csv(args.diagnostics_output, index=False)
     recommendations.to_csv(args.recommendations_output, index=False)
+    reconciled_policy = pd.DataFrame()
+    if not args.skip_policy_reconcile:
+        reconciled_policy = reconcile_policy_file(
+            policy_path=args.policy_path,
+            recommendations=recommendations,
+            max_probability_edge=args.max_auto_probability_edge,
+        )
 
     print("=== Favorite-disagreement diagnostics ===")
     if diagnostics.empty:
@@ -573,12 +733,19 @@ def run(args: argparse.Namespace) -> None:
     print(f"\nDisagreement game detail written to {args.games_output.resolve()}")
     print(f"Disagreement diagnostics written to {args.diagnostics_output.resolve()}")
     print(f"Disagreement recommendations written to {args.recommendations_output.resolve()}")
+    if args.skip_policy_reconcile:
+        print("Market edge policy reconciliation skipped by CLI flag.")
+    elif reconciled_policy.empty:
+        print(f"Market edge policy reconciliation skipped; policy not found at {args.policy_path.resolve()}")
+    else:
+        print(f"Market edge policy reconciled at {args.policy_path.resolve()}")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze model-vs-Vegas favorite-disagreement segments.")
     parser.add_argument("--benchmark", type=Path, default=DEFAULT_BENCHMARK_PATH)
     parser.add_argument("--blend-detail", type=Path, default=DEFAULT_BLEND_PATH)
+    parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
     parser.add_argument("--games-output", type=Path, default=DEFAULT_GAMES_OUTPUT)
     parser.add_argument("--diagnostics-output", type=Path, default=DEFAULT_DIAGNOSTICS_OUTPUT)
     parser.add_argument("--recommendations-output", type=Path, default=DEFAULT_RECOMMENDATIONS_OUTPUT)
@@ -586,6 +753,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-season-games", type=int, default=5)
     parser.add_argument("--min-qualified-seasons", type=int, default=2)
     parser.add_argument("--min-positive-season-rate", type=float, default=0.55)
+    parser.add_argument("--max-auto-probability-edge", type=float, default=DEFAULT_MAX_AUTO_PROB_EDGE)
+    parser.add_argument("--skip-policy-reconcile", action="store_true")
     parser.add_argument("--debug", action="store_true", help="Accepted for pipeline consistency.")
     return parser
 

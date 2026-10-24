@@ -22,6 +22,7 @@ MARKET_SPREAD_ROI_PATH = Path("analysis/market_roi_spread.csv")
 MARKET_SPREAD_EDGE_BINS_PATH = Path("analysis/market_roi_spread_edge_bins.csv")
 MARKET_SPREAD_KEY_NUMBERS_PATH = Path("analysis/market_spread_key_numbers.csv")
 MARKET_EDGE_POLICY_PATH = Path("analysis/market_edge_policy.csv")
+LIVE_RESULTS_SUMMARY_DIR = Path("predictions/evaluation")
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,39 @@ def _select_policy_row(path: Path, *, signal: str) -> pd.Series | None:
     return selection.iloc[0]
 
 
+def _live_results_summary_path(week: int) -> Path:
+    return LIVE_RESULTS_SUMMARY_DIR / f"live_prediction_vs_actual_summary_week_{week:02d}.csv"
+
+
+def _resolve_live_results_summary_path(week: int, summary_dir: Path = LIVE_RESULTS_SUMMARY_DIR) -> Path:
+    exact_path = summary_dir / f"live_prediction_vs_actual_summary_week_{week:02d}.csv"
+    if exact_path.exists():
+        return exact_path
+
+    candidates: list[tuple[int, Path]] = []
+    for path in summary_dir.glob("live_prediction_vs_actual_summary_week_*.csv"):
+        try:
+            candidate_week = int(path.stem.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        if candidate_week <= week:
+            candidates.append((candidate_week, path))
+    if not candidates:
+        return exact_path
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _select_live_results_summary_row(path: Path) -> pd.Series | None:
+    df = _read_csv_if_exists(path)
+    if df.empty:
+        return None
+    if "scope" in df.columns:
+        selected = df[df["scope"].astype(str).eq("overall")]
+        if not selected.empty:
+            return selected.iloc[-1]
+    return df.iloc[-1]
+
+
 def _fmt_percent(value: float | int | str | None, digits: int = 1) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -188,6 +222,8 @@ def _fmt_points(value: float | int | str | None, digits: int = 2) -> str:
 
 def _fmt_count(value: float | int | str | None) -> str:
     if value is None or pd.isna(value):
+        return ""
+    if isinstance(value, str) and not value.strip():
         return ""
     return f"{int(float(value)):,}"
 
@@ -255,6 +291,8 @@ def build_model_metrics_rows(
     market_spread_edge_bins_path: Path = MARKET_SPREAD_EDGE_BINS_PATH,
     market_spread_key_numbers_path: Path = MARKET_SPREAD_KEY_NUMBERS_PATH,
     market_edge_policy_path: Path = MARKET_EDGE_POLICY_PATH,
+    live_results_summary_path: Path | None = None,
+    live_results_summary_dir: Path = LIVE_RESULTS_SUMMARY_DIR,
     min_spread_edge_bin_bets: int = 50,
     start_season: int | None = None,
     exclude_from_season: int | None = None,
@@ -306,6 +344,147 @@ def build_model_metrics_rows(
             sample_size=overall_n,
             description=description,
             source_artifact=overall_metrics_path,
+        )
+
+    live_summary_path = live_results_summary_path or _resolve_live_results_summary_path(
+        week,
+        live_results_summary_dir,
+    )
+    live_summary = _select_live_results_summary_row(live_summary_path)
+    live_n = int(float(_value(live_summary, "n_games", 0) or 0)) if live_summary is not None else ""
+    for order, key, metric_key, label, unit, formatter, sample_key, description in [
+        (
+            90,
+            "n_games",
+            "live_published_games",
+            "Published-pick graded games",
+            "games",
+            _fmt_count,
+            "n_games",
+            "Games from immutable published/locked prediction snapshots that have finalized result overlays.",
+        ),
+        (
+            91,
+            "accuracy",
+            "live_published_accuracy",
+            "Published-pick SU accuracy",
+            "percent",
+            _fmt_percent,
+            "n_games",
+            "Straight-up accuracy from predictions that were published or locked before result grading.",
+        ),
+        (
+            92,
+            "f1",
+            "live_published_f1",
+            "Published-pick F1",
+            "percent",
+            _fmt_percent,
+            "n_games",
+            "F1 score from the published-pick holdout overlay.",
+        ),
+        (
+            93,
+            "auc",
+            "live_published_auc",
+            "Published-pick AUC",
+            "decimal",
+            _fmt_decimal,
+            "n_games",
+            "AUC from the published-pick holdout overlay.",
+        ),
+        (
+            94,
+            "brier",
+            "live_published_brier",
+            "Published-pick Brier",
+            "decimal",
+            _fmt_decimal,
+            "n_games",
+            "Brier score from the published-pick holdout overlay.",
+        ),
+        (
+            95,
+            "log_loss",
+            "live_published_log_loss",
+            "Published-pick log loss",
+            "decimal",
+            _fmt_decimal,
+            "n_games",
+            "Log loss from the published-pick holdout overlay.",
+        ),
+        (
+            96,
+            "mae_margin",
+            "live_published_margin_mae",
+            "Published-pick margin MAE",
+            "points",
+            _fmt_points,
+            "n_games",
+            "Average absolute predicted-margin error from published picks.",
+        ),
+        (
+            97,
+            "ats_hit_rate",
+            "live_published_ats_hit_rate",
+            "Published-pick ATS hit rate",
+            "percent",
+            _fmt_percent,
+            "ats_graded",
+            "Hit rate for published-pick spread selections when a valid market line exists.",
+        ),
+        (
+            98,
+            "moneyline_roi",
+            "live_published_moneyline_roi",
+            "Published-pick moneyline ROI",
+            "percent",
+            _fmt_percent,
+            "moneyline_graded",
+            "Flat one-unit moneyline ROI for the model-selected side from published-pick result overlays.",
+        ),
+        (
+            99,
+            "avg_moneyline_clv_prob_delta",
+            "live_published_avg_moneyline_clv_prob_delta",
+            "Published-pick avg moneyline CLV",
+            "percent",
+            _fmt_percent,
+            "moneyline_clv_tracked",
+            "Average close-minus-pick no-vig implied probability movement for published picks with matched CLV snapshots.",
+        ),
+        (
+            100,
+            "positive_moneyline_clv_rate",
+            "live_published_positive_moneyline_clv_rate",
+            "Published-pick positive moneyline CLV",
+            "percent",
+            _fmt_percent,
+            "moneyline_clv_tracked",
+            "Share of published picks with positive moneyline CLV among matched CLV snapshots.",
+        ),
+    ]:
+        value = _value(live_summary, key)
+        sample_value = _value(live_summary, sample_key, live_n)
+        if live_summary is None or sample_value is None or pd.isna(sample_value):
+            sample_size = ""
+        else:
+            sample_size = int(float(sample_value))
+        _add_metric(
+            rows,
+            season=season,
+            week=week,
+            generated_at=generated_at,
+            section="live_published_holdout",
+            sort_order=order,
+            metric_key=metric_key,
+            label=label,
+            value=value,
+            display_value=formatter(value),
+            unit=unit,
+            sample_size=sample_size,
+            description=description,
+            source_artifact=live_summary_path,
         )
 
     market_all = _select_market_row(market_benchmark_summary_path, segment="all")
@@ -1048,6 +1227,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--season", type=int, required=True, help="Prediction season for the metrics export.")
     parser.add_argument("--week", type=int, required=True, help="Prediction week for the metrics export.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Directory for the output CSV.")
+    parser.add_argument(
+        "--live-results-summary",
+        type=Path,
+        default=None,
+        help="Optional weekly published-pick result summary CSV. Defaults to predictions/evaluation/live_prediction_vs_actual_summary_week_NN.csv.",
+    )
     parser.add_argument("--start-season", type=int, default=None, help="Evaluation lower-bound season metadata.")
     parser.add_argument("--exclude-from-season", type=int, default=None, help="Live cutoff season metadata.")
     parser.add_argument("--exclude-from-week", type=int, default=None, help="Live cutoff week metadata.")
@@ -1067,6 +1252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         season=args.season,
         week=args.week,
         generated_at=generated_at,
+        live_results_summary_path=args.live_results_summary,
         min_spread_edge_bin_bets=args.min_spread_edge_bin_bets,
         start_season=args.start_season,
         exclude_from_season=args.exclude_from_season,

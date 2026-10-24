@@ -1,6 +1,6 @@
 # NFL Predictions Goals
 
-Last reviewed: 2026-10-11
+Last reviewed: 2026-10-21
 
 This file is the live roadmap and status board for the NFL prediction pipeline. Keep it tied to current artifacts, not historical plans. Do not mark work complete unless the code, generated output, or documentation exists in the repo.
 
@@ -203,6 +203,15 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `C:\Code\mtb\data\prediction-csvs\seasons\<season>\week_NN\*.csv`
   - `C:\Code\mtb\data\predictions\current.json`
   - `C:\Code\mtb\data\predictions\seasons\<season>\week_NN.json`
+- MattyTheBookie archive pages currently preserve immutable prediction snapshots by season/week. They are useful as a public audit trail of what was published before kickoff, but they do not yet include final scores, graded pick outcomes, ATS/moneyline results, or player-prop result overlays.
+- Archive-to-results grading now has a first Python implementation:
+  - `src.evaluation.live_results`
+  - `predictions/evaluation/live_prediction_vs_actual_week_NN.csv`
+  - `predictions/evaluation/live_prediction_vs_actual.csv`
+  - `predictions/evaluation/live_prediction_vs_actual_summary_week_NN.csv`
+  - `predictions/evaluation/live_prediction_vs_actual_summary.csv`
+  - `predictions/evaluation/live_prediction_vs_actual_segments_week_NN.csv`
+  - The command prefers MTB season/week CSV snapshots, falls back to `predictions_log`, joins finalized `matchup_features` scores by `season`, `week`, and `game_id`, and writes regenerated overlays without mutating the archived prediction snapshot.
 - Schema models and validation framework exist in `src/utils/pydantic_schemas.py`, with validation hooks in several ingestion jobs.
 - Run comparison, market ROI, volatility classifier, calibration, evaluation, and SHAP tooling exist and are integrated into the pipeline where appropriate.
 - Market benchmark artifacts exist for model-vs-no-vig-Vegas comparison:
@@ -246,6 +255,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
 - Current-season nflverse PBP can still lag or be unavailable. BallDontLie team-form features now cover current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail still depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
 - BallDontLie team-form features are useful as a monitored fallback source, but latest Week 4/Week 5 ablation runs showed win-probability regression and only marginal spread benefit. Keep them out of production model features until repeatable same-split lift appears.
+- Archived MattyTheBookie prediction snapshots can now be joined to finalized game results in Python, MattyTheBookie displays the result overlay without mutating archive snapshots, and `analysis/model_metrics_week_NN.csv` ingests the live-published summary when `live_prediction_vs_actual_summary_week_NN.csv` exists.
 - Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration and empirical recalibration by agreement/disagreement segment, walk-forward confidence-recalibration strategy decisions, walk-forward market-aware blend backtests, favorite-disagreement game diagnostics/recommendations, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, segment-aware and confidence-aware moneyline disagreement policy gates, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
 - Corrected spread ROI no longer shows broad profitability. Current Week 5 policy artifacts mark broad spread threshold strategies as `no_bet`; only the 2-to-3 point spread-edge bucket remains a low-confidence lean/research signal.
 
@@ -296,6 +306,9 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [x] Use confidence-tier calibration diagnostics to define a tested shrinkage/recalibration rule for overconfident ranges: `analysis/market_model_confidence_recalibration.csv`, `model_confidence_gate_*` fields in `analysis/market_edge_policy.csv`, and user-facing moneyline policy statuses.
 - [x] Use the confidence recalibration gate to decide whether the next model work should adjust the base win-probability calibrator, the market policy only, or both: `analysis/market_confidence_recalibration_decision.csv`.
 - [ ] If the confidence-recalibration decision artifact shows durable overall Brier/LogLoss lift, wire the chosen strategy into the base win-probability calibration path behind an explicit experiment flag before defaulting it on.
+- [ ] Build a live-published prediction-vs-actual artifact from archived/locked predictions and finalized game results before using archive outcomes for model decisions. This artifact should grade SU winner, margin error, probability loss metrics, ATS/spread outcomes when market lines exist, and market-policy result fields without rewriting the original prediction snapshot.
+- [ ] Add live holdout segment diagnostics from the prediction-vs-actual artifact by confidence bin, favorite/underdog, home/away, rest, weather, injury/roster status, volatility label, market agreement/disagreement, team, division, venue, and key spread buckets.
+- [ ] Convert repeated live holdout errors into explicit action classes: recalibrate probabilities, improve or remove a feature family, tighten publication policy gates, or leave as monitored variance. Do not train future models on prior predictions as features unless a separately validated stacking/meta-model is designed.
 
 ### 4. Market Benchmarking And Betting Edge
 
@@ -307,16 +320,16 @@ Current read from the Week 5 evaluation set:
 - No-vig Vegas favorite accuracy is about 66.1% over the same games.
 - Model and Vegas favorite agree on about 86.9% of games.
 - In 305 favorite-disagreement games, the model is 47.2% SU and Vegas is 52.8%, but model-side moneyline ROI is +4.2% overall because the model side is usually plus-money.
-- The current historical moneyline disagreement policy candidate is `prob_edge >= 0.05`: 266 bets, +5.3% ROI, 47.0% hit rate, and average model-side odds near +112. It remains `no_bet` because season stability, CLV sample, segment, and confidence-overestimate gates do not all pass.
+- The current historical moneyline disagreement policy candidate is `prob_edge >= 0.05`: 266 bets, +5.3% ROI, 47.0% hit rate, and average model-side odds near +112. It remains `no_bet` because season stability, CLV sample, coarse segment, diagnostic segment, and confidence-overestimate gates do not all pass.
 - Moneyline disagreement policy now requires season-stability and current-week CLV gates before publication. The current `prob_edge >= 0.05` policy has 6 qualified seasons, a 50.0% positive qualified-season rate, a 0.0% recent positive qualified-season rate, and a 33.3% severe-negative season rate, and it has only 2 tracked Week 5 CLV games.
 - Higher moneyline disagreement thresholds are not automatically safer: `prob_edge >= 0.08` is roughly flat (+0.1% ROI), `prob_edge >= 0.10` is positive but lower-sample (+4.6% ROI), and `prob_edge >= 0.15` is negative (-8.1% ROI).
 - Model-vs-no-vig-Vegas probability calibration is now published. Current selected-side Brier is worse than Vegas overall (`0.218` vs `0.211`), and the `15%+` model edge bin is materially overconfident: 62.2% average model probability, 43.8% average no-vig Vegas same-side probability, 42.6% actual win rate, and -5.3% model-side ROI.
-- A first walk-forward market-aware blend backtest is now published. Current blend Brier improves raw model Brier (`0.214` vs `0.218`) but still trails no-vig Vegas (`0.212`), and blend selected-side ROI improves raw model and Vegas ROI but remains negative (-2.3%), so `market_blend_policy.csv` still marks blend probability and blend moneyline as `no_bet`.
+- A first walk-forward market-aware blend backtest is now published. Current blend Brier improves raw model Brier (`0.214` vs `0.218`) but still trails no-vig Vegas (`0.212`), and blend selected-side ROI improves raw model and Vegas ROI but remains negative (-2.3%), so `market_blend_policy.csv` still marks blend probability and blend moneyline as `no_bet`. The confidence-recalibration step now annotates `market_blend_policy.csv` with `confidence_recalibration_*` fields when the 50/50 blend is an experiment candidate, keeping the live recommendation off while making the experiment path explicit.
 - Bounded moneyline disagreement bins are now published. The current Week 5 read shows the strongest bounded samples in the 5-8% and 10-15% bins, while the 8-10% and 15%+ bins are negative; do not scale confidence purely by larger probability edge until season-stability and CLV checks support it.
 - Weekly CLV detail and summary artifacts are now published from local pick-time and close/latest odds snapshots, and `analysis/market_edge_policy.csv` consumes the threshold-specific CLV summary before allowing a moneyline policy to become `strong`. Current Week 5 favorite-disagreement rows have 2 tracked games, +0.7 percentage-point average no-vig implied-probability CLV, and a 100.0% positive CLV rate, so the policy remains blocked until the tracked-game sample is large enough.
 - Model-confidence empirical recalibration is now published for moneyline disagreement picks. High-confidence disagreement bins with enough sample and model overestimate above the policy threshold hard-block moneyline promotion and surface `blocked_model_confidence_overconfidence` in weekly prediction policy fields.
 - Walk-forward confidence recalibration strategy decisions are now published. Current read: no-vig Vegas beats the current model on probability metrics and should remain a benchmark warning; the fixed 50/50 market blend is now a `market_blend_probability_and_policy_candidate` in the confidence-decision artifact; full confidence shrinkage is `no_live_change`; and disagreement-only shrinkage is `base_probability_research_only` because it slightly improves Brier/LogLoss but materially worsens disagreement ROI.
-- Favorite-disagreement diagnostics are now published. The strongest current model-side research slices are `prob_edge_bin=5-8%` (47 games, +29.2% ROI, 61.7% SU), `model_side_odds_bucket=+100 to +120` (121 games, +14.5% ROI), and `prob_edge_bin=10-15%` (112 games, +13.3% ROI). The `prob_edge_bin=8-10%` and `model_confidence_bin=60-65%` slices are explicit avoid/block candidates.
+- Favorite-disagreement diagnostics are now published and reconciled back into `analysis/market_edge_policy.csv`. The strongest current model-side research slices are `prob_edge_bin=5-8%` (47 games, +29.2% ROI, 61.7% SU), `model_side_odds_bucket=+100 to +120` (121 games, +14.5% ROI), and `prob_edge_bin=10-15%` (112 games, +13.3% ROI). For the current `prob_edge >= 0.05` policy window, `5-8%` is a diagnostic candidate segment and `8-10%` is a diagnostic avoid segment, so the reconciled moneyline policy remains `no_bet` with `blocked_diagnostic_avoid_segment`. The segment gates now also handle a selected `prob_edge >= 0.10` threshold by evaluating the 10%+ bins instead of treating the policy window as empty.
 - Broad spread threshold strategies are now policy-blocked as `no_bet`. Away edge >2 points is -1.5% ROI despite 61.0% average modeled cover probability, which confirms spread cover-probability overconfidence.
 - Corrected spread edge-bin ROI is only positive in the 2-to-3 point bucket: 368 bets, +1.2% ROI, and 52.5% hit rate. That bucket is now review-only until the empirical spread cover calibration gate passes; spread edges of 5+ points are negative and should not be promoted.
 - Spread key-number diagnostics are now published for 3, 6, 7, and 10. In the current 2-to-3 point spread-edge bucket, key-window ROI is -5.4% around 3, +9.0% around 6, +10.9% around 7, and roughly flat around 10. Treat this as a monitoring slice, not a promotion rule, until season stability and CLV confirm it.
@@ -345,9 +358,9 @@ Roadmap:
 - [x] Add a confidence-aware moneyline disagreement policy gate that uses empirical recalibration bins before promoting disagreement picks.
 - [x] Add a walk-forward confidence recalibration strategy backtest and decision artifact before making any live probability change.
 - [x] Add favorite-disagreement diagnostic and research-recommendation artifacts: `analysis/market_disagreement_games.csv`, `analysis/market_disagreement_diagnostics.csv`, and `analysis/market_disagreement_recommendations.csv`.
+- [x] Reconcile favorite-disagreement diagnostic candidate/avoid probability-edge segments with `market_edge_policy.csv` before any segment can move from research to live recommendation.
 - [ ] Improve model performance in favorite-disagreement games versus Vegas before treating disagreements as actionable.
-- [ ] Reconcile favorite-disagreement diagnostic candidate segments with `market_edge_policy.csv` before allowing any segment to move from research to live recommendation.
-- [ ] Reconcile `market_confidence_recalibration_decision.csv` and `market_blend_policy.csv` so the 50/50 blend candidate has one explicit experiment/policy path.
+- [x] Reconcile `market_confidence_recalibration_decision.csv` and `market_blend_policy.csv` so the 50/50 blend candidate has one explicit experiment/policy path.
 - [x] Build and backtest a market-aware blend or meta-model using model probability, no-vig moneyline probability, market spread, and current model features.
 - [x] Track whether any market-aware blend adds genuine edge versus simply mirroring Vegas favorite picks.
 - [x] Keep spread edge analysis as a separate betting-signal track from straight-up winner model accuracy.
@@ -384,6 +397,7 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Add first anytime TD scorer market with current PropLine line matching.
 - [x] Request first/last/2+/3+ TD scorer novelty market keys from current PropLine weekly line ingestion.
 - [x] Add explicit `coverage_status` diagnostics to `prop_line_coverage_week_NN.csv` for requested markets with no vendor rows.
+- [x] Add weekly PropLine timing and selection diagnostics to `prop_line_coverage_week_NN.csv`, including raw game counts, kickoff/update timestamps, hours until kickoff, and `available_not_selected` rows for books that had matchable lines but were not chosen by the best-line selector.
 - [x] Split exact sportsbook line counts from `anytime_td_fallback` display counts in weekly prop quality and line-coverage artifacts.
 - [x] Add optional PBP-derived first/last/2+/3+ TD novelty label output: `data/processed/player_prop_novelty_td_labels.parquet`.
 - [x] Wire PBP-derived novelty TD labels into separate novelty features, model training, and research-only weekly prediction output.
@@ -486,6 +500,24 @@ Implementation details live in `docs/PLAYER_PROP_PREDICTION_PLAN.md`.
 - [ ] Re-run benchmark comparison with current-schema predictions.
 - [ ] Decide whether validation outputs should be generated by the main weekly pipeline or a separate scheduled validation command.
 
+#### Archive-To-Results Feedback Loop
+
+Principle: keep archived prediction snapshots immutable as the public record of what was published before kickoff. Add result grading as a separate overlay that can be regenerated after games finalize.
+
+- [x] Define the canonical live-published prediction source for grading: MTB archive CSV first, then `predictions_log` locked predictions, with an explicit file override for recovery cases.
+- [x] Implement a weekly join from published predictions to finalized game results using `season`, `week`, and `game_id`.
+- [x] Publish weekly and cumulative artifacts: `predictions/evaluation/live_prediction_vs_actual_week_NN.csv`, `predictions/evaluation/live_prediction_vs_actual.csv`, `predictions/evaluation/live_prediction_vs_actual_summary_week_NN.csv`, `predictions/evaluation/live_prediction_vs_actual_summary.csv`, and `predictions/evaluation/live_prediction_vs_actual_segments_week_NN.csv`.
+- [x] Include core per-game grading fields: final scores, actual winner, model pick result, SU correctness, predicted margin error, Brier/log-loss contribution, ATS result where a valid line exists, moneyline result, moneyline unit profit when odds are available, and market-policy context fields.
+- [x] Publish a weekly summary artifact for model-improvement review: live accuracy, F1, AUC, Brier, LogLoss, MAE, ATS hit rate, moneyline ROI, and segment-level misses.
+- [x] Add MattyTheBookie CSV publishing support for live prediction-vs-actual artifacts when those CSVs exist.
+- [x] Export the weekly live-published summary into `analysis/model_metrics_week_NN.csv` so the About page can distinguish historical evaluation from true published-pick holdout results.
+- [x] Add CLV result/status fields to the live prediction-vs-actual artifact when reliable pick-time and close/latest odds snapshots match.
+- [x] Add MTB archive support for displaying prediction-vs-actual as a result overlay, not by mutating the stored prediction fields.
+- [x] Protect MTB season/week archive CSVs during live reruns: preserve existing snapshots and skip creating partial archive snapshots when already-started games have been excluded.
+- [x] Keep latest finalized live-published holdout metrics available in `analysis/model_metrics_week_NN.csv` when the active prediction week is not finalized yet.
+- [x] Defer player-prop archive grading until per-market player actuals and sportsbook line mappings are reliable enough to avoid false grading.
+- [ ] Review the first finalized week with MTB result overlays and live-published holdout metrics together, then decide which repeated live misses should become model/policy work items.
+
 ### 7. Testing And Quality
 
 - [x] Unit tests exist for data fetchers, schema validation, prediction helpers, pipeline helpers, publish/import helpers, and analysis utilities.
@@ -499,3 +531,4 @@ Implementation details live in `docs/PLAYER_PROP_PREDICTION_PLAN.md`.
 - [x] Add regression tests for MTB archive publishing.
 - [x] Add regression tests for production BDL feature gating and feature-family ablation opt-in.
 - [x] Add regression tests for roster-line audit artifact generation and MTB publish coverage.
+- [x] Add regression tests for the archive-to-results join, including immutable prediction preservation, finalized-result overlays, duplicate `game_id` protection, and no postgame leakage into same-week predictions.

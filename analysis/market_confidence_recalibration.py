@@ -26,6 +26,7 @@ DEFAULT_BENCHMARK_PATH = ANALYSIS_DIR / "market_benchmark.csv"
 DEFAULT_DETAIL_OUTPUT = ANALYSIS_DIR / "market_confidence_recalibration_detail.csv"
 DEFAULT_SUMMARY_OUTPUT = ANALYSIS_DIR / "market_confidence_recalibration_backtest.csv"
 DEFAULT_DECISION_OUTPUT = ANALYSIS_DIR / "market_confidence_recalibration_decision.csv"
+DEFAULT_BLEND_POLICY_PATH = ANALYSIS_DIR / "market_blend_policy.csv"
 
 CONFIDENCE_BINS = [
     (0.50, 0.55, "50-55%"),
@@ -126,6 +127,17 @@ DECISION_COLUMNS = [
     "passes_disagreement_policy_gate",
     "source_artifact",
     "generated_at",
+]
+
+BLEND_POLICY_DECISION_COLUMNS = [
+    "confidence_recalibration_decision",
+    "confidence_recalibration_recommended_layer",
+    "confidence_recalibration_status",
+    "confidence_recalibration_probability_candidate",
+    "confidence_recalibration_policy_candidate",
+    "confidence_recalibration_overall_brier_delta",
+    "confidence_recalibration_disagreement_roi_delta",
+    "confidence_recalibration_source_artifact",
 ]
 
 
@@ -639,6 +651,94 @@ def build_recalibration_decision(
     return out[DECISION_COLUMNS]
 
 
+def reconcile_market_blend_policy(
+    policy: pd.DataFrame,
+    decision: pd.DataFrame,
+    *,
+    source_artifact: str = str(DEFAULT_DECISION_OUTPUT),
+) -> pd.DataFrame:
+    """Annotate market blend policy with the confidence-decision experiment path."""
+    out = policy.copy()
+    for col in BLEND_POLICY_DECISION_COLUMNS:
+        if col not in out.columns:
+            out[col] = pd.NA
+    if out.empty or "signal" not in out.columns:
+        return out
+
+    blend_mask = out["signal"].astype(str).isin({"market_blend_probability", "market_blend_moneyline"})
+    if not blend_mask.any():
+        return out
+
+    required = {"candidate_strategy", "decision", "recommended_layer"}
+    if decision.empty or not required.issubset(decision.columns):
+        out.loc[blend_mask, "confidence_recalibration_status"] = "missing_confidence_decision"
+        out.loc[blend_mask, "confidence_recalibration_source_artifact"] = source_artifact
+        return out
+
+    rows = decision[decision["candidate_strategy"].astype(str).eq("vegas_blend_50_50")].copy()
+    if rows.empty:
+        out.loc[blend_mask, "confidence_recalibration_status"] = "missing_market_blend_decision"
+        out.loc[blend_mask, "confidence_recalibration_source_artifact"] = source_artifact
+        return out
+
+    row = rows.iloc[0]
+    decision_value = str(row.get("decision", "") or "")
+    recommended_layer = str(row.get("recommended_layer", "") or "")
+    probability_candidate = decision_value in {
+        "market_blend_probability_and_policy_candidate",
+        "market_blend_probability_research_only",
+    }
+    policy_candidate = decision_value == "market_blend_probability_and_policy_candidate"
+
+    for idx in out.index[blend_mask]:
+        signal = str(out.at[idx, "signal"])
+        recommended = str(out.at[idx, "recommended"]).strip().lower() in {"true", "1", "1.0", "yes"}
+        if recommended:
+            status = "live_policy"
+        elif signal == "market_blend_probability" and probability_candidate:
+            status = "probability_experiment_candidate"
+        elif signal == "market_blend_moneyline" and policy_candidate:
+            status = "moneyline_policy_experiment_candidate"
+        elif probability_candidate or policy_candidate:
+            status = "candidate_not_applicable_to_signal"
+        else:
+            status = "no_live_change"
+
+        out.at[idx, "confidence_recalibration_decision"] = decision_value
+        out.at[idx, "confidence_recalibration_recommended_layer"] = recommended_layer
+        out.at[idx, "confidence_recalibration_status"] = status
+        out.at[idx, "confidence_recalibration_probability_candidate"] = bool(probability_candidate)
+        out.at[idx, "confidence_recalibration_policy_candidate"] = bool(policy_candidate)
+        out.at[idx, "confidence_recalibration_overall_brier_delta"] = row.get(
+            "overall_brier_delta_vs_current",
+            np.nan,
+        )
+        out.at[idx, "confidence_recalibration_disagreement_roi_delta"] = row.get(
+            "disagreement_roi_delta_vs_current",
+            np.nan,
+        )
+        out.at[idx, "confidence_recalibration_source_artifact"] = source_artifact
+
+    return out
+
+
+def reconcile_market_blend_policy_file(
+    *,
+    policy_path: Path = DEFAULT_BLEND_POLICY_PATH,
+    decision: pd.DataFrame,
+) -> pd.DataFrame:
+    if not policy_path.exists():
+        return pd.DataFrame()
+    policy = pd.read_csv(policy_path)
+    reconciled = reconcile_market_blend_policy(
+        policy,
+        decision,
+        source_artifact=str(DEFAULT_DECISION_OUTPUT),
+    )
+    reconciled.to_csv(policy_path, index=False)
+    return reconciled
+
+
 def run(args: argparse.Namespace) -> None:
     benchmark = load_benchmark(args.benchmark)
     dataset = prepare_dataset(benchmark)
@@ -659,6 +759,12 @@ def run(args: argparse.Namespace) -> None:
     detail.to_csv(args.detail_output, index=False)
     summary.to_csv(args.summary_output, index=False)
     decision.to_csv(args.decision_output, index=False)
+    reconciled_blend_policy = pd.DataFrame()
+    if not args.skip_blend_policy_reconcile:
+        reconciled_blend_policy = reconcile_market_blend_policy_file(
+            policy_path=args.blend_policy_path,
+            decision=decision,
+        )
 
     print("=== Market confidence recalibration backtest ===")
     if summary.empty:
@@ -702,6 +808,12 @@ def run(args: argparse.Namespace) -> None:
     print(f"\nConfidence recalibration detail written to {args.detail_output.resolve()}")
     print(f"Confidence recalibration summary written to {args.summary_output.resolve()}")
     print(f"Confidence recalibration decision written to {args.decision_output.resolve()}")
+    if args.skip_blend_policy_reconcile:
+        print("Market blend policy reconciliation skipped by CLI flag.")
+    elif reconciled_blend_policy.empty:
+        print(f"Market blend policy reconciliation skipped; policy not found at {args.blend_policy_path.resolve()}")
+    else:
+        print(f"Market blend policy reconciled at {args.blend_policy_path.resolve()}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -710,11 +822,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detail-output", type=Path, default=DEFAULT_DETAIL_OUTPUT)
     parser.add_argument("--summary-output", type=Path, default=DEFAULT_SUMMARY_OUTPUT)
     parser.add_argument("--decision-output", type=Path, default=DEFAULT_DECISION_OUTPUT)
+    parser.add_argument("--blend-policy-path", type=Path, default=DEFAULT_BLEND_POLICY_PATH)
     parser.add_argument("--min-train-seasons", type=int, default=3)
     parser.add_argument("--min-bin-games", type=int, default=25)
     parser.add_argument("--vegas-blend-weight", type=float, default=0.5)
     parser.add_argument("--decision-min-games", type=int, default=250)
     parser.add_argument("--decision-min-disagreement-games", type=int, default=50)
+    parser.add_argument("--skip-blend-policy-reconcile", action="store_true")
     parser.add_argument("--debug", action="store_true", help="Accepted for pipeline consistency.")
     return parser
 
