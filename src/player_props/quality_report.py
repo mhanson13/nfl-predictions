@@ -135,6 +135,34 @@ ROSTER_LINE_AUDIT_COLUMNS = [
     "generated_at",
 ]
 
+LINE_GAP_AUDIT_COLUMNS = [
+    "season",
+    "week",
+    "gap_type",
+    "prediction_group",
+    "game_id",
+    "team",
+    "player_id",
+    "player_name",
+    "position",
+    "position_group",
+    "market",
+    "sportsbook",
+    "line",
+    "line_type",
+    "over_odds",
+    "under_odds",
+    "prop_quality_flag",
+    "roster_validation_flag",
+    "availability_status",
+    "injury_status",
+    "prediction_player_name_key",
+    "offered_player_name_key",
+    "offered_player_prefix_key",
+    "reason",
+    "generated_at",
+]
+
 
 def _read_csv_if_exists(path: Path) -> pd.DataFrame:
     if not path.exists():
@@ -1040,6 +1068,148 @@ def build_roster_line_audit(
     return pd.DataFrame(rows, columns=ROSTER_LINE_AUDIT_COLUMNS)
 
 
+def build_line_gap_audit(
+    predictions: pd.DataFrame,
+    odds: pd.DataFrame,
+    *,
+    season: int,
+    week: int,
+    vendors: Sequence[str] = DEFAULT_ODDS_VENDORS,
+    identity: pd.DataFrame | None = None,
+    generated_at: str | None = None,
+) -> pd.DataFrame:
+    """Detail prediction/offer gaps behind the aggregate line coverage counts."""
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+    if predictions.empty and odds.empty:
+        return pd.DataFrame(columns=LINE_GAP_AUDIT_COLUMNS)
+
+    pred = _prediction_frame_for_coverage(predictions)
+    raw = _raw_odds_for_coverage(odds)
+    identity_table = _prepare_player_identity(identity)
+    prepared = _prepared_odds_for_coverage(
+        odds,
+        season=season,
+        week=week,
+        vendors=vendors,
+        predictions=pred,
+        identity_table=identity_table,
+    )
+
+    rows: list[dict[str, object]] = []
+
+    if not pred.empty:
+        matched_ids = _matchable_prediction_ids(pred, prepared) | _published_line_prediction_ids(pred)
+        unmatched = pred[~pred["_prediction_row_id"].isin(matched_ids)].copy()
+        for record in unmatched.to_dict(orient="records"):
+            rows.append(
+                {
+                    "season": int(season),
+                    "week": int(week),
+                    "gap_type": "prediction_without_offered_line",
+                    "prediction_group": record.get("prediction_group"),
+                    "game_id": record.get("game_id"),
+                    "team": record.get("team"),
+                    "player_id": record.get("player_id"),
+                    "player_name": record.get("player_name"),
+                    "position": record.get("position"),
+                    "position_group": record.get("position_group"),
+                    "market": record.get("market"),
+                    "sportsbook": record.get("sportsbook"),
+                    "line": record.get("line"),
+                    "line_type": record.get("line_type"),
+                    "over_odds": record.get("over_odds"),
+                    "under_odds": record.get("under_odds"),
+                    "prop_quality_flag": record.get("prop_quality_flag"),
+                    "roster_validation_flag": record.get("roster_validation_flag"),
+                    "availability_status": record.get("availability_status"),
+                    "injury_status": record.get("injury_status"),
+                    "prediction_player_name_key": record.get("player_name_key"),
+                    "offered_player_name_key": pd.NA,
+                    "offered_player_prefix_key": pd.NA,
+                    "reason": "Model produced a prediction, but no prepared PropLine offer matched this game/player/market.",
+                    "generated_at": generated_at,
+                }
+            )
+
+    if not prepared.empty:
+        prediction_pairs = _legacy_join_keys(pred)
+        identity_matched_pairs = _identity_matched_odds_legacy_keys(pred, prepared, identity_table)
+        unmatched_keys = _legacy_join_keys(prepared) - prediction_pairs - identity_matched_pairs
+        if unmatched_keys:
+            offer = prepared.copy()
+            legacy_cols = ["game_id", "market", "player_name_key"]
+            offer["_legacy_key"] = list(map(tuple, offer[legacy_cols].astype(str).to_numpy()))
+            offer = offer[offer["_legacy_key"].isin(unmatched_keys)].copy()
+            if not raw.empty and {"game_id", "market", "player_name_key", "player_name"}.issubset(raw.columns):
+                raw_names = raw[["game_id", "market", "player_name_key", "player_name"]].drop_duplicates()
+                offer = offer.merge(
+                    raw_names,
+                    on=["game_id", "market", "player_name_key"],
+                    how="left",
+                    suffixes=("", "_raw"),
+                )
+            if "player_name" not in offer.columns:
+                offer["player_name"] = pd.NA
+            line_type = offer.get("line_type", pd.Series(pd.NA, index=offer.index)).astype("string").str.lower()
+            offer["_line_type_rank"] = np.select(
+                [
+                    line_type.eq("canonical"),
+                    line_type.eq("milestone"),
+                    line_type.eq("alternate"),
+                ],
+                [0, 1, 2],
+                default=3,
+            )
+            if "sportsbook" in offer.columns:
+                sportsbook_lists = (
+                    offer.groupby(["game_id", "market", "player_name_key"], dropna=False)["sportsbook"]
+                    .apply(lambda values: ",".join(sorted({str(value) for value in values.dropna()})))
+                    .reset_index(name="_sportsbooks_available")
+                )
+                offer = offer.merge(sportsbook_lists, on=["game_id", "market", "player_name_key"], how="left")
+            else:
+                offer["_sportsbooks_available"] = pd.NA
+            offer = offer.sort_values(
+                ["game_id", "market", "player_name_key", "_line_type_rank", "line"],
+                kind="stable",
+            ).drop_duplicates(
+                subset=["game_id", "market", "player_name_key"],
+                keep="first",
+            )
+            for record in offer.to_dict(orient="records"):
+                rows.append(
+                    {
+                        "season": int(season),
+                        "week": int(week),
+                        "gap_type": "offered_pair_without_prediction",
+                        "prediction_group": pd.NA,
+                        "game_id": record.get("game_id"),
+                        "team": pd.NA,
+                        "player_id": pd.NA,
+                        "player_name": record.get("player_name"),
+                        "position": pd.NA,
+                        "position_group": pd.NA,
+                        "market": record.get("market"),
+                        "sportsbook": record.get("_sportsbooks_available"),
+                        "line": record.get("line"),
+                        "line_type": record.get("line_type"),
+                        "over_odds": record.get("over_odds"),
+                        "under_odds": record.get("under_odds"),
+                        "prop_quality_flag": pd.NA,
+                        "roster_validation_flag": pd.NA,
+                        "availability_status": pd.NA,
+                        "injury_status": pd.NA,
+                        "prediction_player_name_key": pd.NA,
+                        "offered_player_name_key": record.get("player_name_key"),
+                        "offered_player_prefix_key": record.get("player_name_prefix_key"),
+                        "reason": "PropLine offered this player/game/market, but the model universe did not publish a matching prediction.",
+                        "generated_at": generated_at,
+                    }
+                )
+
+    return pd.DataFrame(rows, columns=LINE_GAP_AUDIT_COLUMNS)
+
+
 def write_quality_reports(
     *,
     prediction_dir: Path,
@@ -1049,7 +1219,7 @@ def write_quality_reports(
     odds_path: Path | None = None,
     player_identity_path: Path = DEFAULT_PLAYER_IDENTITY_PATH,
     generated_at: str | None = None,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path, Path]:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
     predictions = load_prop_predictions(prediction_dir)
     detail, summary = build_quality_reports(
@@ -1076,16 +1246,26 @@ def write_quality_reports(
         identity=identity,
         generated_at=generated_at,
     )
+    line_gap_audit = build_line_gap_audit(
+        predictions,
+        odds,
+        season=season,
+        week=week,
+        identity=identity,
+        generated_at=generated_at,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_path = output_dir / f"prop_quality_week_{int(week):02d}.csv"
     summary_path = output_dir / f"prop_quality_summary_week_{int(week):02d}.csv"
     coverage_path = output_dir / f"prop_line_coverage_week_{int(week):02d}.csv"
     roster_audit_path = output_dir / f"prop_roster_line_audit_week_{int(week):02d}.csv"
+    line_gap_audit_path = output_dir / f"prop_line_gap_audit_week_{int(week):02d}.csv"
     detail.to_csv(detail_path, index=False)
     summary.to_csv(summary_path, index=False)
     coverage.to_csv(coverage_path, index=False)
     roster_audit.to_csv(roster_audit_path, index=False)
-    return detail_path, summary_path, coverage_path, roster_audit_path
+    line_gap_audit.to_csv(line_gap_audit_path, index=False)
+    return detail_path, summary_path, coverage_path, roster_audit_path, line_gap_audit_path
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1105,7 +1285,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    detail_path, summary_path, coverage_path, roster_audit_path = write_quality_reports(
+    detail_path, summary_path, coverage_path, roster_audit_path, line_gap_audit_path = write_quality_reports(
         prediction_dir=args.prediction_dir,
         output_dir=args.output_dir,
         season=args.season,
@@ -1123,10 +1303,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         roster_audit = pd.read_csv(roster_audit_path)
         print("[player_props.quality] roster-line audit:")
         print(roster_audit.to_string(index=False))
+        line_gap_audit = pd.read_csv(line_gap_audit_path)
+        print("[player_props.quality] line gap audit:")
+        if line_gap_audit.empty:
+            print(line_gap_audit.to_string(index=False))
+        else:
+            print(line_gap_audit["gap_type"].value_counts(dropna=False).to_string())
+            print(line_gap_audit.head(40).to_string(index=False))
     print(f"[player_props.quality] wrote detail -> {detail_path.resolve()}")
     print(f"[player_props.quality] wrote summary -> {summary_path.resolve()}")
     print(f"[player_props.quality] wrote line coverage -> {coverage_path.resolve()}")
     print(f"[player_props.quality] wrote roster-line audit -> {roster_audit_path.resolve()}")
+    print(f"[player_props.quality] wrote line gap audit -> {line_gap_audit_path.resolve()}")
     return 0
 
 

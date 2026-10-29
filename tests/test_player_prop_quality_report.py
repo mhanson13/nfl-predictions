@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from src.player_props.quality_report import (
+    build_line_gap_audit,
     build_line_coverage_report,
     build_quality_reports,
     build_roster_line_audit,
@@ -575,6 +576,69 @@ def test_build_roster_line_audit_expands_unknown_rows_by_sportsbook_line_availab
     assert rb2_hr["line_availability_status"] == "vendor_no_rows"
 
 
+def test_build_line_gap_audit_reports_prediction_and_offer_gaps():
+    predictions = pd.DataFrame(
+        [
+            {
+                "prediction_group": "offense",
+                "game_id": "2026_03_CAR_ATL",
+                "team": "ATL",
+                "player_id": "rb1",
+                "player_name": "RB One",
+                "position": "RB",
+                "position_group": "RB",
+                "market": "rb_rushing_yards",
+                "line": pd.NA,
+                "sportsbook": "",
+                "prop_quality_flag": "ok",
+                "roster_validation_flag": "ok",
+                "availability_status": "active",
+            },
+        ]
+    )
+    odds = pd.DataFrame(
+        [
+            {
+                "home_team": "ATL Falcons",
+                "away_team": "CAR Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_rush_yds",
+                "outcome_name": "Over",
+                "player_name": "Other Back",
+                "price": -110,
+                "point": 44.5,
+            },
+            {
+                "home_team": "ATL Falcons",
+                "away_team": "CAR Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_rush_yds",
+                "outcome_name": "Under",
+                "player_name": "Other Back",
+                "price": -110,
+                "point": 44.5,
+            },
+        ]
+    )
+
+    audit = build_line_gap_audit(
+        predictions,
+        odds,
+        season=2026,
+        week=3,
+        vendors=["draftkings"],
+        generated_at="2026-09-22T00:00:00+00:00",
+    )
+
+    assert set(audit["gap_type"]) == {"prediction_without_offered_line", "offered_pair_without_prediction"}
+    prediction_gap = audit[audit["gap_type"].eq("prediction_without_offered_line")].iloc[0]
+    assert prediction_gap["player_id"] == "rb1"
+    assert "no prepared PropLine offer matched" in prediction_gap["reason"]
+    offer_gap = audit[audit["gap_type"].eq("offered_pair_without_prediction")].iloc[0]
+    assert offer_gap["sportsbook"] == "draftkings"
+    assert offer_gap["offered_player_name_key"] == "o:back"
+
+
 def test_load_prop_predictions_includes_novelty_file(tmp_path):
     prediction_dir = tmp_path / "predictions"
     prediction_dir.mkdir()
@@ -638,6 +702,7 @@ def test_quality_report_cli_writes_weekly_outputs(tmp_path):
     assert (output_dir / "prop_quality_summary_week_03.csv").exists()
     assert (output_dir / "prop_line_coverage_week_03.csv").exists()
     assert (output_dir / "prop_roster_line_audit_week_03.csv").exists()
+    assert (output_dir / "prop_line_gap_audit_week_03.csv").exists()
     summary = pd.read_csv(output_dir / "prop_quality_summary_week_03.csv")
     assert "novelty" in set(summary["prediction_group"])
     assert summary[summary["scope"].eq("overall")].iloc[0]["rows"] == 4

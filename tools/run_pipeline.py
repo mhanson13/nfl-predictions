@@ -437,7 +437,7 @@ def run_job(job: Job, env: dict[str, str] | None = None, dry_run: bool = False) 
     result = subprocess.run(command, env=env, check=False)
     if result.returncode != 0:
         if (
-            job.name == "predict_upcoming"
+            job.name in {"predict_upcoming", "predict_upcoming_policy_refresh"}
             and result.returncode in STACK_OVERFLOW_CODES
             and all(path.exists() for path in PREDICT_OUTPUTS)
         ):
@@ -1550,6 +1550,10 @@ def build_sequential_jobs(
             *debug,
         ]
         jobs.append(Job("market_disagreement_diagnostics", disagreement_diagnostics_cmd))
+
+        # Refresh the slate export after market ROI/policy artifacts are regenerated so
+        # published CSVs carry the current run's confidence and policy diagnostics.
+        jobs.append(Job("predict_upcoming_policy_refresh", list(predict_upcoming_job.command)))
 
         try:
             metrics_week = int(prediction_week)

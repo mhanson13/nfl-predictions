@@ -460,11 +460,77 @@ def test_predict_player_props_marks_anytime_td_fallback_lines_unbettable(tmp_pat
     assert rb_td["line_type"] == "anytime_td_fallback"
     assert rb_td["prop_quality_flag"] == "fallback_line"
     assert bool(rb_td["bettable_flag"]) is False
+    assert rb_td["edge_publish_status"] == "research_only"
+    assert "true split TD line" in rb_td["edge_reason"]
 
     anytime_td = offense[(offense["player_id"].eq("rb-1")) & (offense["market"].eq("anytime_td"))].iloc[0]
     assert anytime_td["line"] == 0.5
     assert anytime_td["line_type"] == "milestone"
     assert bool(anytime_td["bettable_flag"]) is True
+
+
+def test_predict_player_props_adds_policy_status_for_below_threshold_edges(tmp_path):
+    labels = _labels()
+    models_dir = tmp_path / "models"
+    _write_models(labels, models_dir)
+    qb_path, offense_path, defense_path = _projection_sources(tmp_path / "predictions")
+    rosters_path = tmp_path / "rosters.parquet"
+    _write_rosters(rosters_path)
+    candidates = build_prediction_candidates(
+        labels=labels,
+        qb_path=qb_path,
+        offense_path=offense_path,
+        defense_path=defense_path,
+        rosters_path=rosters_path,
+    )
+    raw_odds = pd.DataFrame(
+        [
+            {
+                "home_team": "Atlanta Falcons",
+                "away_team": "Carolina Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_anytime_td",
+                "outcome_name": "Anytime Touchdown Scorer",
+                "player_name": "RB One",
+                "price": 150,
+                "point": None,
+            }
+        ]
+    )
+    odds = prepare_player_prop_odds(raw_odds, season=2026, week=3, vendor="draftkings")
+    edge_policy = pd.DataFrame(
+        [
+            {
+                "scope": "market",
+                "market": "anytime_td",
+                "strategy": "prob_edge",
+                "threshold": 0.95,
+                "roi": 0.10,
+                "n_bets": 120,
+                "recommendation_tier": "strong",
+            }
+        ]
+    )
+
+    _, offense, _, _ = predict_player_props(
+        labels=labels,
+        candidates=candidates,
+        models_dir=models_dir,
+        odds=odds,
+        season=2026,
+        week=3,
+        edge_policy=edge_policy,
+        generated_at="2026-09-22T00:00:00+00:00",
+    )
+
+    row = offense[(offense["player_id"].eq("rb-1")) & (offense["market"].eq("anytime_td"))].iloc[0]
+    assert bool(row["edge_recommendation_flag"]) is False
+    assert row["edge_recommendation_tier"] == "below_threshold"
+    assert row["edge_publish_status"] == "no_bet"
+    assert row["edge_required_threshold"] == 0.95
+    assert row["edge_policy_sample_size"] == 120
+    assert row["edge_policy_historical_roi"] == 0.10
+    assert "below the historical policy threshold" in row["edge_reason"]
 
 
 def test_predict_player_props_writes_novelty_research_only_output(tmp_path):

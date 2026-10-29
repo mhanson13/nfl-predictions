@@ -189,6 +189,20 @@ class TestNFLversePlayRecord:
         data = {**self.BASE, "wp": -0.1}
         _raises_validation(NFLversePlayRecord, data)
 
+    def test_wpa_allows_negative_added_probability(self):
+        data = {**self.BASE, "wp": 0.62, "wpa": -0.42}
+        rec = NFLversePlayRecord.model_validate(data)
+        assert rec.wpa == -0.42
+
+    def test_wpa_nan_coerced_to_none(self):
+        data = {**self.BASE, "wpa": float("nan")}
+        rec = NFLversePlayRecord.model_validate(data)
+        assert rec.wpa is None
+
+    def test_invalid_wpa_out_of_range(self):
+        data = {**self.BASE, "wpa": 1.5}
+        _raises_validation(NFLversePlayRecord, data)
+
     def test_down_out_of_range(self):
         data = {**self.BASE, "down": 5}
         _raises_validation(NFLversePlayRecord, data)

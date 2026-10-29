@@ -39,6 +39,8 @@ from src.predict.volatility import (
 )
 
 
+DEFAULT_MARKET_CONFIDENCE_RECALIBRATION_PATH = Path("analysis/market_model_confidence_recalibration.csv")
+
 
 
 
@@ -874,6 +876,14 @@ def _cleanup_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
         "volatility_prob",
         "volatility_label",
         "market_moneyline_favorite_disagreement",
+        "market_moneyline_model_pick_prob_raw",
+        "market_moneyline_calibrated_model_pick_prob",
+        "market_moneyline_calibrated_home_win_prob",
+        "market_moneyline_calibrated_prob_edge",
+        "market_moneyline_confidence_calibration_sample_size",
+        "market_moneyline_confidence_calibration_error",
+        "market_moneyline_raw_minus_calibrated_prob",
+        "market_moneyline_confidence_overconfidence_flag",
         "market_moneyline_policy_recommendation_flag",
         "market_spread_policy_recommendation_flag",
     }
@@ -970,6 +980,84 @@ def _read_market_policy(path: Path = Path("analysis/market_edge_policy.csv")) ->
         for _, row in frame.iterrows()
         if pd.notna(row.get("signal"))
     }
+
+
+def _read_market_confidence_recalibration(
+    path: Path = DEFAULT_MARKET_CONFIDENCE_RECALIBRATION_PATH,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read empirical confidence-bin shrinkage rows used for live diagnostics."""
+    if not path.exists():
+        return {}
+    try:
+        frame = pd.read_csv(path)
+    except Exception:
+        return {}
+    required = {
+        "scope",
+        "season",
+        "agreement_segment",
+        "confidence_bin",
+        "n_graded",
+        "calibration_error",
+        "recalibrated_model_pick_prob",
+        "calibration_status",
+    }
+    if frame.empty or not required.issubset(frame.columns):
+        return {}
+
+    frame = frame[
+        frame["scope"].astype(str).eq("overall")
+        & frame["season"].astype(str).eq("all")
+    ].copy()
+    if frame.empty:
+        return {}
+
+    numeric_cols = [
+        "n_graded",
+        "actual_model_side_win_rate",
+        "avg_model_pick_prob",
+        "calibration_error",
+        "recalibrated_model_pick_prob",
+        "raw_minus_recalibrated_prob",
+    ]
+    for col in numeric_cols:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+
+    records: dict[tuple[str, str], dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        segment = str(row.get("agreement_segment", "") or "").strip()
+        confidence_bin = str(row.get("confidence_bin", "") or "").strip()
+        if not segment or not confidence_bin or confidence_bin.lower() in {"nan", "none"}:
+            continue
+        records[(segment, confidence_bin)] = row.to_dict()
+    return records
+
+
+def _lookup_market_confidence_recalibration(
+    records: dict[tuple[str, str], dict[str, Any]],
+    *,
+    agreement_segment: str,
+    confidence_bin: str,
+    min_graded: int = 25,
+) -> tuple[dict[str, Any] | None, str]:
+    """Prefer agreement-specific calibration, then fall back to all games for the bin."""
+    if not records:
+        return None, "missing_recalibration_artifact"
+
+    for segment, source in ((agreement_segment, "agreement_confidence_bin"), ("all", "all_confidence_bin")):
+        row = records.get((str(segment), str(confidence_bin)))
+        if row is None:
+            continue
+        sample = pd.to_numeric(pd.Series([row.get("n_graded", np.nan)]), errors="coerce").iloc[0]
+        calibrated = pd.to_numeric(
+            pd.Series([row.get("recalibrated_model_pick_prob", np.nan)]),
+            errors="coerce",
+        ).iloc[0]
+        if pd.notna(sample) and int(sample) >= int(min_graded) and pd.notna(calibrated):
+            return row, source
+
+    return None, "insufficient_recalibration_sample"
 
 
 def _probability_edge_bin(value: Any) -> str:
@@ -1086,11 +1174,13 @@ def _attach_market_policy_fields(
     preds: pd.DataFrame,
     *,
     policy_path: Path = Path("analysis/market_edge_policy.csv"),
+    confidence_recalibration_path: Path = DEFAULT_MARKET_CONFIDENCE_RECALIBRATION_PATH,
 ) -> list[str]:
     if preds.empty:
         return []
 
     policy = _read_market_policy(policy_path)
+    confidence_recalibration = _read_market_confidence_recalibration(confidence_recalibration_path)
     added = [
         "market_home_moneyline",
         "market_away_moneyline",
@@ -1100,8 +1190,19 @@ def _attach_market_policy_fields(
         "market_vegas_pick",
         "market_moneyline_favorite_disagreement",
         "market_moneyline_model_pick_prob",
+        "market_moneyline_model_pick_prob_raw",
         "market_moneyline_model_confidence_bin",
         "market_moneyline_prob_edge",
+        "market_moneyline_calibrated_model_pick_prob",
+        "market_moneyline_calibrated_home_win_prob",
+        "market_moneyline_calibrated_prob_edge",
+        "market_moneyline_calibrated_confidence_bin",
+        "market_moneyline_confidence_calibration_source",
+        "market_moneyline_confidence_calibration_status",
+        "market_moneyline_confidence_calibration_sample_size",
+        "market_moneyline_confidence_calibration_error",
+        "market_moneyline_raw_minus_calibrated_prob",
+        "market_moneyline_confidence_overconfidence_flag",
         "market_moneyline_edge_bin",
         "market_moneyline_model_side_odds_bucket",
         "market_moneyline_vegas_model_side_prob_bin",
@@ -1150,10 +1251,67 @@ def _attach_market_policy_fields(
         preds["market_away_implied_prob_novig"],
     )
     preds["market_moneyline_model_pick_prob"] = model_pick_prob
+    preds["market_moneyline_model_pick_prob_raw"] = model_pick_prob
+    model_pick_prob_series = pd.Series(model_pick_prob, index=preds.index, dtype=float)
     preds["market_moneyline_model_confidence_bin"] = preds["market_moneyline_model_pick_prob"].apply(
         _model_confidence_bin
     )
     preds["market_moneyline_prob_edge"] = model_pick_prob - vegas_model_side_prob
+
+    calibrated_pick_prob = model_pick_prob_series.copy()
+    calibration_source = pd.Series("current_model_fallback", index=preds.index, dtype=object)
+    calibration_status = pd.Series("unavailable", index=preds.index, dtype=object)
+    calibration_sample = pd.Series(np.nan, index=preds.index, dtype=float)
+    calibration_error = pd.Series(np.nan, index=preds.index, dtype=float)
+    raw_minus_calibrated = pd.Series(0.0, index=preds.index, dtype=float)
+
+    for idx in preds.index:
+        confidence_bin = str(preds.at[idx, "market_moneyline_model_confidence_bin"])
+        if confidence_bin == "unavailable" or not bool(moneyline_available.loc[idx]):
+            continue
+        agreement_segment = "disagree" if bool(preds.at[idx, "market_moneyline_favorite_disagreement"]) else "agree"
+        row, source = _lookup_market_confidence_recalibration(
+            confidence_recalibration,
+            agreement_segment=agreement_segment,
+            confidence_bin=confidence_bin,
+        )
+        calibration_source.at[idx] = source
+        if row is None:
+            calibration_status.at[idx] = source
+            continue
+
+        calibrated = pd.to_numeric(
+            pd.Series([row.get("recalibrated_model_pick_prob", np.nan)]),
+            errors="coerce",
+        ).iloc[0]
+        if pd.isna(calibrated):
+            continue
+        calibrated_pick_prob.at[idx] = float(np.clip(calibrated, 0.001, 0.999))
+        calibration_status.at[idx] = str(row.get("calibration_status", "available") or "available")
+        calibration_sample.at[idx] = pd.to_numeric(pd.Series([row.get("n_graded", np.nan)]), errors="coerce").iloc[0]
+        calibration_error.at[idx] = pd.to_numeric(
+            pd.Series([row.get("calibration_error", np.nan)]),
+            errors="coerce",
+        ).iloc[0]
+        raw_minus_calibrated.at[idx] = float(model_pick_prob_series.at[idx] - calibrated_pick_prob.at[idx])
+
+    preds["market_moneyline_calibrated_model_pick_prob"] = calibrated_pick_prob
+    preds["market_moneyline_calibrated_home_win_prob"] = np.where(
+        model_home_pick,
+        calibrated_pick_prob,
+        1.0 - calibrated_pick_prob,
+    )
+    preds["market_moneyline_calibrated_prob_edge"] = calibrated_pick_prob - vegas_model_side_prob
+    preds["market_moneyline_calibrated_confidence_bin"] = preds[
+        "market_moneyline_calibrated_model_pick_prob"
+    ].apply(_model_confidence_bin)
+    preds["market_moneyline_confidence_calibration_source"] = calibration_source
+    preds["market_moneyline_confidence_calibration_status"] = calibration_status
+    preds["market_moneyline_confidence_calibration_sample_size"] = calibration_sample
+    preds["market_moneyline_confidence_calibration_error"] = calibration_error
+    preds["market_moneyline_raw_minus_calibrated_prob"] = raw_minus_calibrated
+    preds["market_moneyline_confidence_overconfidence_flag"] = calibration_error.gt(0.07).fillna(False)
+
     preds["market_moneyline_edge_bin"] = preds["market_moneyline_prob_edge"].apply(_probability_edge_bin)
     model_side_moneyline = np.where(
         model_home_pick,

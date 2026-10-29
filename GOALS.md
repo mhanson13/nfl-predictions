@@ -1,6 +1,6 @@
 # NFL Predictions Goals
 
-Last reviewed: 2026-10-21
+Last reviewed: 2026-10-29
 
 This file is the live roadmap and status board for the NFL prediction pipeline. Keep it tied to current artifacts, not historical plans. Do not mark work complete unless the code, generated output, or documentation exists in the repo.
 
@@ -59,6 +59,7 @@ Source artifacts:
 - `predictions/evaluation/player_props/prop_quality_summary_week_05.csv`
 - `predictions/evaluation/player_props/prop_line_coverage_week_05.csv`
 - `predictions/evaluation/player_props/prop_roster_line_audit_week_05.csv`
+- `predictions/evaluation/player_props/prop_line_gap_audit_week_NN.csv`
 - `predictions/player_props_qb.csv`
 - `predictions/player_props_offense.csv`
 - `predictions/player_props_defense.csv`
@@ -81,18 +82,18 @@ Source artifacts:
 - `analysis/run_comparisons/run_report.md`
 - `README.md`
 
-Latest full evaluation snapshot from the Week 5 pipeline run on 2026-10-11:
+Latest full evaluation snapshot from the current-schema evaluation run on 2026-10-29:
 
 | Metric | Current | Near-Term Goal |
 |---|---:|---:|
-| Games / samples | 2283 | Track per run |
+| Games / samples | 2325 | Track per run |
 | Accuracy | 0.654 | >= 0.670 |
-| F1 | 0.693 | >= 0.710 |
+| F1 | 0.692 | >= 0.710 |
 | AUC | 0.706 | >= 0.720 |
-| Brier | 0.217 | <= 0.210 |
-| LogLoss | 0.623 | <= 0.610 |
-| Margin MAE | 10.15 | <= 9.75 |
-| Margin RMSE | 13.07 | <= 12.75 |
+| Brier | 0.219 | <= 0.210 |
+| LogLoss | 0.628 | <= 0.610 |
+| Margin MAE | 10.17 | <= 9.75 |
+| Margin RMSE | 13.20 | <= 12.75 |
 
 Current read: the model is usable but below the earlier aspirational AUC/Brier targets. Treat prior AUC values near 1.0 as invalid or stale unless backed by the current evaluation pipeline.
 
@@ -137,6 +138,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `predictions/evaluation/player_props/prop_quality_summary_week_NN.csv`
   - `predictions/evaluation/player_props/prop_line_coverage_week_NN.csv`
   - `predictions/evaluation/player_props/prop_roster_line_audit_week_NN.csv`
+  - `predictions/evaluation/player_props/prop_line_gap_audit_week_NN.csv`
 - Weekly trained-model player-prop prediction exports exist for the currently modeled markets:
   - `predictions/player_props_qb.csv`
   - `predictions/player_props_offense.csv`
@@ -179,6 +181,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `prob_over_sample_size`
   - `over_break_even_probability`, `under_break_even_probability`, `over_ev`, `under_ev`, `edge_side`, `edge_odds`, `edge_break_even_probability`, and `edge_ev`
   - `edge_probability_edge`, `edge_recommendation_flag`, `edge_recommendation_tier`, and `edge_policy_*`
+  - `edge_publish_status`, `edge_reason`, `edge_required_threshold`, `edge_current_probability_edge`, `edge_policy_sample_size`, and `edge_policy_historical_roi`
   - Price-aware EV fields account for sportsbook vig. Recommendation flags now require a bettable current row, a historically positive market threshold from `edge_recommendation_policy.csv`, and positive current expected value after juice.
 - Current-week ESPN roster, depth chart, and injury snapshots are now wired into the pipeline for explicit prediction weeks:
   - `src.data.espn_rosters`
@@ -249,11 +252,11 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - `GOALS.md` and some older docs previously contained stale metrics and completed-status claims. This file should now be the source of current roadmap truth.
 - Live tracking, paper trading, calibration monitoring, and benchmark modules exist, but their generated artifacts are not all currently maintained as live weekly outputs. CLV detail/summary CSVs are now generated in the weekly pipeline from local pick-time and close/latest odds snapshots.
 - Current measured coverage is low. Treat any old >70% coverage claim as stale until a fresh full-suite coverage run proves otherwise.
-- Player prop labels, split feature tables, baseline scoring, trained-model evaluation, weekly trained-model CSV exports, optional PropLine sportsbook ingestion, historical line joins, market-aware over-probability diagnostics, and first edge-threshold backtests now exist for the core yardage/sacks markets. Direct QB/RB/WRTE touchdown markets and anytime TD scorer are now published as projections; first/last/2+/3+ TD scorer novelty markets now have PBP-derived labels, a separate novelty feature/model family, and research-only weekly output. QB passing TD and anytime TD have exact current line coverage; RB rushing TD and WR/TE receiving TD now have non-bettable anytime-TD fallback lines, but still need true exact sportsbook line coverage before recommendation gates can use them. Remaining prop gaps are confidence-tier calibration, broader defensive-sack sportsbook/vendor coverage, historical touchdown line calibration, profitable edge validation, and historical novelty-market calibration.
+- Player prop labels, split feature tables, baseline scoring, trained-model evaluation, weekly trained-model CSV exports, optional PropLine sportsbook ingestion, historical line joins, market-aware over-probability diagnostics, and first edge-threshold backtests now exist for the core yardage/sacks markets. Direct QB/RB/WRTE touchdown markets and anytime TD scorer are now published as projections; first/last/2+/3+ TD scorer novelty markets now have PBP-derived labels, a separate novelty feature/model family, and research-only weekly output. QB passing TD and anytime TD have exact current line coverage; RB rushing TD and WR/TE receiving TD now have non-bettable anytime-TD fallback lines and explicit `research_only` publish reasons, but still need true exact sportsbook line coverage before recommendation gates can use them. Remaining prop gaps are confidence-tier calibration, broader defensive-sack sportsbook/vendor coverage, historical touchdown line calibration, profitable edge validation, historical novelty-market calibration, and closing coverage gaps where offered PropLine player/game/market pairs sit outside the prediction universe.
 - Current-week roster validation is integrated and needs ongoing production-output review for false positives, missing ESPN matches, and player-name/team alias mismatches. Week 5 currently has 0 unknown roster rows, 15 team mismatches, and 168 inactive/practice-squad roster exclusions.
 - Yahoo Fantasy remains blocked pending API access approval.
 - SportsDataIO is retained only as a fallback while BallDontLie coverage is verified.
-- Current-season nflverse PBP can still lag or be unavailable. BallDontLie team-form features now cover current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail still depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
+- NFLVerse ingestion now prefers maintained GitHub release assets for PBP, schedules, rosters, injuries, snap counts, depth charts, and player stats, with `nfl_data_py` retained as fallback. Current-season nflverse release files can still lag or be unavailable, but the recurring wrapper-only PBP failure path is no longer the primary path. BallDontLie team-form features still cover some current-season team context, but PBP-specific feature families such as EPA, pressure, and red-zone detail depend on nflverse/ESPN PBP until equivalent replacement logic is proven.
 - BallDontLie team-form features are useful as a monitored fallback source, but latest Week 4/Week 5 ablation runs showed win-probability regression and only marginal spread benefit. Keep them out of production model features until repeatable same-split lift appears.
 - Archived MattyTheBookie prediction snapshots can now be joined to finalized game results in Python, MattyTheBookie displays the result overlay without mutating archive snapshots, and `analysis/model_metrics_week_NN.csv` ingests the live-published summary when `live_prediction_vs_actual_summary_week_NN.csv` exists.
 - Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration and empirical recalibration by agreement/disagreement segment, walk-forward confidence-recalibration strategy decisions, walk-forward market-aware blend backtests, favorite-disagreement game diagnostics/recommendations, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, segment-aware and confidence-aware moneyline disagreement policy gates, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
@@ -272,6 +275,11 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 
 ### 2. Data Source Direction
 
+- [x] Prefer maintained nflverse-data release assets over `nfl_data_py` for core nflverse datasets.
+- [x] Normalize NFLVerse schedule external ID columns before parquet writes so release schedules do not fall back to stale CSV output.
+- [x] Correct NFLVerse PBP validation so signed `wpa` values are accepted while true win probabilities remain bounded to `[0, 1]`.
+- [x] Suppress/soften recurring low-level noise for known optional-source paths: pandas concat FutureWarning during nflverse merges, optional PFR helper/feed misses, and Yahoo Fantasy authorization skips while API approval is pending.
+- [ ] Monitor two full weekly runs after the release-first switch for PBP/schedule/player-stat row-count drift and feature-distribution drift.
 - [x] Prefer BallDontLie over SportsDataIO when `BALLDONTLIE_API_KEY` is present.
 - [x] Keep SportsDataIO disabled by default unless `--enable-sportsdataio` is passed.
 - [x] Document current datasource roles in `datasources.md`.
@@ -305,7 +313,10 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [x] Build calibration diagnostics by model confidence tier and identify overconfident ranges that need shrinkage or recalibration: `analysis/market_model_confidence_calibration.csv`.
 - [x] Use confidence-tier calibration diagnostics to define a tested shrinkage/recalibration rule for overconfident ranges: `analysis/market_model_confidence_recalibration.csv`, `model_confidence_gate_*` fields in `analysis/market_edge_policy.csv`, and user-facing moneyline policy statuses.
 - [x] Use the confidence recalibration gate to decide whether the next model work should adjust the base win-probability calibrator, the market policy only, or both: `analysis/market_confidence_recalibration_decision.csv`.
+- [x] Export raw-vs-empirically-calibrated moneyline confidence diagnostics in weekly prediction CSVs (`market_moneyline_model_pick_prob_raw`, `market_moneyline_calibrated_model_pick_prob`, `market_moneyline_calibrated_prob_edge`, and calibration source/sample/error fields) without changing the base pick path.
+- [x] Refresh upcoming predictions after market ROI/confidence artifacts are regenerated so published CSVs use the current run's confidence-policy diagnostics rather than the previous run's artifacts.
 - [ ] If the confidence-recalibration decision artifact shows durable overall Brier/LogLoss lift, wire the chosen strategy into the base win-probability calibration path behind an explicit experiment flag before defaulting it on.
+- [ ] Decide whether MattyTheBookie should display calibrated confidence as primary public confidence or keep raw model confidence primary with calibrated confidence as tooltip/context.
 - [ ] Build a live-published prediction-vs-actual artifact from archived/locked predictions and finalized game results before using archive outcomes for model decisions. This artifact should grade SU winner, margin error, probability loss metrics, ATS/spread outcomes when market lines exist, and market-policy result fields without rewriting the original prediction snapshot.
 - [ ] Add live holdout segment diagnostics from the prediction-vs-actual artifact by confidence bin, favorite/underdog, home/away, rest, weather, injury/roster status, volatility label, market agreement/disagreement, team, division, venue, and key spread buckets.
 - [ ] Convert repeated live holdout errors into explicit action classes: recalibrate probabilities, improve or remove a feature family, tighten publication policy gates, or leave as monitored variance. Do not train future models on prior predictions as features unless a separately validated stacking/meta-model is designed.
@@ -328,7 +339,7 @@ Current read from the Week 5 evaluation set:
 - Bounded moneyline disagreement bins are now published. The current Week 5 read shows the strongest bounded samples in the 5-8% and 10-15% bins, while the 8-10% and 15%+ bins are negative; do not scale confidence purely by larger probability edge until season-stability and CLV checks support it.
 - Weekly CLV detail and summary artifacts are now published from local pick-time and close/latest odds snapshots, and `analysis/market_edge_policy.csv` consumes the threshold-specific CLV summary before allowing a moneyline policy to become `strong`. Current Week 5 favorite-disagreement rows have 2 tracked games, +0.7 percentage-point average no-vig implied-probability CLV, and a 100.0% positive CLV rate, so the policy remains blocked until the tracked-game sample is large enough.
 - Model-confidence empirical recalibration is now published for moneyline disagreement picks. High-confidence disagreement bins with enough sample and model overestimate above the policy threshold hard-block moneyline promotion and surface `blocked_model_confidence_overconfidence` in weekly prediction policy fields.
-- Walk-forward confidence recalibration strategy decisions are now published. Current read: no-vig Vegas beats the current model on probability metrics and should remain a benchmark warning; the fixed 50/50 market blend is now a `market_blend_probability_and_policy_candidate` in the confidence-decision artifact; full confidence shrinkage is `no_live_change`; and disagreement-only shrinkage is `base_probability_research_only` because it slightly improves Brier/LogLoss but materially worsens disagreement ROI.
+- Walk-forward confidence recalibration strategy decisions are now published. Current read: no-vig Vegas remains the probability benchmark to beat, while empirical confidence shrinkage is now surfaced as a candidate diagnostic path. Weekly predictions export calibrated moneyline confidence fields for downstream review, but the base public pick probability is not changed until repeated live runs prove the strategy is durable.
 - Favorite-disagreement diagnostics are now published and reconciled back into `analysis/market_edge_policy.csv`. The strongest current model-side research slices are `prob_edge_bin=5-8%` (47 games, +29.2% ROI, 61.7% SU), `model_side_odds_bucket=+100 to +120` (121 games, +14.5% ROI), and `prob_edge_bin=10-15%` (112 games, +13.3% ROI). For the current `prob_edge >= 0.05` policy window, `5-8%` is a diagnostic candidate segment and `8-10%` is a diagnostic avoid segment, so the reconciled moneyline policy remains `no_bet` with `blocked_diagnostic_avoid_segment`. The segment gates now also handle a selected `prob_edge >= 0.10` threshold by evaluating the 10%+ bins instead of treating the policy window as empty.
 - Broad spread threshold strategies are now policy-blocked as `no_bet`. Away edge >2 points is -1.5% ROI despite 61.0% average modeled cover probability, which confirms spread cover-probability overconfidence.
 - Corrected spread edge-bin ROI is only positive in the 2-to-3 point bucket: 368 bets, +1.2% ROI, and 52.5% hit rate. That bucket is now review-only until the empirical spread cover calibration gate passes; spread edges of 5+ points are negative and should not be promoted.
@@ -372,7 +383,7 @@ Roadmap:
 
 ### 5. Player Prop Prediction Goals
 
-Current state: legacy player CSVs remain available as rate-based projections, and trained-model player prop CSVs now publish weekly for QB passing yards, QB passing TDs, RB rushing yards, RB rushing TDs, WR/TE receiving yards, WR/TE receiving TDs, anytime TD scorer, defensive player sacks, and research-only first/last/2+/3+ TD scorer novelty rows. PropLine line ingestion is wired through DraftKings, Hard Rock, and FanDuel when `PROPLINE_API_KEY` is configured, with line-consensus/variance diagnostics, injury quality controls, current-roster validation, and conservative edge-recommendation policy fields included in the weekly prop CSVs. Default current PropLine requests include yardage, stat-specific TD, anytime TD, first/last/2+/3+ TD scorer novelty keys, and defensive sack market keys; the weekly coverage artifact now separates exact line rows from `anytime_td_fallback` display rows so RB rushing TD and WR/TE receiving TD coverage is visible without making those rows bettable. A durable cross-source player identity table now publishes to `data/processed/player_identity.parquet` and links GSIS player IDs to nflverse, ESPN, BallDontLie, Sportradar, and sportsbook-style player-name aliases for safer historical and current prop-line matching. Goal: expand line availability reporting, calibrate confidence tiers, backtest prop edges, broaden markets, and score the outputs weekly.
+Current state: legacy player CSVs remain available as rate-based projections, and trained-model player prop CSVs now publish weekly for QB passing yards, QB passing TDs, RB rushing yards, RB rushing TDs, WR/TE receiving yards, WR/TE receiving TDs, anytime TD scorer, defensive player sacks, and research-only first/last/2+/3+ TD scorer novelty rows. PropLine line ingestion is wired through DraftKings, Hard Rock, and FanDuel when `PROPLINE_API_KEY` is configured, with line-consensus/variance diagnostics, injury quality controls, current-roster validation, and conservative edge-recommendation policy fields included in the weekly prop CSVs. Default current PropLine requests include yardage, stat-specific TD, anytime TD, first/last/2+/3+ TD scorer novelty keys, and defensive sack market keys; the weekly coverage artifact now separates exact line rows from `anytime_td_fallback` display rows so RB rushing TD and WR/TE receiving TD coverage is visible without making those rows bettable. Published prop CSVs now include `edge_publish_status` and `edge_reason` for user-facing policy clarity, and the weekly quality suite includes `prop_line_gap_audit_week_NN.csv` to separate model predictions without offered lines from offered player/game/market pairs outside the prediction universe. A durable cross-source player identity table now publishes to `data/processed/player_identity.parquet` and links GSIS player IDs to nflverse, ESPN, BallDontLie, Sportradar, and sportsbook-style player-name aliases for safer historical and current prop-line matching. Goal: expand line availability reporting, calibrate confidence tiers, backtest prop edges, broaden markets, and score the outputs weekly.
 
 #### First Implementation Slice
 
@@ -403,6 +414,7 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Wire PBP-derived novelty TD labels into separate novelty features, model training, and research-only weekly prediction output.
 - [x] Add optional PropLine player-prop line ingestion for `line`, `implied_probability`, and projection-vs-line `edge`.
 - [x] Add identity-aware anytime-TD fallback mapping for RB rushing TD and WR/TE receiving TD current outputs; fallback rows use `line_type=anytime_td_fallback`, `prop_quality_flag=fallback_line`, and are excluded from bettable/recommendation gates.
+- [x] Publish fallback-only TD split rows as `edge_publish_status=research_only` with an explicit true-line-required reason so consumer apps do not treat inferred lines as bettable edges.
 - [x] Add line-offered defensive sack candidate expansion using PropLine offers plus player identity, active-roster availability, and prior non-leaking sack history.
 - [x] Add sportsbook line consensus/variance fields to prop exports.
 - [x] Add injury status, injury-exclusion, and bettable flags to prop exports.
@@ -413,6 +425,7 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Add roster validation counts to weekly player-prop quality reports.
 - [x] Report PropLine availability and match quality by week, sportsbook, market, and player naming.
 - [x] Add player-prop edge recommendation counts and EV/probability-edge diagnostics to weekly quality summaries.
+- [x] Add weekly player-prop line-gap audit output: `predictions/evaluation/player_props/prop_line_gap_audit_week_NN.csv`.
 - [x] Add manual Odds API historical event/event-market/player-prop fetcher for backfill experiments.
 - [x] Build historical prop-line backfill manifest by season/week/game/snapshot time before running quota-heavy pulls.
 - [x] Add resumable Odds API historical backfill controller with paid-key confirmation, event discovery, market discovery, odds fetch, and normalized historical line output.
@@ -425,12 +438,15 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Add market-aware residual/implied-probability blending for current player-prop `prob_over` outputs.
 - [x] Backtest player-prop edge thresholds before treating projection-vs-line deltas as betting signals.
 - [x] Add conservative edge-recommendation policy fields to current prop CSVs.
+- [x] Add website-ready player-prop policy explanation fields to current prop CSVs: `edge_publish_status`, `edge_reason`, `edge_required_threshold`, `edge_current_probability_edge`, `edge_policy_sample_size`, and `edge_policy_historical_roi`.
 - [ ] Prove player-prop `prob_edge` and `edge_ev` add durable lift versus sportsbook implied probabilities before expanding recommendation signals beyond sparse market-specific policies.
 - [ ] Add true current and historical sportsbook line coverage for RB rushing TDs and WR/TE receiving TDs before treating those stat-specific TD props as bettable recommendations; current anytime-TD fallback lines are display/coverage aids only.
 - [ ] Add historical sportsbook line coverage and edge backtests for anytime TD before treating it as a recommendation signal.
 - [ ] Backfill historical first/last/2+/3+ TD scorer lines before promoting novelty TD markets beyond research-only output.
 
-Current edge-backtest read: the policy selects only market-level thresholds with at least 100 historical bets and positive ROI: strong anytime TD at `prob_edge >= 0.10` and lean RB rushing yards at `prob_edge >= 0.02`. Current rows expose these thresholds, but no Week 5 row is flagged as recommended because current EV/threshold gates are not met after price/juice.
+Current edge-backtest read: the policy selects only market-level thresholds with at least 100 historical bets and positive ROI: strong anytime TD at `prob_edge >= 0.10` and lean RB rushing yards at `prob_edge >= 0.02`. Current rows expose these thresholds and explain blocked picks through `edge_publish_status` / `edge_reason`, but the latest Week 8 review still has zero current recommended rows because EV, threshold, availability, and true-line gates are not met after price/juice.
+
+Current line-gap read: the latest Week 8 line-gap audit separates 1,006 model prediction rows without an offered sportsbook line from 572 offered player/game/market pairs that were not in the prediction universe. This is now a coverage/prediction-universe problem, not an unknown-roster problem.
 
 Current confidence-tier read: higher historical sample size should remain diagnostic-only. The latest historical-line evaluation shows high-tier rows with more volume but weaker line MAE/model-pick accuracy than low/medium tiers, so confidence tier must not boost published recommendations until calibrated by market and line context.
 

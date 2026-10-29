@@ -134,6 +134,12 @@ OUTPUT_COLUMNS = [
     "edge_probability_edge",
     "edge_recommendation_flag",
     "edge_recommendation_tier",
+    "edge_publish_status",
+    "edge_reason",
+    "edge_required_threshold",
+    "edge_current_probability_edge",
+    "edge_policy_sample_size",
+    "edge_policy_historical_roi",
     "edge_policy_scope",
     "edge_policy_strategy",
     "edge_policy_threshold",
@@ -487,6 +493,12 @@ def _sportsbook_policy_key(value: object) -> str | None:
 EDGE_RECOMMENDATION_COLUMNS = [
     "edge_recommendation_flag",
     "edge_recommendation_tier",
+    "edge_publish_status",
+    "edge_reason",
+    "edge_required_threshold",
+    "edge_current_probability_edge",
+    "edge_policy_sample_size",
+    "edge_policy_historical_roi",
     "edge_policy_scope",
     "edge_policy_strategy",
     "edge_policy_threshold",
@@ -500,6 +512,12 @@ def _default_edge_recommendation_values(frame: pd.DataFrame) -> pd.DataFrame:
     defaults: dict[str, object] = {
         "edge_recommendation_flag": False,
         "edge_recommendation_tier": "research_only",
+        "edge_publish_status": "research_only",
+        "edge_reason": "No validated historical edge policy is attached for this market.",
+        "edge_required_threshold": np.nan,
+        "edge_current_probability_edge": np.nan,
+        "edge_policy_sample_size": np.nan,
+        "edge_policy_historical_roi": np.nan,
         "edge_policy_scope": pd.NA,
         "edge_policy_strategy": pd.NA,
         "edge_policy_threshold": np.nan,
@@ -560,7 +578,7 @@ def _attach_edge_recommendations(predictions: pd.DataFrame, policy: pd.DataFrame
     out = _default_edge_recommendation_values(predictions)
     prepared_policy = _prepare_edge_policy(policy)
     if prepared_policy.empty:
-        return out
+        return _attach_edge_publish_status(out)
 
     out["_edge_market_key"] = out["market"].astype("string").str.strip()
     out["_edge_sportsbook_key"] = out.get("sportsbook", pd.Series(pd.NA, index=out.index)).apply(_sportsbook_policy_key)
@@ -635,7 +653,96 @@ def _attach_edge_recommendations(predictions: pd.DataFrame, policy: pd.DataFrame
         default="research_only",
     )
     out.loc[has_policy & ~bettable, "edge_recommendation_tier"] = "unavailable"
+    out = _attach_edge_publish_status(out)
     return out.drop(columns=["_edge_market_key", "_edge_sportsbook_key", "_edge_row_id", "_edge_policy_tier"], errors="ignore")
+
+
+def _as_output_bool(values: pd.Series, *, default: bool = False) -> pd.Series:
+    if values.empty:
+        return values.astype(bool)
+    if values.dtype == bool:
+        return values.fillna(default)
+    text = values.astype("string").str.strip().str.lower()
+    result = text.isin({"true", "1", "yes", "y"})
+    if default:
+        result = result | text.isna()
+    return result.fillna(default)
+
+
+def _attach_edge_publish_status(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Add user-facing edge status fields without changing model/policy gates."""
+    if predictions.empty:
+        return predictions
+
+    out = predictions.copy()
+    for col in EDGE_RECOMMENDATION_COLUMNS:
+        if col not in out.columns:
+            out[col] = _default_edge_recommendation_values(pd.DataFrame(index=out.index))[col]
+
+    rec_flag = _as_output_bool(out.get("edge_recommendation_flag", pd.Series(False, index=out.index)))
+    bettable = _as_output_bool(out.get("bettable_flag", pd.Series(False, index=out.index)))
+    injury_reported = _as_output_bool(out.get("injury_reported", pd.Series(False, index=out.index)))
+    injury_exclusion = _as_output_bool(out.get("injury_exclusion_flag", pd.Series(False, index=out.index)))
+    active_roster = _as_output_bool(out.get("active_current_roster", pd.Series(True, index=out.index)), default=True)
+    tier = out.get("edge_recommendation_tier", pd.Series("research_only", index=out.index)).astype("string").fillna(
+        "research_only"
+    )
+    quality = out.get("prop_quality_flag", pd.Series("ok", index=out.index)).astype("string").str.lower()
+    line_type = out.get("line_type", pd.Series(pd.NA, index=out.index)).astype("string").str.lower()
+    line_missing = pd.to_numeric(out.get("line", pd.Series(np.nan, index=out.index)), errors="coerce").isna()
+    has_policy = pd.to_numeric(out.get("edge_policy_threshold", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
+    novelty = out.get("market", pd.Series("", index=out.index)).isin(NOVELTY_OUTPUT_MARKETS)
+
+    out["edge_required_threshold"] = pd.to_numeric(out.get("edge_policy_threshold", np.nan), errors="coerce")
+    out["edge_current_probability_edge"] = pd.to_numeric(out.get("edge_probability_edge", np.nan), errors="coerce")
+    out["edge_policy_sample_size"] = pd.to_numeric(out.get("edge_policy_n_bets", np.nan), errors="coerce")
+    out["edge_policy_historical_roi"] = pd.to_numeric(out.get("edge_policy_roi", np.nan), errors="coerce")
+
+    out["edge_publish_status"] = "research_only"
+    out["edge_reason"] = "No validated historical edge policy is attached for this market."
+
+    recommended = rec_flag & tier.isin(["strong", "lean"])
+    out.loc[recommended & tier.eq("strong"), "edge_publish_status"] = "strong"
+    out.loc[recommended & tier.eq("lean"), "edge_publish_status"] = "lean"
+    out.loc[recommended, "edge_reason"] = "Passed the historical edge policy for this market."
+
+    below_threshold = has_policy & tier.eq("below_threshold")
+    out.loc[below_threshold, "edge_publish_status"] = "no_bet"
+    out.loc[below_threshold, "edge_reason"] = "Current probability edge is below the historical policy threshold."
+
+    no_line = line_missing
+    out.loc[no_line, "edge_publish_status"] = "unavailable"
+    out.loc[no_line, "edge_reason"] = "No sportsbook line was matched for this player, game, and market."
+
+    unavailable = tier.eq("unavailable") & ~no_line
+    out.loc[unavailable, "edge_publish_status"] = "unavailable"
+    out.loc[unavailable, "edge_reason"] = "A historical policy exists, but this row is not currently bettable."
+
+    fallback_line = line_type.isin(NON_BETTABLE_LINE_TYPES).fillna(False) | quality.eq("fallback_line")
+    out.loc[fallback_line, "edge_publish_status"] = "research_only"
+    out.loc[fallback_line, "edge_reason"] = (
+        "Line was inferred from a related anytime TD market; display only until a true split TD line is available."
+    )
+
+    out.loc[novelty, "edge_publish_status"] = "research_only"
+    out.loc[novelty, "edge_reason"] = "Novelty TD market is modeled for research only, not a recommended bet."
+
+    injury_review = injury_reported & ~injury_exclusion & ~no_line & ~fallback_line
+    out.loc[injury_review, "edge_publish_status"] = "review"
+    out.loc[injury_review, "edge_reason"] = "Player has an injury report flag; review status before betting."
+
+    out.loc[injury_exclusion, "edge_publish_status"] = "unavailable"
+    out.loc[injury_exclusion, "edge_reason"] = "Player is excluded by injury or availability status."
+
+    roster_exclusion = quality.isin({"roster_mismatch", "roster_exclusion"}) | (~active_roster & quality.ne("ok"))
+    out.loc[roster_exclusion, "edge_publish_status"] = "unavailable"
+    out.loc[roster_exclusion, "edge_reason"] = "Player roster or team validation blocks this as a bettable prop."
+
+    out.loc[~bettable & out["edge_publish_status"].isin(["strong", "lean"]), "edge_publish_status"] = "unavailable"
+    out.loc[~bettable & out["edge_reason"].eq("Passed the historical edge policy for this market."), "edge_reason"] = (
+        "Historical policy passed, but current line quality or availability blocks betting."
+    )
+    return out
 
 
 def _position_group(position: object) -> str | None:

@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Wrappers around nflverse / SportsDataverse style APIs used for data ingestion.
+"""Wrappers around nflverse release assets and SportsDataverse-style APIs.
 
-Each fetch_* function mirrors a single nfl_data_py dataset and writes the results
-to the canonical parquet files consumed downstream.  The CLI in this module is
-invoked from the main pipeline during the data-ingestion stage.
+Each fetch_* function writes one canonical parquet file consumed downstream.
+Maintained nflverse-data GitHub release assets are the primary source when
+available; nfl_data_py remains a compatibility fallback for missing release
+assets or provider-specific helper behavior.
 """
 
 from __future__ import annotations
 
 import argparse
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -35,6 +37,16 @@ from src.utils.pydantic_schemas import validate_dataframe
 SEASON_HISTORY_PATH = Path("data/reference/nfl_seasons_history.csv")
 MIN_INJURY_SEASON = 2009
 MIN_PFR_SEASON = 2018
+MIN_SNAP_COUNT_SEASON = 2012
+SCHEDULE_TEXT_ID_COLUMNS = (
+    "old_game_id",
+    "gsis",
+    "nfl_detail_id",
+    "pfr",
+    "pff",
+    "espn",
+    "ftn",
+)
 
 
 def _load_finalized_seasons() -> set[int]:
@@ -106,19 +118,53 @@ def _dedupe_schedule_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop_duplicates(subset=key, keep="last", ignore_index=True)
 
 
+def _as_optional_text_id(value: object) -> object:
+    """Normalize provider ID values to stable text while preserving missing values."""
+    if value is None:
+        return pd.NA
+    try:
+        if pd.isna(value):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _normalize_schedule_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize schedule columns that frequently mix numeric and string IDs."""
+    if df.empty:
+        return df
+    out = df.copy()
+    for col in SCHEDULE_TEXT_ID_COLUMNS:
+        if col in out.columns:
+            out[col] = out[col].map(_as_optional_text_id).astype("string")
+    return out
+
+
 def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> Path:
     """Append new rows onto cached dataset and write back to disk."""
     if path.name == "nfl_player_stats.parquet":
         if not existing.empty:
             existing = _normalize_player_stats(existing)
         new_df = _normalize_player_stats(new_df)
+    elif path.name == "nfl_schedules.parquet":
+        existing = _normalize_schedule_columns(existing)
+        new_df = _normalize_schedule_columns(new_df)
 
     if existing.empty:
         combined = new_df
     else:
-        combined = pd.concat([existing, new_df], ignore_index=True)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
+                category=FutureWarning,
+            )
+            combined = pd.concat([existing, new_df], ignore_index=True, sort=False)
     if path.name == "nfl_schedules.parquet":
-        combined = _dedupe_schedule_rows(combined)
+        combined = _normalize_schedule_columns(_dedupe_schedule_rows(combined))
     else:
         combined = combined.drop_duplicates(ignore_index=True)
     return write_df(combined, path)
@@ -148,8 +194,10 @@ def _validate_and_report(label: str, df: pd.DataFrame) -> None:
 
 def _print_skip(dataset: str, seasons: List[int]) -> None:
     print(f"[nflverse] {dataset}: all requested seasons {seasons} already cached (finalized). Skipping fetch.")
-
-
+
+
+
+
 def _try_import_nfl():
     """Import nfl_data_py with a consistent error message when the dependency is missing."""
     try:
@@ -186,10 +234,15 @@ def _filter_supported_seasons(
         window = ", ".join(details) if details else "supported window"
         print(f"[nflverse] {label} skipping unsupported seasons {skipped} ({window}).")
     return supported
-
-
+
+
+
 def fetch_pbp(seasons: List[int]) -> pd.DataFrame:
-    """Fetch play-by-play data for the requested seasons, skipping future years."""
+    """Fetch play-by-play data, preferring maintained nflverse release files."""
+    release_df = download_pbp(seasons)
+    if release_df is not None and not release_df.empty:
+        return release_df
+
     nfl = _try_import_nfl()
     frames: List[pd.DataFrame] = []
     current_year = datetime.utcnow().year
@@ -199,16 +252,25 @@ def fetch_pbp(seasons: List[int]) -> pd.DataFrame:
             continue
         try:
             df = nfl.import_pbp_data([yr], downcast=True)
-            if df is None or df.empty:
-                print(f"[nflverse] no PBP for {yr}")
-                continue
-            if "season" not in df.columns:
-                df["season"] = yr
-            if "game_id" not in df.columns and "gameId" in df.columns:
-                df = df.rename(columns={"gameId": "game_id"})
-            frames.append(df)
-            print(f"{yr} done.")
-        except Exception as e:
+            if df is None or df.empty:
+
+                print(f"[nflverse] no PBP for {yr}")
+
+                continue
+
+            if "season" not in df.columns:
+
+                df["season"] = yr
+
+            if "game_id" not in df.columns and "gameId" in df.columns:
+
+                df = df.rename(columns={"gameId": "game_id"})
+
+            frames.append(df)
+
+            print(f"{yr} done.")
+
+        except Exception as e:
             msg = str(e)
             if isinstance(e, NameError) and "name 'Error' is not defined" in msg:
                 print(
@@ -217,21 +279,36 @@ def fetch_pbp(seasons: List[int]) -> pd.DataFrame:
                 )
             else:
                 print(f"[nflverse] PBP fetch failed for {yr}: {e}")
-            continue
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
+            continue
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+
+
+
 def fetch_schedules(seasons: List[int]) -> pd.DataFrame:
-    """Download schedule rows from nfl_data_py without mutating columns."""
+    """Fetch schedule rows, preferring maintained nflverse release files."""
+    release_df = download_schedules(seasons)
+    if release_df is not None and not release_df.empty:
+        return release_df
+
     nfl = _try_import_nfl()
     return nfl.import_schedules(seasons)
-
-
-# ---- Additional nflverse datasets ----
-
+
+
+
+
+# ---- Additional nflverse datasets ----
+
+
+
 def _report_missing_function(func_name: str, seasons: List[int]) -> None:
     """Emit a consistent log message when a requested nfl_data_py function does not exist."""
-    print(f"[nflverse] function missing: {func_name} (seasons={seasons})")
+    if func_name.startswith("import_pfr_"):
+        print(f"[nflverse] optional PFR helper unavailable: {func_name} (seasons={seasons})")
+    else:
+        print(f"[nflverse] function missing: {func_name} (seasons={seasons})")
 
 
 def _fetch_generic(nfl, func_name: str, seasons: List[int]) -> Optional[pd.DataFrame]:
@@ -242,59 +319,92 @@ def _fetch_generic(nfl, func_name: str, seasons: List[int]) -> Optional[pd.DataF
         return None
     try:
         df = fn(seasons)  # type: ignore
-        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
-            print(f"[nflverse] {func_name} returned empty")
-            return None
-        return df
-    except Exception as e:
-        print(f"[nflverse] {func_name} failed: {e}")
-        return None
-
-
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+
+            print(f"[nflverse] {func_name} returned empty")
+
+            return None
+
+        return df
+
+    except Exception as e:
+
+        print(f"[nflverse] {func_name} failed: {e}")
+        return None
+
+
+
+
+
 def fetch_rosters(seasons: List[int]) -> Optional[pd.DataFrame]:
-    """Fetch roster snapshots via nfl_data_py (falls back to releases in run_dataset)."""
+    """Fetch roster snapshots, preferring maintained nflverse release files."""
+    release_df = download_rosters(seasons)
+    if release_df is not None and not release_df.empty:
+        return release_df
+
     nfl = _try_import_nfl()
     return _fetch_generic(nfl, "import_rosters", seasons)
-
-
+
+
+
+
 def fetch_injuries(seasons: List[int]) -> Optional[pd.DataFrame]:
-    """Fetch injury reports (available 2009+) with nfl_data_py."""
+    """Fetch injury reports, preferring maintained nflverse release files."""
+    release_df = download_injuries(seasons)
+    if release_df is not None and not release_df.empty:
+        return release_df
+
     nfl = _try_import_nfl()
     supported = _filter_supported_seasons(seasons, min_year=MIN_INJURY_SEASON, label="injuries")
     if not supported:
         return None
     return _fetch_generic(nfl, "import_injuries", supported)
-
-
+
+
+
+
 def fetch_snap_counts(seasons: List[int]) -> Optional[pd.DataFrame]:
-    """Fetch team snap counts (available from 2012 onward) and skip unsupported seasons."""
+    """Fetch team snap counts, preferring maintained nflverse release files."""
+    release_df = download_snap_counts(seasons)
+    if release_df is not None and not release_df.empty:
+        return release_df
+
     nfl = _try_import_nfl()
-    min_year = 2012
     current_year = datetime.utcnow().year
-    supported = [season for season in seasons if min_year <= season <= current_year]
+    supported = [season for season in seasons if MIN_SNAP_COUNT_SEASON <= season <= current_year]
     skipped = sorted(set(seasons) - set(supported))
     if skipped:
         print(
             f"[nflverse] snap counts not requested for unsupported seasons {skipped} "
-            f"(provider minimum {min_year})."
+            f"(provider minimum {MIN_SNAP_COUNT_SEASON})."
         )
     if not supported:
         return None
     return _fetch_generic(nfl, "import_snap_counts", supported)
-
-
+
+
+
+
 def fetch_participation(seasons: List[int]) -> Optional[pd.DataFrame]:
     """Fetch weekly participation reports (players on field per play)."""
     nfl = _try_import_nfl()
     return _fetch_generic(nfl, "import_participation", seasons)
-
-
+
+
+
+
 def fetch_depth_charts(seasons: List[int]) -> Optional[pd.DataFrame]:
-    """Fetch depth chart snapshots (starters/backups) from nfl_data_py."""
+    """Fetch depth chart snapshots, preferring maintained nflverse release files."""
+    release_df = download_depth_charts(seasons)
+    if release_df is not None and not release_df.empty:
+        return release_df
+
     nfl = _try_import_nfl()
     return _fetch_generic(nfl, "import_depth_charts", seasons)
-
-
+
+
+
+
 def fetch_player_stats(seasons: List[int]) -> Optional[pd.DataFrame]:
     """Fetch player-level weekly stats, preferring current nflverse release files."""
     release_df = download_player_stats(seasons)
@@ -391,22 +501,38 @@ def fetch_pfr_receiving(seasons: List[int]) -> Optional[pd.DataFrame]:
         except Exception as exc:
             print(f"[nflverse] import_seasonal_pfr(rec) failed: {exc}")
     return _fetch_generic(nfl, "import_pfr_receiving", supported)
-
-
-# ---- Direct download fallbacks from nflverse-data releases ----
-
-BASE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download/{tag}/{fname}"
-
-
-def _try_read_url(url: str) -> Optional[pd.DataFrame]:
-    try:
-        if url.endswith(".parquet"):
-            return pd.read_parquet(url)
-        return pd.read_csv(url, low_memory=False)
-    except Exception:
-        return None
-
-
+
+
+
+
+# ---- Direct download fallbacks from nflverse-data releases ----
+
+
+
+BASE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download/{tag}/{fname}"
+
+
+
+
+
+def _try_read_url(url: str) -> Optional[pd.DataFrame]:
+
+    try:
+
+        if url.endswith(".parquet"):
+
+            return pd.read_parquet(url)
+
+        return pd.read_csv(url, low_memory=False)
+
+    except Exception:
+
+        return None
+
+
+
+
+
 def _download_release_dataset(
     tag: str,
     patterns: List[str],
@@ -414,49 +540,168 @@ def _download_release_dataset(
     *,
     log_missing: bool = True,
 ) -> Optional[pd.DataFrame]:
-    frames: List[pd.DataFrame] = []
-    for yr in seasons:
-        success = False
-        for pat in patterns:
-            fname_csv = pat.format(season=yr)
-            # try csv
-            url_csv = BASE_RELEASE.format(tag=tag, fname=fname_csv)
-            df = _try_read_url(url_csv)
-            if df is not None and not df.empty:
-                df["season"] = df.get("season", yr)
-                frames.append(df)
-                success = True
-                break
-            # try parquet with same base name
-            fname_pq = fname_csv.rsplit(".", 1)[0] + ".parquet"
-            url_pq = BASE_RELEASE.format(tag=tag, fname=fname_pq)
-            df = _try_read_url(url_pq)
-            if df is not None and not df.empty:
-                df["season"] = df.get("season", yr)
-                frames.append(df)
-                success = True
-                break
+    frames: List[pd.DataFrame] = []
+
+    for yr in seasons:
+
+        success = False
+
+        for pat in patterns:
+
+            fname_csv = pat.format(season=yr)
+
+            # try csv
+
+            url_csv = BASE_RELEASE.format(tag=tag, fname=fname_csv)
+
+            df = _try_read_url(url_csv)
+
+            if df is not None and not df.empty:
+
+                df["season"] = df.get("season", yr)
+
+                frames.append(df)
+
+                success = True
+
+                break
+
+            # try parquet with same base name
+
+            fname_pq = fname_csv.rsplit(".", 1)[0] + ".parquet"
+
+            url_pq = BASE_RELEASE.format(tag=tag, fname=fname_pq)
+
+            df = _try_read_url(url_pq)
+
+            if df is not None and not df.empty:
+
+                df["season"] = df.get("season", yr)
+
+                frames.append(df)
+
+                success = True
+
+                break
+
         if not success and log_missing:
-            print(f"[nflverse] release not found for {tag} {yr}")
-    return pd.concat(frames, ignore_index=True) if frames else None
-
-
-def download_rosters(seasons: List[int]) -> Optional[pd.DataFrame]:
-    return _download_release_dataset("rosters", ["roster_{season}.csv", "rosters_{season}.csv"], seasons)
-
-
+            print(f"[nflverse] release not found for {tag} {yr}")
+
+    return pd.concat(frames, ignore_index=True) if frames else None
+
+
+
+def _download_all_seasons_release_dataset(
+    tag: str,
+    filenames: List[str],
+    seasons: List[int],
+    *,
+    season_col: str = "season",
+) -> Optional[pd.DataFrame]:
+    """Download one release asset containing multiple seasons and filter it."""
+    wanted = {int(season) for season in seasons}
+
+    for fname in filenames:
+        url = BASE_RELEASE.format(tag=tag, fname=fname)
+        df = _try_read_url(url)
+        if df is None or df.empty:
+            continue
+        if season_col not in df.columns:
+            print(f"[nflverse] release {tag}/{fname} missing '{season_col}' column")
+            return None
+        season_values = pd.to_numeric(df[season_col], errors="coerce")
+        out = df.loc[season_values.isin(wanted)].copy()
+        return out if not out.empty else None
+
+    print(f"[nflverse] release not found for {tag}")
+    return None
+
+
+def download_pbp(seasons: List[int]) -> Optional[pd.DataFrame]:
+    current_year = datetime.utcnow().year
+    supported = _filter_supported_seasons(seasons, max_year=current_year, label="PBP release")
+    if not supported:
+        return None
+    return _download_release_dataset(
+        "pbp",
+        [
+            "play_by_play_{season}.parquet",
+            "play_by_play_{season}.csv.gz",
+            "play_by_play_{season}.csv",
+        ],
+        supported,
+    )
+
+
+def download_schedules(seasons: List[int]) -> Optional[pd.DataFrame]:
+    return _download_all_seasons_release_dataset(
+        "schedules",
+        ["games.parquet", "games.csv.gz", "games.csv"],
+        seasons,
+    )
+
+
+
+
+def download_rosters(seasons: List[int]) -> Optional[pd.DataFrame]:
+
+    return _download_release_dataset("rosters", ["roster_{season}.csv", "rosters_{season}.csv"], seasons)
+
+
+
+
+
 def download_injuries(seasons: List[int]) -> Optional[pd.DataFrame]:
     supported = _filter_supported_seasons(seasons, min_year=MIN_INJURY_SEASON, label="injuries release")
     if not supported:
         return None
     return _download_release_dataset("injuries", ["injuries_{season}.csv"], supported)
-
-
-def download_participation(seasons: List[int]) -> Optional[pd.DataFrame]:
-    return _download_release_dataset("participation", ["participation_{season}.csv"], seasons)
-
-
-def download_player_stats(seasons: List[int]) -> Optional[pd.DataFrame]:
+
+
+
+
+def download_snap_counts(seasons: List[int]) -> Optional[pd.DataFrame]:
+    current_year = datetime.utcnow().year
+    supported = _filter_supported_seasons(
+        seasons,
+        min_year=MIN_SNAP_COUNT_SEASON,
+        max_year=current_year,
+        label="snap counts release",
+    )
+    if not supported:
+        return None
+    return _download_release_dataset(
+        "snap_counts",
+        [
+            "snap_counts_{season}.parquet",
+            "snap_counts_{season}.csv.gz",
+            "snap_counts_{season}.csv",
+        ],
+        supported,
+    )
+
+
+def download_depth_charts(seasons: List[int]) -> Optional[pd.DataFrame]:
+    return _download_release_dataset(
+        "depth_charts",
+        [
+            "depth_charts_{season}.parquet",
+            "depth_charts_{season}.csv",
+        ],
+        seasons,
+    )
+
+
+def download_participation(seasons: List[int]) -> Optional[pd.DataFrame]:
+
+    return _download_release_dataset("participation", ["participation_{season}.csv"], seasons)
+
+
+
+
+
+def download_player_stats(seasons: List[int]) -> Optional[pd.DataFrame]:
+
     modern = _download_release_dataset(
         "stats_player",
         [
@@ -513,32 +758,38 @@ def download_pfr_passing(seasons: List[int]) -> Optional[pd.DataFrame]:
     supported = _filter_supported_seasons(seasons, min_year=MIN_PFR_SEASON, label="pfr_passing release")
     if not supported:
         return None
-    return _download_release_dataset("pfr", ["pfr_passing_{season}.csv"], supported)
+    return _download_release_dataset("pfr", ["pfr_passing_{season}.csv"], supported, log_missing=False)
 
 
 def download_pfr_rushing(seasons: List[int]) -> Optional[pd.DataFrame]:
     supported = _filter_supported_seasons(seasons, min_year=MIN_PFR_SEASON, label="pfr_rushing release")
     if not supported:
         return None
-    return _download_release_dataset("pfr", ["pfr_rushing_{season}.csv"], supported)
+    return _download_release_dataset("pfr", ["pfr_rushing_{season}.csv"], supported, log_missing=False)
 
 
 def download_pfr_receiving(seasons: List[int]) -> Optional[pd.DataFrame]:
     supported = _filter_supported_seasons(seasons, min_year=MIN_PFR_SEASON, label="pfr_receiving release")
     if not supported:
         return None
-    return _download_release_dataset("pfr", ["pfr_receiving_{season}.csv"], supported)
-
-
+    return _download_release_dataset("pfr", ["pfr_receiving_{season}.csv"], supported, log_missing=False)
+
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--season", type=int, nargs="+", required=True)
     ap.add_argument("--pbp", action="store_true")
     ap.add_argument("--schedules", action="store_true")
-    ap.add_argument("--rosters", action="store_true")
-    ap.add_argument("--injuries", action="store_true")
-    ap.add_argument("--snaps", action="store_true")
-    ap.add_argument("--participation", action="store_true")
+    ap.add_argument("--rosters", action="store_true")
+
+    ap.add_argument("--injuries", action="store_true")
+
+    ap.add_argument("--snaps", action="store_true")
+
+    ap.add_argument("--participation", action="store_true")
+
     ap.add_argument("--depthcharts", action="store_true")
     ap.add_argument("--players", action="store_true")
     ap.add_argument("--pfr", nargs="*", choices=["passing", "rushing", "receiving"], help="PFR tables to fetch")
@@ -587,7 +838,10 @@ def main():
                 print(f"[nflverse] downloaded {label} rows={len(df_fallback)} -> {output_path}")
                 return
 
-        print(f"[nflverse] no {label} returned for seasons {seasons_to_fetch}")
+        if label.startswith("pfr_"):
+            print(f"[nflverse] optional {label} unavailable for seasons {seasons_to_fetch}; continuing without it.")
+        else:
+            print(f"[nflverse] no {label} returned for seasons {seasons_to_fetch}")
 
     if args.pbp:
         run_dataset("PBP", RAW_DIR / "nfl_pbp.parquet", fetch_pbp)
@@ -623,4 +877,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()

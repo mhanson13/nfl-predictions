@@ -124,6 +124,10 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
         "player_id,line_availability_status\nrb,unknown\n",
     )
     _write_csv(
+        source_root / "predictions" / "evaluation" / "player_props" / "prop_line_gap_audit_week_02.csv",
+        "gap_type,market\nprediction_without_offered_line,rb_rushing_yards\n",
+    )
+    _write_csv(
         source_root / "predictions" / "evaluation" / "player_props" / "confidence_tier_metrics.csv",
         "evaluation_scope,scope,n_rows\nhistorical_lines,overall,100\n",
     )
@@ -176,13 +180,14 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "player_props" / "prop_quality_summary_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_line_coverage_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "prop_roster_line_audit_week_02.csv").exists()
+    assert (destination_root / "evaluation" / "player_props" / "prop_line_gap_audit_week_02.csv").exists()
     assert (destination_root / "evaluation" / "live_prediction_vs_actual_week_02.csv").exists()
     assert (destination_root / "evaluation" / "live_prediction_vs_actual_summary_week_02.csv").exists()
     assert (destination_root / "evaluation" / "live_prediction_vs_actual_segments_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 49
+    assert len(published) == 50
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):

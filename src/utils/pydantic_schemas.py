@@ -243,12 +243,22 @@ class NFLversePlayRecord(_NFLBase):
             return None
         return _validate_week(int(v))
 
-    @field_validator("wp", "wpa", mode="before")
+    @field_validator("wp", mode="before")
     @classmethod
     def check_probability(cls, v: Any) -> Optional[float]:
-        if v is None:
+        if _is_na(v):
             return None
         return _validate_probability(float(v))
+
+    @field_validator("wpa", mode="before")
+    @classmethod
+    def check_win_probability_added(cls, v: Any) -> Optional[float]:
+        if _is_na(v):
+            return None
+        value = float(v)
+        if not (-1.0 <= value <= 1.0):
+            raise ValueError(f"wpa={value} must be in [-1, 1]")
+        return value
 
     @field_validator("posteam", "defteam", "home_team", "away_team", mode="before")
     @classmethod

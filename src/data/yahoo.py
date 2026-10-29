@@ -246,9 +246,16 @@ def fetch_game_metadata(client: YahooClient, save_dir: Path) -> Optional[str]:
         except (KeyError, IndexError, TypeError) as exc:
             logger.warning("Unable to parse Yahoo game key: %s", exc)
             return None
-    except requests.HTTPError as exc:
-        detail = getattr(exc.response, "text", "")
-        logger.warning("Failed to fetch game metadata: %s %s", exc, detail)
+    except requests.HTTPError as exc:
+        status = getattr(exc.response, "status_code", None)
+        if status in (401, 403):
+            logger.info(
+                "Yahoo game metadata unavailable (%s); Yahoo is optional and will be skipped until API access is approved.",
+                status,
+            )
+        else:
+            detail = getattr(exc.response, "text", "")
+            logger.warning("Failed to fetch game metadata: %s %s", exc, detail)
     except Exception as exc:
         logger.warning("Failed to fetch game metadata: %s", exc)
     return None
@@ -383,8 +390,8 @@ def main() -> None:
         for feed in feeds:
             if feed == "game":
                 continue  # already handled above
-            if feed in {"teams", "players", "injuries", "scoreboard"} and not game_key:
-                logger.warning("Skipping Yahoo feed '%s' because game key is unavailable.", feed)
+            if feed in {"teams", "players", "injuries", "scoreboard"} and not game_key:
+                logger.info("Skipping optional Yahoo feed '%s' because game key is unavailable.", feed)
                 continue
             if feed == "teams":
                 logger.warning("Yahoo API does not expose a game-level teams feed; skipping.")

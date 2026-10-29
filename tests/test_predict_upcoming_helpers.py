@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 import src.predict.predict_upcoming as predict_upcoming
 from src.predict.predict_upcoming import (
@@ -693,6 +694,85 @@ def test_attach_market_policy_fields_surfaces_confidence_blocked_moneyline_polic
     assert preds.loc[0, "market_moneyline_policy_status"] == "blocked_model_confidence_overconfidence"
     assert preds.loc[0, "market_policy_primary_signal"] == "moneyline_review"
     assert preds.loc[0, "market_policy_status"] == "blocked_model_confidence_overconfidence"
+
+
+def test_attach_market_policy_fields_adds_calibrated_confidence_diagnostics(tmp_path):
+    policy_path = tmp_path / "market_edge_policy.csv"
+    confidence_path = tmp_path / "market_model_confidence_recalibration.csv"
+    pd.DataFrame(
+        [
+            {
+                "signal": "moneyline_disagreement",
+                "recommended": False,
+                "recommendation_tier": "no_bet",
+                "threshold": 0.02,
+                "model_confidence_gate_status": "blocked_model_confidence_overconfidence",
+                "model_confidence_gate_failed_bins": "55-60%",
+            },
+        ]
+    ).to_csv(policy_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "disagree",
+                "confidence_bin": "55-60%",
+                "n_graded": 81,
+                "actual_model_side_win_rate": 0.37,
+                "avg_model_pick_prob": 0.568,
+                "calibration_error": 0.198,
+                "recalibrated_model_pick_prob": 0.37,
+                "raw_minus_recalibrated_prob": 0.198,
+                "calibration_status": "overconfident",
+            },
+            {
+                "scope": "overall",
+                "season": "all",
+                "agreement_segment": "all",
+                "confidence_bin": "55-60%",
+                "n_graded": 465,
+                "actual_model_side_win_rate": 0.574,
+                "avg_model_pick_prob": 0.574,
+                "calibration_error": 0.0,
+                "recalibrated_model_pick_prob": 0.574,
+                "raw_minus_recalibrated_prob": 0.0,
+                "calibration_status": "calibrated_for_confidence",
+            },
+        ]
+    ).to_csv(confidence_path, index=False)
+    preds = pd.DataFrame(
+        [
+            {
+                "home_team": "DAL",
+                "away_team": "TB",
+                "home_win_prob": 0.57,
+                "pred_home_margin": 1.0,
+                "odds_draftkings_home_moneyline": 120,
+                "odds_draftkings_away_moneyline": -140,
+                "odds_draftkings_home_spread": 1.0,
+                "odds_draftkings_away_spread": -1.0,
+            },
+        ],
+        index=[42],
+    )
+
+    _attach_market_policy_fields(
+        preds,
+        policy_path=policy_path,
+        confidence_recalibration_path=confidence_path,
+    )
+
+    assert preds.loc[42, "market_moneyline_model_confidence_bin"] == "55-60%"
+    assert preds.loc[42, "market_moneyline_model_pick_prob_raw"] == 0.57
+    assert preds.loc[42, "market_moneyline_calibrated_model_pick_prob"] == 0.37
+    assert preds.loc[42, "market_moneyline_calibrated_home_win_prob"] == 0.37
+    assert preds.loc[42, "market_moneyline_confidence_calibration_source"] == "agreement_confidence_bin"
+    assert preds.loc[42, "market_moneyline_confidence_calibration_status"] == "overconfident"
+    assert preds.loc[42, "market_moneyline_confidence_calibration_sample_size"] == 81
+    assert preds.loc[42, "market_moneyline_confidence_calibration_error"] == 0.198
+    assert preds.loc[42, "market_moneyline_raw_minus_calibrated_prob"] == pytest.approx(0.20)
+    assert bool(preds.loc[42, "market_moneyline_confidence_overconfidence_flag"]) is True
 
 
 def test_attach_market_policy_fields_blocks_spread_when_calibration_policy_fails(tmp_path):

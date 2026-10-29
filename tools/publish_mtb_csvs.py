@@ -290,6 +290,13 @@ def build_artifact_plan(
                     CsvArtifact(
                         Path("predictions")
                         / "evaluation"
+                        / "player_props"
+                        / f"prop_line_gap_audit_week_{week:02d}.csv",
+                        Path("evaluation") / "player_props" / f"prop_line_gap_audit_week_{week:02d}.csv",
+                    ),
+                    CsvArtifact(
+                        Path("predictions")
+                        / "evaluation"
                         / f"live_prediction_vs_actual_week_{week:02d}.csv",
                         Path("evaluation") / f"live_prediction_vs_actual_week_{week:02d}.csv",
                     ),
