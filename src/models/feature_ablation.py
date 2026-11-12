@@ -29,6 +29,7 @@ from sklearn.model_selection import KFold, StratifiedKFold
 
 from src.models.feature_columns import make_feature_diffs, is_bdl_feature_column, select_feature_columns
 from src.models import train as train_module
+from src.models import win_model
 from src.models.train import (
     XGB_AVAILABLE,
     _apply_prefixed_params,
@@ -100,40 +101,11 @@ def _classification_model(
     param_config: dict[str, object] | None,
     n_estimators: int,
 ):
-    if XGB_AVAILABLE:
-        params: dict[str, object] = {
-            "n_estimators": n_estimators,
-            "learning_rate": 0.05,
-            "max_depth": 6,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "reg_lambda": 1.0,
-            "reg_alpha": 0.0,
-            "random_state": 42,
-            "eval_metric": "logloss",
-            "verbosity": 0,
-            "use_label_encoder": False,
-        }
-        if param_config:
-            params.update(_apply_prefixed_params(param_config, "xgb_"))
-        params.update(get_xgb_tree_config(use_gpu))
-        params["n_estimators"] = int(params.get("n_estimators", n_estimators))
-        return train_module.XGBClassifier(**params), "xgb"
-
-    if use_gpu:
+    """Shared win-probability recipe (src.models.win_model); ``n_estimators`` is the default tree count."""
+    if use_gpu and not XGB_AVAILABLE:
         raise RuntimeError("GPU ablation requested but XGBoost is not installed.")
-
-    params: dict[str, object] = {
-        "random_state": 42,
-        "max_leaf_nodes": 31,
-        "learning_rate": 0.05,
-        "l2_regularization": 0.1,
-        "min_samples_leaf": 20,
-        "max_bins": 255,
-    }
-    if param_config:
-        params.update(_apply_prefixed_params(param_config, "hgb_"))
-    return HistGradientBoostingClassifier(**params), "hgb"
+    config = {"xgb_n_estimators": int(n_estimators), **(param_config or {})}
+    return win_model.build_win_classifier(config, use_gpu=use_gpu)
 
 
 def _spread_model(
@@ -142,40 +114,11 @@ def _spread_model(
     param_config: dict[str, object] | None,
     n_estimators: int,
 ):
-    if XGB_AVAILABLE:
-        params: dict[str, object] = {
-            "n_estimators": n_estimators,
-            "learning_rate": 0.05,
-            "max_depth": 6,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "reg_lambda": 1.0,
-            "random_state": 42,
-            "objective": "reg:squarederror",
-            "verbosity": 0,
-        }
-        if param_config:
-            params.update(_apply_prefixed_params(param_config, "xgb_"))
-        params.update(get_xgb_tree_config(use_gpu))
-        params["n_estimators"] = int(params.get("n_estimators", n_estimators))
-        return train_module.XGBRegressor(**params), "xgb"
-
-    if use_gpu:
+    """Shared spread recipe (src.models.win_model); ``n_estimators`` is the default tree count."""
+    if use_gpu and not XGB_AVAILABLE:
         raise RuntimeError("GPU ablation requested but XGBoost is not installed.")
-
-    params = {
-        "loss": "squared_error",
-        "learning_rate": 0.05,
-        "max_depth": None,
-        "max_leaf_nodes": 31,
-        "min_samples_leaf": 20,
-        "l2_regularization": 0.1,
-        "max_bins": 255,
-        "random_state": 42,
-    }
-    if param_config:
-        params.update(_apply_prefixed_params(param_config, "hgb_"))
-    return HistGradientBoostingRegressor(**params), "hgb"
+    config = {"xgb_n_estimators": int(n_estimators), **(param_config or {})}
+    return win_model.build_spread_regressor(config, use_gpu=use_gpu)
 
 
 def _evaluate_win_prob(

@@ -379,6 +379,12 @@ def load_param_config(path: str | None) -> tuple[dict[str, object], Path] | tupl
 
         return None, None
 
+    if not (isinstance(data, dict) and data.get("tuning_scheme") == "walk_forward"):
+        print(
+            f"[train] warning: {cfg_path} is a legacy (random-split) tuning config; "
+            "re-tune with the walk-forward scheme (python -m src.models.tune) before trusting it."
+        )
+
     params = data.get("best_params") if isinstance(data, dict) else None
 
     if not params:
@@ -484,6 +490,13 @@ def train_win_prob(
     """
     Train the win-probability classification stack and persist models to disk.
 
+    The base classifier is built through ``src.models.win_model`` so production
+    uses the same recipe as walk-forward history scoring. When neither isotonic
+    calibration nor the logistic companion is requested (the production
+    default), the base model is fit on every eligible game, exactly like the
+    walk-forward refit for the next week. Calibration and the logistic blend
+    still need held-out rows, so they keep the 60/20/20 split.
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -499,115 +512,53 @@ def train_win_prob(
     skip_logit : bool
         Skip the auxiliary logistic regression model when requested.
     cv_folds : int
-        Number of CV folds for evaluation metrics. Use 1 to disable CV and
-        use a single 80/20 split instead.
+        Number of contiguous (unshuffled) CV folds for diagnostic metrics.
+        Use 1 to disable CV diagnostics.
     include_bdl_features : bool
         Include BallDontLie team-form features in the production feature set.
         Defaults off until ablation shows repeatable lift.
     """
+    from src.models import win_model
+
     feat_df = make_feature_diffs(df)
-
     feat_cols = select_feature_columns(feat_df, include_bdl=include_bdl_features)
-
     if not feat_cols:
-
         raise ValueError("No usable *_diff features discovered. "
-
                          "Check that your matchup_features has *_home/_away numeric columns (not scores).")
 
-
-
     tgt_df = _require_target(feat_df, "home_win")
-
-
-
     # Deduplicate columns to avoid duplicated-name expansion during selection
-
     tgt_df_nodup = tgt_df.loc[:, ~pd.Index(tgt_df.columns).duplicated()]
-
-    use_cols = [c for c in feat_cols if c in tgt_df_nodup.columns]
-
+    use_cols = win_model.win_feature_columns(feat_cols, param_config, tgt_df_nodup.columns)
     if not use_cols:
-
         raise ValueError("No usable features after deduplication. Check feature creation and names.")
-
     X_full = tgt_df_nodup[use_cols].astype(float).values
-
     y_full = np.asarray(tgt_df["home_win"].astype(int).values, dtype=int)
-
-
-
-    # Split indices: train/cal/test for better calibration stability
-
-    indices = np.arange(len(y_full))
-
-    idx_tmp, idx_test, y_tmp, y_test = train_test_split(
-
-        indices, y_full, test_size=0.20, random_state=42, stratify=y_full
-
-    )
-
-    idx_train, idx_cal, y_train, y_cal = train_test_split(
-
-        idx_tmp, y_tmp, test_size=0.25, random_state=42, stratify=y_tmp
-
-    )  # 60/20/20
-
-
-
-    X_train = X_full[idx_train]
-    X_cal = X_full[idx_cal]
-    X_test = X_full[idx_test]
 
     if use_gpu and not XGB_AVAILABLE:
         raise RuntimeError("GPU training requested but XGBoost is not installed.")
-
-    model_choice = None
-    if param_config and "model_type" in param_config:
-        model_choice = str(param_config["model_type"]).lower()
+    model_kind = win_model.resolve_win_model_kind(param_config)
     if param_config and config_source:
-        print(f"[win_prob] applying tuned params from {config_source} (model_type={model_choice})")
+        print(f"[win_prob] applying tuned params from {config_source} (model_type={model_kind})")
 
-    use_xgb = XGB_AVAILABLE
-    if model_choice in {"hist", "hgb", "gb_hist"}:
-        use_xgb = False
-    elif model_choice in {"xgb", "xgb_gpu", "xgb_cpu"}:
-        use_xgb = XGB_AVAILABLE
+    report_feature_quality(tgt_df_nodup, use_cols, context="win_prob")
 
-    # --- k-fold cross-validation for evaluation metrics ---
+    # --- contiguous k-fold diagnostics (folds follow the season-ordered rows) ---
     if cv_folds > 1:
         skf = StratifiedKFold(n_splits=cv_folds, shuffle=False)
         cv_aucs, cv_briers, cv_loglosses, cv_accs = [], [], [], []
-        train_pool_idx = np.concatenate([idx_train, idx_cal])
-        for fold_idx, (fold_train_idx, fold_val_idx) in enumerate(
-            skf.split(X_full[train_pool_idx], y_full[train_pool_idx])
-        ):
-            X_ftrain = X_full[train_pool_idx[fold_train_idx]]
-            y_ftrain = y_full[train_pool_idx[fold_train_idx]]
-            X_fval = X_full[train_pool_idx[fold_val_idx]]
-            y_fval = y_full[train_pool_idx[fold_val_idx]]
-            if use_xgb:
-                fold_xgb_params: dict[str, object] = {
-                    "n_estimators": 800, "learning_rate": 0.05, "max_depth": 6,
-                    "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0,
-                    "reg_alpha": 0.0, "random_state": 42, "eval_metric": "logloss",
-                    "verbosity": 0, "use_label_encoder": False,
-                }
-                if param_config:
-                    fold_xgb_params.update(_apply_prefixed_params(param_config, "xgb_"))
-                fold_xgb_params.update(get_xgb_tree_config(use_gpu))
-                fold_model = XGBClassifier(**fold_xgb_params)
-                _fit_xgb_with_fallback(fold_model, X_ftrain, y_ftrain, use_gpu, f"[win_prob][cv_fold={fold_idx}][xgb]")
-            else:
-                fold_hgb_params: dict[str, object] = {
-                    "random_state": 42, "max_leaf_nodes": 31, "learning_rate": 0.05,
-                    "l2_regularization": 0.1, "min_samples_leaf": 20, "max_bins": 255,
-                }
-                if param_config:
-                    fold_hgb_params.update(_apply_prefixed_params(param_config, "hgb_"))
-                fold_model = HistGradientBoostingClassifier(**fold_hgb_params)
-                fold_model.fit(X_ftrain, y_ftrain)
-            fold_proba = np.clip(fold_model.predict_proba(X_fval)[:, 1], 1e-6, 1 - 1e-6)
+        for fold_idx, (fold_train_idx, fold_val_idx) in enumerate(skf.split(X_full, y_full)):
+            fold_model, _ = win_model.fit_win_classifier(
+                X_full[fold_train_idx],
+                y_full[fold_train_idx],
+                param_config,
+                use_gpu=use_gpu,
+                context=f"[win_prob][cv_fold={fold_idx}]",
+
+                feature_names=use_cols,
+            )
+            y_fval = y_full[fold_val_idx]
+            fold_proba = np.clip(fold_model.predict_proba(X_full[fold_val_idx])[:, 1], 1e-6, 1 - 1e-6)
             cv_aucs.append(roc_auc_score(y_fval, fold_proba))
             cv_briers.append(brier_score_loss(y_fval, fold_proba))
             cv_loglosses.append(log_loss(y_fval, fold_proba))
@@ -620,276 +571,108 @@ def train_win_prob(
             f"ACC={np.mean(cv_accs):.4f}±{np.std(cv_accs):.4f}"
         )
 
-    gpu_used = False
-
-    if use_xgb:
-
-        xgb_params: dict[str, object] = {
-
-            "n_estimators": 800,
-
-            "learning_rate": 0.05,
-
-            "max_depth": 6,
-
-            "subsample": 0.8,
-
-            "colsample_bytree": 0.8,
-
-            "reg_lambda": 1.0,
-
-            "reg_alpha": 0.0,
-
-            "random_state": 42,
-
-            "eval_metric": "logloss",
-
-            "verbosity": 0,
-
-            "use_label_encoder": False,
-
-        }
-
-        if param_config:
-
-            xgb_params.update(_apply_prefixed_params(param_config, "xgb_"))
-
-        xgb_params.update(get_xgb_tree_config(use_gpu))
-
-        base = XGBClassifier(**xgb_params)
-
-        gpu_used = _fit_xgb_with_fallback(base, X_train, y_train, use_gpu, "[win_prob][xgb]")
-
-        model_label = "xgb_gpu" if gpu_used else "xgb"
-
+    log_feat_cols = win_model.logistic_feature_columns(tgt_df_nodup.columns)
+    needs_holdout = bool(calibrate) or not skip_logit
+    indices = np.arange(len(y_full))
+    if needs_holdout:
+        idx_tmp, idx_test, y_tmp, y_test = train_test_split(
+            indices, y_full, test_size=0.20, random_state=42, stratify=y_full
+        )
+        idx_train, idx_cal, y_train, y_cal = train_test_split(
+            idx_tmp, y_tmp, test_size=0.25, random_state=42, stratify=y_tmp
+        )  # 60/20/20
+        fit_idx = idx_train
     else:
-
-        hgb_params: dict[str, object] = {
-
-            "random_state": 42,
-
-            "max_leaf_nodes": 31,
-
-            "learning_rate": 0.05,
-
-            "l2_regularization": 0.1,
-
-            "min_samples_leaf": 20,
-
-            "max_bins": 255,
-
-        }
-
-        if param_config:
-
-            hgb_params.update(_apply_prefixed_params(param_config, "hgb_"))
-
-        base = HistGradientBoostingClassifier(**hgb_params)
-
-        base.fit(X_train, y_train)
-
-        model_label = "hgb"
-
-    if calibrate:
-
-        if HAS_FROZEN_ESTIMATOR:
-
-            frozen = FrozenEstimator(base)
-
-            model = CalibratedClassifierCV(frozen, method="isotonic", ensemble="auto")
-
-        else:
-
-            model = CalibratedClassifierCV(base, cv="prefit", method="isotonic")
-
-        model.fit(X_cal, y_cal)
-
-    else:
-
-        model = base
-
-
-
-    proba_test = model.predict_proba(X_test)[:, 1]
-
-    proba_cal = model.predict_proba(X_cal)[:, 1]
-
-    pred = (proba_test >= 0.5).astype(int)
-
-
-
-    auc = roc_auc_score(y_test, proba_test)
-
-    acc = accuracy_score(y_test, pred)
-
-    # Diagnostics: class balance and probability spread
-
-    pos_rate = float(y_full.mean()) if len(y_full) else float('nan')
-
-    pmin, pmax = float(proba_test.min()) if len(proba_test) else float('nan'), float(proba_test.max()) if len(proba_test) else float('nan')
-
-    print(f"[win_prob][{model_label}] feats={len(feat_cols)}  AUC={auc:.3f}  ACC={acc:.3f}  n_test={len(y_test)}  pos_rate={pos_rate:.3f}  proba[min,max]=[{pmin:.3f},{pmax:.3f}]")
-
-
-
-    # Logistic companion model on select features
-
-    logistic_candidates = [
-
-        "spread_line",
-
-        "home_moneyline",
-
-        "away_moneyline",
-
-        "total_line",
-
-        "inj_listed_total_diff",
-
-        "inj_out_diff",
-
-        "roster_injured_pct_diff",
-
-        "team_news_injury_kw7_diff",
-
-        "news_injury_kw7_diff",
-
-    ]
-
-    log_feat_cols = [c for c in logistic_candidates if c in tgt_df_nodup.columns]
-
-    logistic_model = None
-
-    proba_test_log = None
-
-    proba_cal_log = None
-
-    report_feature_quality(tgt_df_nodup, use_cols, context="win_prob")
-
-    if skip_logit:
-
-        print("[win_prob][logit] skipped via --skip-logit")
-
-    elif log_feat_cols:
-
-        X_log_full = tgt_df_nodup[log_feat_cols].astype(float).values
-
-        X_log_train = X_log_full[idx_train]
-
-        X_log_cal = X_log_full[idx_cal]
-
-        X_log_test = X_log_full[idx_test]
-
-        logistic_model = Pipeline(
-
-            steps=[
-
-                ("imputer", _make_median_imputer()),
-
-                ("scaler", StandardScaler()),
-
-                ("clf", LogisticRegression(max_iter=1000, class_weight="balanced")),
-
-            ]
-
+        fit_idx = indices
+        print(
+            f"[win_prob] fitting production model on all {len(indices)} eligible games "
+            "(same recipe as walk-forward history)"
         )
 
-        logistic_model.fit(X_log_train, y_train)
+    base, model_label = win_model.fit_win_classifier(
+        X_full[fit_idx], y_full[fit_idx], param_config, use_gpu=use_gpu, context="[win_prob]", feature_names=use_cols
+    )
+    pos_rate = float(y_full.mean()) if len(y_full) else float("nan")
 
-        proba_test_log = logistic_model.predict_proba(X_log_test)[:, 1]
-
-        proba_cal_log = logistic_model.predict_proba(X_log_cal)[:, 1]
-
-
-
-        log_auc = roc_auc_score(y_test, proba_test_log)
-
-        log_acc = accuracy_score(y_test, (proba_test_log >= 0.5).astype(int))
-
-        print(f"[win_prob][logit] feats={len(log_feat_cols)}  AUC={log_auc:.3f}  ACC={log_acc:.3f}")
-
-    else:
-
-        print("[win_prob][logit] skipped (no logistic features present)")
-
-
-
-    # Blend on calibration fold
-
+    logistic_model = None
     ensemble_weight = 1.0
+    model = base
+    if needs_holdout:
+        X_cal = X_full[idx_cal]
+        X_test = X_full[idx_test]
+        if calibrate:
+            if HAS_FROZEN_ESTIMATOR:
+                model = CalibratedClassifierCV(FrozenEstimator(base), method="isotonic", ensemble="auto")
+            else:
+                model = CalibratedClassifierCV(base, cv="prefit", method="isotonic")
+            model.fit(X_cal, y_cal)
 
-    if proba_cal_log is not None:
+        proba_test = model.predict_proba(X_test)[:, 1]
+        proba_cal = model.predict_proba(X_cal)[:, 1]
+        auc = roc_auc_score(y_test, proba_test)
+        acc = accuracy_score(y_test, (proba_test >= 0.5).astype(int))
+        pmin, pmax = float(proba_test.min()), float(proba_test.max())
+        print(f"[win_prob][{model_label}] feats={len(feat_cols)}  AUC={auc:.3f}  ACC={acc:.3f}  n_test={len(y_test)}  pos_rate={pos_rate:.3f}  proba[min,max]=[{pmin:.3f},{pmax:.3f}]")
 
-        best_w = 1.0
+        proba_cal_log = None
+        if skip_logit:
+            print("[win_prob][logit] skipped via --skip-logit")
+        elif log_feat_cols:
+            X_log_full = tgt_df_nodup[log_feat_cols].astype(float).values
+            logistic_model = win_model.build_logistic_model()
+            logistic_model.fit(X_log_full[idx_train], y_train)
+            proba_test_log = logistic_model.predict_proba(X_log_full[idx_test])[:, 1]
+            proba_cal_log = logistic_model.predict_proba(X_log_full[idx_cal])[:, 1]
+            log_auc = roc_auc_score(y_test, proba_test_log)
+            log_acc = accuracy_score(y_test, (proba_test_log >= 0.5).astype(int))
+            print(f"[win_prob][logit] feats={len(log_feat_cols)}  AUC={log_auc:.3f}  ACC={log_acc:.3f}")
+        else:
+            print("[win_prob][logit] skipped (no logistic features present)")
 
-        best_brier = float("inf")
-
-        for w in np.linspace(0.0, 1.0, 21):
-
-            blended = w * proba_cal + (1.0 - w) * proba_cal_log
-
-            brier = np.mean((blended - y_cal) ** 2)
-
-            if brier < best_brier:
-
-                best_brier = brier
-
-                best_w = float(w)
-
-        ensemble_weight = best_w
-
-        proba_test_ensemble = ensemble_weight * proba_test + (1.0 - ensemble_weight) * proba_test_log
-
-        ens_auc = roc_auc_score(y_test, proba_test_ensemble)
-
-        ens_acc = accuracy_score(y_test, (proba_test_ensemble >= 0.5).astype(int))
-
-        print(f"[win_prob][blend] weight_gb={ensemble_weight:.2f}  AUC={ens_auc:.3f}  ACC={ens_acc:.3f}  Brier(cal)={best_brier:.4f}")
-
+        # Blend on calibration fold
+        if proba_cal_log is not None:
+            best_w = 1.0
+            best_brier = float("inf")
+            for w in np.linspace(0.0, 1.0, 21):
+                blended = w * proba_cal + (1.0 - w) * proba_cal_log
+                brier = np.mean((blended - y_cal) ** 2)
+                if brier < best_brier:
+                    best_brier = brier
+                    best_w = float(w)
+            ensemble_weight = best_w
+            proba_test_ensemble = ensemble_weight * proba_test + (1.0 - ensemble_weight) * proba_test_log
+            ens_auc = roc_auc_score(y_test, proba_test_ensemble)
+            ens_acc = accuracy_score(y_test, (proba_test_ensemble >= 0.5).astype(int))
+            print(f"[win_prob][blend] weight_gb={ensemble_weight:.2f}  AUC={ens_auc:.3f}  ACC={ens_acc:.3f}  Brier(cal)={best_brier:.4f}")
+        else:
+            print(f"[win_prob][blend] logistic unavailable, using {model_label} only")
     else:
-
-        proba_test_ensemble = proba_test
-
-    print(f"[win_prob][blend] logistic unavailable, using {model_label} only")
-
-
+        print(
+            f"[win_prob][{model_label}] feats={len(feat_cols)}  n_train={len(fit_idx)}  pos_rate={pos_rate:.3f}  "
+            "(no holdout; use walk-forward history metrics for out-of-sample evaluation)"
+        )
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
-    train_df = pd.DataFrame(X_train, columns=use_cols)
-
-    feat_ranges = {c: (float(train_df[c].min()), float(train_df[c].max())) for c in use_cols}
-
+    fit_df = pd.DataFrame(X_full[fit_idx], columns=use_cols)
+    feat_ranges = {c: (float(fit_df[c].min()), float(fit_df[c].max())) for c in use_cols}
     joblib.dump(
-
         {
-
             "model": model,
-
             "features": use_cols,
-
             "calibrated": calibrate,
-
             "feature_ranges": feat_ranges,
-
             "logistic_model": logistic_model,
-
             "logistic_features": log_feat_cols,
-
             "ensemble_weight": float(ensemble_weight),
-
             "model_type": model_label,
-
             "feature_policy": {"include_bdl_features": bool(include_bdl_features)},
-
+            "training_rows": int(len(fit_idx)),
         },
-
         MODELS_DIR / "winprob_gb.pkl",
-
     )
 
 
-
+_KNOWN_SPREAD_MODEL_TYPES = {"hist", "hgb", "gb_hist", "huber", "gb", "gbr", "gbdt", "xgb", "xgboost"}
 
 
 def train_spread(
@@ -903,150 +686,67 @@ def train_spread(
     """
     Train regression models for point-spread prediction and quantile ranges.
 
-    Parameters mirror `train_win_prob`, but target is `home_margin` and models
-    include quantile regressors for volatility estimates.
+    Target is `home_margin`. The point model is built through
+    ``src.models.win_model`` and, like walk-forward history scoring, is fit on
+    every eligible game; quantile models are fit on the same rows.
 
     cv_folds : int
-        Number of CV folds for evaluation metrics. Use 1 to disable CV and
-        use a single 75/25 split instead.
+        Number of contiguous (unshuffled) CV folds for diagnostic metrics.
+        Use 1 to disable CV diagnostics.
     include_bdl_features : bool
         Include BallDontLie team-form features in the production feature set.
         Defaults off until ablation shows repeatable lift.
     """
+    from src.models import win_model
+
     feat_df = make_feature_diffs(df)
-
     feat_cols = select_feature_columns(feat_df, include_bdl=include_bdl_features)
-
     if not feat_cols:
-
         raise ValueError("No usable *_diff features discovered for spread.")
 
-
-
     tgt_df = _require_target(feat_df, "home_margin")
-
-
-
     tgt_df_nodup = tgt_df.loc[:, ~pd.Index(tgt_df.columns).duplicated()]
-
-    use_cols = [c for c in feat_cols if c in tgt_df_nodup.columns]
-
+    use_cols = win_model.spread_feature_columns(feat_cols, param_config, tgt_df_nodup.columns)
     if not use_cols:
-
         raise ValueError("No usable features after deduplication for spread.")
-
     X = tgt_df_nodup[use_cols].astype(float).values
     report_feature_quality(tgt_df_nodup, use_cols, context="spread")
-
     y = tgt_df["home_margin"].astype(float).values
 
-
-
-    X_train, X_test, y_train, y_test = train_test_split(
-
-        X, y, test_size=0.25, random_state=42
-
-    )
-
-
-
     if use_gpu and not XGB_AVAILABLE:
-
         raise RuntimeError("GPU training requested but XGBoost is not installed.")
 
-
-
     model_choice_raw = None
-
     if param_config and "model_type" in param_config:
-
         model_choice_raw = str(param_config["model_type"]).strip().lower()
-
-
-
-    if model_choice_raw in {"hist", "hgb", "gb_hist", "huber"}:
-
-        model_choice = "hist"
-
-    elif model_choice_raw in {"gb", "gbr", "gbdt"}:
-
-        model_choice = "gbr"
-
-    elif model_choice_raw in {"xgb", "xgboost"}:
-
-        model_choice = "xgb"
-
-    else:
-
-        model_choice = model_choice_raw
-
-
-
+    model_kind = win_model.resolve_spread_model_kind(param_config)
     if param_config and config_source:
-
         print(
-
             f"[spread] applying tuned params from {config_source} "
-
-            f"(model_type={model_choice or 'auto'}; raw={model_choice_raw})"
-
+            f"(model_type={model_kind}; raw={model_choice_raw})"
         )
+    if model_choice_raw and model_choice_raw not in _KNOWN_SPREAD_MODEL_TYPES:
+        print(f"[spread] warning: unknown model_type '{model_choice_raw}', defaulting to {model_kind}.")
 
-
-
-    use_hist = model_choice == "hist"
-    use_gbr = model_choice == "gbr"
-    use_xgb = XGB_AVAILABLE and model_choice in {None, "xgb"}
-    if model_choice not in {"hist", "gbr", "xgb", None} and param_config:
-        print(f"[spread] warning: unknown model_type '{model_choice_raw}', defaulting to XGBoost.")
-        use_xgb = XGB_AVAILABLE
-
-    # --- k-fold cross-validation for evaluation metrics ---
+    # --- contiguous k-fold diagnostics (folds follow the season-ordered rows) ---
     if cv_folds > 1:
         kf = KFold(n_splits=cv_folds, shuffle=False)
         cv_maes, cv_r2s = [], []
-        cv_imputer = _make_median_imputer()
         for fold_idx, (fold_train_idx, fold_val_idx) in enumerate(kf.split(X)):
-            X_ftrain_raw = X[fold_train_idx]
-            y_ftrain = y[fold_train_idx]
-            X_fval_raw = X[fold_val_idx]
-            y_fval = y[fold_val_idx]
-            X_ftrain_imp = cv_imputer.fit_transform(X_ftrain_raw)
-            X_fval_imp = cv_imputer.transform(X_fval_raw)
-            if use_xgb:
-                fold_xgb_params: dict[str, object] = {
-                    "n_estimators": 1000, "learning_rate": 0.05, "max_depth": 6,
-                    "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0,
-                    "random_state": 42, "objective": "reg:squarederror", "verbosity": 0,
-                }
-                if param_config:
-                    fold_xgb_params.update(_apply_prefixed_params(param_config, "xgb_"))
-                fold_xgb_params.update(get_xgb_tree_config(use_gpu))
-                fold_model = XGBRegressor(**fold_xgb_params)
-                _fit_xgb_with_fallback(fold_model, X_ftrain_imp, y_ftrain, use_gpu, f"[spread][cv_fold={fold_idx}][xgb]")
-            elif use_hist:
-                fold_hgb_params: dict[str, object] = {
-                    "loss": "squared_error", "learning_rate": 0.05, "max_depth": None,
-                    "max_leaf_nodes": 31, "min_samples_leaf": 20,
-                    "l2_regularization": 0.1, "max_bins": 255, "random_state": 42,
-                }
-                if param_config:
-                    fold_hgb_params.update(_apply_prefixed_params(param_config, "hgb_"))
-                fold_model = HistGradientBoostingRegressor(**fold_hgb_params)
-                fold_model.fit(X_ftrain_imp, y_ftrain)
-            else:
-                fold_gbr_params: dict[str, object] = {
-                    "loss": "huber", "alpha": 0.9, "learning_rate": 0.05,
-                    "n_estimators": 600, "max_depth": 4, "min_samples_leaf": 20,
-                    "max_features": "sqrt", "subsample": 0.8, "random_state": 42,
-                }
-                if param_config:
-                    fold_gbr_params.update(_apply_prefixed_params(param_config, "gbr_"))
-                fold_model = GradientBoostingRegressor(**fold_gbr_params)
-                fold_model.fit(X_ftrain_imp, y_ftrain)
+            fold_imputer = _make_median_imputer()
+            X_ftrain_imp = fold_imputer.fit_transform(X[fold_train_idx])
+            X_fval_imp = fold_imputer.transform(X[fold_val_idx])
+            fold_model, _ = win_model.fit_spread_regressor(
+                X_ftrain_imp,
+                y[fold_train_idx],
+                param_config,
+                use_gpu=use_gpu,
+                context=f"[spread][cv_fold={fold_idx}]",
+                feature_names=use_cols,
+            )
             fold_pred = fold_model.predict(X_fval_imp)
-            cv_maes.append(mean_absolute_error(y_fval, fold_pred))
-            cv_r2s.append(r2_score(y_fval, fold_pred))
+            cv_maes.append(mean_absolute_error(y[fold_val_idx], fold_pred))
+            cv_r2s.append(r2_score(y[fold_val_idx], fold_pred))
         print(
             f"[spread][cv={cv_folds}] "
             f"MAE={np.mean(cv_maes):.4f}±{np.std(cv_maes):.4f}  "
@@ -1054,206 +754,46 @@ def train_spread(
         )
 
     imputer = _make_median_imputer()
-    X_train_imp = imputer.fit_transform(X_train)
-    X_test_imp = imputer.transform(X_test)
-
-
-    gpu_used = False
-
-    bias_correction = 0.0
-
-    if use_xgb:
-
-        xgb_params: dict[str, object] = {
-
-            "n_estimators": 1000,
-
-            "learning_rate": 0.05,
-
-            "max_depth": 6,
-
-            "subsample": 0.8,
-
-            "colsample_bytree": 0.8,
-
-            "reg_lambda": 1.0,
-
-            "random_state": 42,
-
-            "objective": "reg:squarederror",
-
-            "verbosity": 0,
-
-        }
-
-        if param_config:
-
-            xgb_params.update(_apply_prefixed_params(param_config, "xgb_"))
-
-        xgb_params.update(get_xgb_tree_config(use_gpu))
-
-        model = XGBRegressor(**xgb_params)
-
-        gpu_used = _fit_xgb_with_fallback(model, X_train_imp, y_train, use_gpu, "[spread][xgb]")
-
-        model_label = "xgb_gpu" if gpu_used else "xgb"
-
-    elif use_hist:
-
-        hgb_params: dict[str, object] = {
-
-            "loss": "squared_error",
-
-            "learning_rate": 0.05,
-
-            "max_depth": None,
-
-            "max_leaf_nodes": 31,
-
-            "min_samples_leaf": 20,
-
-            "l2_regularization": 0.1,
-
-            "max_bins": 255,
-
-            "random_state": 42,
-
-        }
-
-        if param_config:
-
-            hgb_params.update(_apply_prefixed_params(param_config, "hgb_"))
-
-        model = HistGradientBoostingRegressor(**hgb_params)
-
-        model.fit(X_train_imp, y_train)
-
-        model_label = "hgb"
-
-    else:
-
-        gbr_params: dict[str, object] = {
-
-            "loss": "huber",
-
-            "alpha": 0.9,
-
-            "learning_rate": 0.05,
-
-            "n_estimators": 600,
-
-            "max_depth": 4,
-
-            "min_samples_leaf": 20,
-
-            "max_features": "sqrt",
-
-            "subsample": 0.8,
-
-            "random_state": 42,
-
-        }
-
-        if param_config:
-
-            gbr_params.update(_apply_prefixed_params(param_config, "gbr_"))
-
-        model = GradientBoostingRegressor(**gbr_params)
-
-        model.fit(X_train_imp, y_train)
-
-        model_label = "gbr"
-
-
-
-    train_pred = model.predict(X_train_imp)
-
-    bias_correction = float((train_pred - y_train).mean())
-
-    if bias_correction:
-
-        pred = model.predict(X_test_imp) - bias_correction
-
-    else:
-
-        pred = model.predict(X_test_imp)
-
-
-
-    mae = mean_absolute_error(y_test, pred)
-
-    r2 = r2_score(y_test, pred)
-
-    print(
-
-        f"[spread][{model_label}] feats={len(feat_cols)}  MAE={mae:.2f}  "
-
-        f"R2={r2:.3f}  bias={bias_correction:.3f}  n_test={len(y_test)}"
-
+    X_imp = imputer.fit_transform(X)
+    model, model_label = win_model.fit_spread_regressor(
+        X_imp, y, param_config, use_gpu=use_gpu, context="[spread]", feature_names=use_cols
     )
-
-
+    bias_correction = float((model.predict(X_imp) - y).mean())
+    print(
+        f"[spread][{model_label}] feats={len(feat_cols)}  n_train={len(y)}  bias={bias_correction:.3f}  "
+        "(fit on all eligible games; use walk-forward history metrics for out-of-sample evaluation)"
+    )
 
     quantile_models: dict[float, GradientBoostingRegressor] = {}
-
     for q in (0.2, 0.8):
-
         q_model = GradientBoostingRegressor(
-
             loss="quantile",
-
             alpha=q,
-
             learning_rate=0.05,
-
             n_estimators=500,
-
             max_depth=3,
-
             min_samples_leaf=20,
-
             max_features="sqrt",
-
             subsample=0.85,
-
             random_state=42,
-
         )
-
-        q_model.fit(X_train_imp, y_train)
-
+        q_model.fit(X_imp, y)
         quantile_models[q] = q_model
 
-
-
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
     joblib.dump(
-
         {
-
             "model": model,
-
             "features": use_cols,
-
             "imputer": imputer,
-
             "quantile_models": quantile_models,
-
             "model_type": model_label,
-
             "bias_correction": bias_correction,
-
             "feature_policy": {"include_bdl_features": bool(include_bdl_features)},
-
+            "training_rows": int(len(y)),
         },
-
         MODELS_DIR / "spread_gb.pkl",
-
     )
-
-
-
 
 
 def main():
