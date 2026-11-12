@@ -51,7 +51,7 @@ from src.features.qb_health import build_qb_health_features
 from src.features.redzone_features import build_redzone_features
 from src.features.volatility import engineer_volatility_inputs
 from src.data.weather_fallback import get_fallback_weather
-from src.utils.io import RAW_DIR, PROC_DIR, write_df, read_df
+from src.utils.io import RAW_DIR, PROC_DIR, df_path_exists, write_df, read_df
 from src.utils.logging_config import setup_logging
 from src.utils.teams import normalize_team_abbr, TEAM_NAME_TO_ABBR
 
@@ -479,24 +479,76 @@ def _load_weather_sources() -> pd.DataFrame:
 
     )
 
+    def _coalesce_weather_by_priority(frame: pd.DataFrame, key_cols: list[str]) -> pd.DataFrame:
+        # Keep the highest-priority source per game, but let lower-priority rows fill
+        # context fields that the selected source does not provide, such as venue lat/lon.
+        sorted_frame = frame.sort_values(key_cols + ["_weather_rank"], kind="stable").copy()
+        filled = sorted_frame.groupby(key_cols, dropna=False, group_keys=False).ffill()
+        for key_col in key_cols:
+            filled[key_col] = sorted_frame[key_col]
+        return filled.drop_duplicates(subset=key_cols, keep="last")
+
+    def _fill_venue_from_source_context(frame: pd.DataFrame) -> pd.DataFrame:
+        if "home_team" not in frame.columns:
+            return frame
+        filled = frame.copy()
+
+        if {"weather_source", "vx_latitude", "vx_longitude"}.issubset(filled.columns):
+            is_visualcrossing = filled["weather_source"].astype(str).str.lower().eq("visualcrossing")
+            vx_lat = pd.to_numeric(filled["vx_latitude"], errors="coerce")
+            vx_lon = pd.to_numeric(filled["vx_longitude"], errors="coerce")
+            if "venue_lat" not in filled.columns:
+                filled["venue_lat"] = pd.NA
+            if "venue_lon" not in filled.columns:
+                filled["venue_lon"] = pd.NA
+            filled["venue_lat"] = pd.to_numeric(filled["venue_lat"], errors="coerce")
+            filled["venue_lon"] = pd.to_numeric(filled["venue_lon"], errors="coerce")
+            filled.loc[is_visualcrossing & vx_lat.notna(), "venue_lat"] = vx_lat[is_visualcrossing & vx_lat.notna()]
+            filled.loc[is_visualcrossing & vx_lon.notna(), "venue_lon"] = vx_lon[is_visualcrossing & vx_lon.notna()]
+
+        locations = load_team_locations()
+        if locations.empty:
+            return filled
+        if not {"team_abbr", "latitude", "longitude"}.issubset(locations.columns):
+            return filled
+
+        loc = locations[["team_abbr", "latitude", "longitude"]].copy()
+        loc["team_abbr"] = loc["team_abbr"].astype(str).str.upper().str.strip().apply(_norm_abbr)
+        loc = loc.rename(
+            columns={
+                "team_abbr": "_venue_home_team",
+                "latitude": "_fallback_venue_lat",
+                "longitude": "_fallback_venue_lon",
+            }
+        )
+
+        filled["_venue_home_team"] = filled["home_team"].astype(str).str.upper().str.strip().apply(_norm_abbr)
+        filled = filled.merge(loc, on="_venue_home_team", how="left")
+        for col in ("venue_lat", "venue_lon"):
+            if col not in filled.columns:
+                filled[col] = pd.NA
+            filled[col] = pd.to_numeric(filled[col], errors="coerce")
+
+        filled["venue_lat"] = filled["venue_lat"].fillna(filled["_fallback_venue_lat"])
+        filled["venue_lon"] = filled["venue_lon"].fillna(filled["_fallback_venue_lon"])
+        return filled.drop(
+            columns=["_venue_home_team", "_fallback_venue_lat", "_fallback_venue_lon"],
+            errors="ignore",
+        )
+
     if "game_id" in weather_df.columns:
 
-        weather_df = weather_df.sort_values(["game_id", "_weather_rank"])
-
-        weather_df = weather_df.drop_duplicates(subset=["game_id"], keep="last")
+        weather_df = _coalesce_weather_by_priority(weather_df, ["game_id"])
 
     elif all(col in weather_df.columns for col in ["game_uid", "season", "week", "home_team", "away_team"]):
 
-        weather_df = weather_df.sort_values(["game_uid", "_weather_rank"])
-
-        weather_df = weather_df.drop_duplicates(subset=["game_uid"], keep="last")
+        weather_df = _coalesce_weather_by_priority(weather_df, ["game_uid"])
 
     elif all(col in weather_df.columns for col in ["season", "week", "home_team", "away_team"]):
 
-        weather_df = weather_df.sort_values(["season", "week", "home_team", "away_team", "_weather_rank"])
+        weather_df = _coalesce_weather_by_priority(weather_df, ["season", "week", "home_team", "away_team"])
 
-        weather_df = weather_df.drop_duplicates(subset=["season", "week", "home_team", "away_team"], keep="last")
-
+    weather_df = _fill_venue_from_source_context(weather_df)
     weather_df = weather_df.drop(columns=["_weather_rank"], errors="ignore")
 
     return weather_df
@@ -564,7 +616,21 @@ def _merge_weather_features(feats: pd.DataFrame, weather_df: pd.DataFrame) -> pd
         ]
         print(f"[weather][diag] weather rows={len(w)} cols={len(w.columns)}")
         print("[weather][diag] key columns:", wx_key_cols)
-        print("[weather][diag] weather head:\n", w[wx_key_cols].head())
+        diag_sample = w
+        if "game_id" in w.columns and "game_id" in feats.columns:
+            diag_sample = w[w["game_id"].astype(str).isin(feats["game_id"].astype(str))]
+        if diag_sample.empty and {"season", "week"}.issubset(w.columns) and {"season", "week"}.issubset(feats.columns):
+            feature_weeks = feats[["season", "week"]].drop_duplicates()
+            diag_sample = w.merge(feature_weeks, on=["season", "week"], how="inner")
+        if diag_sample.empty:
+            diag_sample = w
+        if {"season", "week"}.issubset(diag_sample.columns):
+            diag_sample = diag_sample.sort_values(["season", "week"], ascending=[False, False], kind="stable")
+        if {"venue_lat", "venue_lon"}.issubset(diag_sample.columns):
+            missing_lat = int(diag_sample["venue_lat"].isna().sum())
+            missing_lon = int(diag_sample["venue_lon"].isna().sum())
+            print(f"[weather][diag] feature-overlap missing venue(lat,lon)=({missing_lat},{missing_lon})")
+        print("[weather][diag] weather sample:\n", diag_sample[wx_key_cols].head())
         for key in ("game_id", "game_uid", "game_uid_relaxed"):
             if key in w.columns and key in feats.columns:
                 overlap = w[key].astype(str).isin(feats[key].astype(str)).sum()
@@ -2836,7 +2902,7 @@ def build_matchup_features(schedule: pd.DataFrame, team_stats: pd.DataFrame) -> 
 
         pbp_path = RAW_DIR / "espn_pbp.parquet"
 
-        if pbp_path.exists():
+        if df_path_exists(pbp_path):
 
             pbp = read_df(pbp_path)
 
@@ -2917,7 +2983,7 @@ def main():
 
     pbp_path = RAW_DIR / "nfl_pbp.parquet"
 
-    if not pbp_path.exists():
+    if not df_path_exists(pbp_path):
 
         pbp_path = RAW_DIR / "espn_pbp.parquet"
 
@@ -2938,7 +3004,7 @@ def main():
 
     sched = _load_schedule_data(sched_path, seasons)
 
-    pbp = read_df(pbp_path) if pbp_path.exists() else pd.DataFrame()
+    pbp = read_df(pbp_path) if df_path_exists(pbp_path) else pd.DataFrame()
 
     if not pbp.empty and "season" in pbp.columns:
 
@@ -3040,7 +3106,7 @@ def main():
 
             p = RAW_DIR / name
 
-            return read_df(p) if p.exists() else pd.DataFrame()
+            return read_df(p) if df_path_exists(p) else pd.DataFrame()
 
         except Exception:
 

@@ -420,3 +420,31 @@ def test_summarize_join_reports_match_and_pick_accuracy():
     assert overall["model_pick_rows"] == 2
     assert overall["model_pick_accuracy"] == 0.5
     assert set(summary["scope"]) == {"all", "market", "sportsbook"}
+
+
+def test_join_historical_lines_excludes_live_week_rows():
+    predictions = pd.concat(
+        [
+            _predictions(),
+            _predictions().assign(season=2026, week=8, game_id="2026_08_CAR_ATL"),
+        ],
+        ignore_index=True,
+    )
+    lines = pd.concat(
+        [
+            _lines(),
+            _lines().assign(season=2026, week=8, game_id="2026_08_CAR_ATL"),
+        ],
+        ignore_index=True,
+    )
+
+    joined, prepared_lines = join_historical_lines(
+        lines=lines,
+        predictions=predictions,
+        exclude_from_season=2026,
+        exclude_from_week=8,
+    )
+
+    assert len(prepared_lines) == 2
+    assert len(joined) == 2
+    assert set(joined["season"]) == {2025}

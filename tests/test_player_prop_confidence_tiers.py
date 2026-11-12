@@ -127,6 +127,23 @@ def test_build_confidence_tier_metrics_includes_historical_line_scope():
     assert historical["model_pick_accuracy"] == 2 / 3
 
 
+def test_build_confidence_tier_metrics_excludes_live_week_rows():
+    live_predictions = _predictions().assign(season=2026, week=8, game_id="2026_08_CAR_ATL")
+    metrics = build_confidence_tier_metrics(
+        model_predictions=pd.concat([_predictions(), live_predictions], ignore_index=True),
+        feature_frames=[_features()],
+        generated_at="2026-10-08T00:00:00+00:00",
+        exclude_from_season=2026,
+        exclude_from_week=8,
+    )
+
+    overall = metrics[
+        metrics["evaluation_scope"].eq("model_predictions")
+        & metrics["scope"].eq("overall")
+    ].iloc[0]
+    assert overall["n_rows"] == 3
+
+
 def test_confidence_tiers_cli_writes_metrics(tmp_path):
     predictions_path = tmp_path / "model_predictions.csv"
     features_path = tmp_path / "features.parquet"

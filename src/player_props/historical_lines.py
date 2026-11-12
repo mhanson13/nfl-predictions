@@ -12,6 +12,7 @@ from src.player_props.predict import _player_name_key, _player_name_prefix_key
 from src.predict.utils import moneyline_to_prob
 from src.utils.io import PROC_DIR, read_df, write_df
 from src.utils.teams import normalize_team_abbr
+from src.utils.week_filter import filter_before_week
 
 
 DEFAULT_LINES_PATH = PROC_DIR / "oddsapi_historical_player_prop_lines.parquet"
@@ -372,9 +373,13 @@ def join_historical_lines(
     identity: pd.DataFrame | None = None,
     sportsbooks: Sequence[str] | None = None,
     comparable_only: bool = False,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     prepared_lines = _prepare_lines(lines, sportsbooks=sportsbooks, comparable_only=comparable_only)
     prepared_predictions = _prepare_predictions(predictions)
+    prepared_lines = filter_before_week(prepared_lines, exclude_from_season, exclude_from_week)
+    prepared_predictions = filter_before_week(prepared_predictions, exclude_from_season, exclude_from_week)
     if prepared_lines.empty or prepared_predictions.empty:
         return pd.DataFrame(columns=JOIN_OUTPUT_COLUMNS), prepared_lines
 
@@ -557,6 +562,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--summary-output", type=Path, default=DEFAULT_SUMMARY_PATH)
     parser.add_argument("--sportsbooks", nargs="+", default=None)
     parser.add_argument("--comparable-only", action="store_true")
+    parser.add_argument("--exclude-from-season", type=int, default=None)
+    parser.add_argument("--exclude-from-week", type=int, default=None)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -572,6 +579,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         identity=identity,
         sportsbooks=args.sportsbooks,
         comparable_only=args.comparable_only,
+        exclude_from_season=args.exclude_from_season,
+        exclude_from_week=args.exclude_from_week,
     )
     summary = summarize_join(prepared_lines, joined)
     output_path = write_df(joined, args.output)

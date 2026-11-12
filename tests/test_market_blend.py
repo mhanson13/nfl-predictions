@@ -64,6 +64,17 @@ def test_summarize_blend_backtest_reports_model_vegas_and_blend_metrics():
     assert "blend_roi_delta_vs_model" in overall
 
 
+def test_summarize_blend_backtest_empty_output_still_has_columns(tmp_path):
+    summary = market_blend.summarize_blend_backtest(pd.DataFrame())
+    path = tmp_path / "market_blend_summary.csv"
+
+    summary.to_csv(path, index=False)
+    result = pd.read_csv(path)
+
+    assert result.empty
+    assert {"scope", "segment", "blend_brier"}.issubset(result.columns)
+
+
 def test_build_blend_policy_requires_blend_to_beat_model_and_vegas():
     summary = pd.DataFrame(
         [

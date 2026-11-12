@@ -26,7 +26,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dateutil import tz
-from src.utils.io import RAW_DIR, PROC_DIR, read_df
+from src.utils.io import RAW_DIR, PROC_DIR, df_path_exists, read_df
 from src.utils.logging_config import setup_logging
 from src.utils.odds import ODDS_API_FREE_KEY_SECRET, fetch_odds, get_odds_api_free_key
 from src.utils.teams import get_team_abbr_from_name
@@ -561,7 +561,7 @@ def _archive_prediction_file(source_path: Optional[str], week: Optional[Any]) ->
 
 def _load_penalty_frame() -> pd.DataFrame:
     path = RAW_DIR / "nfl_pbp.parquet"
-    if not path.exists():
+    if not df_path_exists(path):
         return pd.DataFrame()
     columns = [
 
@@ -1206,6 +1206,10 @@ def _attach_market_policy_fields(
         "market_moneyline_edge_bin",
         "market_moneyline_model_side_odds_bucket",
         "market_moneyline_vegas_model_side_prob_bin",
+        "market_moneyline_diagnostic_probability_edge_candidate_flag",
+        "market_moneyline_diagnostic_probability_edge_blocked_flag",
+        "market_moneyline_diagnostic_odds_bucket_candidate_flag",
+        "market_moneyline_diagnostic_odds_bucket_blocked_flag",
         "market_moneyline_diagnostic_candidate_segment_flag",
         "market_moneyline_diagnostic_blocked_segment_flag",
         "market_moneyline_policy_tier",
@@ -1224,6 +1228,8 @@ def _attach_market_policy_fields(
         "market_policy_primary_signal",
         "market_policy_tier",
         "market_policy_status",
+        "market_public_recommendation",
+        "market_public_recommendation_reason",
     ]
 
     home_prob = pd.to_numeric(_column_or_default(preds, "home_win_prob"), errors="coerce").astype(float)
@@ -1348,27 +1354,66 @@ def _attach_market_policy_fields(
         and ml_confidence_status.lower() not in {"nan", "unavailable", "model_confidence_calibration_pass"}
     )
     ml_diagnostic_status = str(ml_policy.get("disagreement_recommendation_gate_status", "") or "").strip()
-    ml_diagnostic_candidates = _split_policy_segments(
+    ml_diagnostic_probability_candidates = _split_policy_segments(
+        ml_policy.get("disagreement_recommendation_gate_probability_edge_candidate_segments")
+    ) or _split_policy_segments(
         ml_policy.get("disagreement_recommendation_gate_candidate_segments")
     )
-    ml_diagnostic_blocked = _split_policy_segments(
+    ml_diagnostic_probability_blocked = _split_policy_segments(
+        ml_policy.get("disagreement_recommendation_gate_probability_edge_blocked_segments")
+    ) or _split_policy_segments(
         ml_policy.get("disagreement_recommendation_gate_blocked_segments")
+    )
+    ml_diagnostic_odds_bucket_candidates = _split_policy_segments(
+        ml_policy.get("disagreement_recommendation_gate_odds_bucket_candidate_segments")
+    )
+    ml_diagnostic_odds_bucket_blocked = _split_policy_segments(
+        ml_policy.get("disagreement_recommendation_gate_odds_bucket_blocked_segments")
     )
     ml_diagnostic_required = bool(
         ml_diagnostic_status
         and ml_diagnostic_status.lower()
         not in {"nan", "unavailable", "missing_disagreement_recommendations"}
     )
+    ml_diagnostic_has_candidates = bool(
+        ml_diagnostic_probability_candidates or ml_diagnostic_odds_bucket_candidates
+    )
+    ml_diagnostic_probability_candidate_match = (
+        preds["market_moneyline_edge_bin"].isin(ml_diagnostic_probability_candidates)
+        if ml_diagnostic_probability_candidates
+        else pd.Series(False, index=preds.index)
+    )
+    ml_diagnostic_probability_blocked_match = (
+        preds["market_moneyline_edge_bin"].isin(ml_diagnostic_probability_blocked)
+        if ml_diagnostic_probability_blocked
+        else pd.Series(False, index=preds.index)
+    )
+    ml_diagnostic_odds_bucket_candidate_match = (
+        preds["market_moneyline_model_side_odds_bucket"].isin(ml_diagnostic_odds_bucket_candidates)
+        if ml_diagnostic_odds_bucket_candidates
+        else pd.Series(False, index=preds.index)
+    )
+    ml_diagnostic_odds_bucket_blocked_match = (
+        preds["market_moneyline_model_side_odds_bucket"].isin(ml_diagnostic_odds_bucket_blocked)
+        if ml_diagnostic_odds_bucket_blocked
+        else pd.Series(False, index=preds.index)
+    )
     ml_diagnostic_candidate_match = (
-        preds["market_moneyline_edge_bin"].isin(ml_diagnostic_candidates)
-        if ml_diagnostic_candidates
+        ml_diagnostic_probability_candidate_match | ml_diagnostic_odds_bucket_candidate_match
+        if ml_diagnostic_has_candidates
         else pd.Series(not ml_diagnostic_required, index=preds.index)
     )
     ml_diagnostic_blocked_match = (
-        preds["market_moneyline_edge_bin"].isin(ml_diagnostic_blocked)
-        if ml_diagnostic_blocked
-        else pd.Series(False, index=preds.index)
+        ml_diagnostic_probability_blocked_match | ml_diagnostic_odds_bucket_blocked_match
     )
+    preds["market_moneyline_diagnostic_probability_edge_candidate_flag"] = (
+        ml_diagnostic_probability_candidate_match
+    )
+    preds["market_moneyline_diagnostic_probability_edge_blocked_flag"] = (
+        ml_diagnostic_probability_blocked_match
+    )
+    preds["market_moneyline_diagnostic_odds_bucket_candidate_flag"] = ml_diagnostic_odds_bucket_candidate_match
+    preds["market_moneyline_diagnostic_odds_bucket_blocked_flag"] = ml_diagnostic_odds_bucket_blocked_match
     preds["market_moneyline_diagnostic_candidate_segment_flag"] = ml_diagnostic_candidate_match
     preds["market_moneyline_diagnostic_blocked_segment_flag"] = ml_diagnostic_blocked_match
     ml_candidate = (
@@ -1479,7 +1524,7 @@ def _attach_market_policy_fields(
     preds["market_spread_edge_bin"] = preds["market_spread_abs_edge_points"].apply(_spread_edge_bin)
 
     spread_policy = policy.get("spread_edge_bin", {})
-    spread_policy_enabled = _bool_from_value(spread_policy.get("recommended", False))
+    spread_policy_enabled = False
     spread_policy_bin = str(spread_policy.get("edge_bin", "") or "")
     spread_tier = str(spread_policy.get("recommendation_tier", "lean") or "lean")
     spread_calibration_status = str(spread_policy.get("spread_cover_calibration_status", "") or "")
@@ -1487,10 +1532,8 @@ def _attach_market_policy_fields(
     spread_lean = spread_policy_enabled & preds["market_spread_edge_bin"].eq(spread_policy_bin)
     spread_calibration_block = (
         spread_available
-        & (not spread_policy_enabled)
         & preds["market_spread_edge_bin"].eq(spread_policy_bin)
         & bool(spread_policy_bin)
-        & bool(spread_calibration_status and spread_calibration_status != "unavailable")
     )
     spread_blocked_high = spread_available & preds["market_spread_abs_edge_points"].ge(5.0)
     spread_blocked_mid = (
@@ -1509,7 +1552,7 @@ def _attach_market_policy_fields(
         [
             "unavailable_spread",
             "lean_spread_research",
-            spread_calibration_status or "blocked_spread_cover_calibration",
+            spread_calibration_status or "blocked_spread_cover_calibration_required",
             "blocked_overconfident_spread_edge",
             "blocked_uncalibrated_spread_edge",
         ],
@@ -1587,6 +1630,43 @@ def _attach_market_policy_fields(
         ],
         default="no_bet",
     )
+    ml_public_tier = ml_tier.strip().lower()
+    public_recommendation = np.select(
+        [
+            ml_recommended & (ml_public_tier == "strong"),
+            ml_recommended,
+            ml_confidence_policy_block | ml_clv_policy_block | ml_segment_policy_block | high_edge_review,
+            spread_calibration_block,
+            ml_diagnostic_policy_block | spread_blocked_high | spread_blocked_mid,
+        ],
+        [
+            "recommended",
+            "lean",
+            "review",
+            "research_only",
+            "no_bet",
+        ],
+        default="no_bet",
+    )
+    public_reason = np.select(
+        [
+            public_recommendation == "recommended",
+            public_recommendation == "lean",
+            public_recommendation == "review",
+            public_recommendation == "research_only",
+            public_recommendation == "no_bet",
+        ],
+        [
+            "Moneyline disagreement passed historical probability-edge and market-segment policy gates.",
+            "Moneyline disagreement passed policy gates as a lower-strength lean.",
+            "Moneyline candidate requires review because a confidence, CLV, segment, or high-edge guardrail fired.",
+            "Spread edge is research-only until cover-probability calibration is strong enough for recommendations.",
+            "No conservative market recommendation gate passed for this game.",
+        ],
+        default="No conservative market recommendation gate passed for this game.",
+    )
+    preds["market_public_recommendation"] = public_recommendation
+    preds["market_public_recommendation_reason"] = public_reason
     return added
 
 
@@ -2949,7 +3029,7 @@ def _player_defense_predictions(
 
     pbp_path = RAW_DIR / "nfl_pbp.parquet"
 
-    if not pbp_path.exists():
+    if not df_path_exists(pbp_path):
 
         if debug:
 

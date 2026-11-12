@@ -7,7 +7,7 @@ from typing import Sequence
 
 import pandas as pd
 
-from src.utils.io import PROC_DIR, RAW_DIR, read_df, write_df
+from src.utils.io import PROC_DIR, RAW_DIR, df_path_exists, read_df, write_df
 from src.utils.teams import normalize_team_abbr
 from src.utils.week_filter import filter_before_week
 
@@ -161,8 +161,8 @@ def _load_schedule(path: Path) -> pd.DataFrame:
 
 
 def _load_pbp(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"PBP source not found: {path}")
+    if not df_path_exists(path):
+        raise FileNotFoundError(f"PBP source not found: {path} or {path.with_suffix('.csv')}")
     frame = read_df(path)
     required = {"season", "week", "game_id", "td_player_id", "touchdown"}
     if missing := required - set(frame.columns):

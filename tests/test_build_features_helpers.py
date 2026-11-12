@@ -42,6 +42,14 @@ from src.features.build_features import (
 def test_load_weather_sources_prefers_visualcrossing_over_tomorrow_and_noaa(tmp_path, monkeypatch):
     proc_dir = tmp_path / "processed"
     proc_dir.mkdir()
+    team_locations_path = tmp_path / "team_locations.csv"
+    team_locations_path.write_text(
+        "team_abbr,city,state,latitude,longitude,timezone_offset_hours\n"
+        "ATL,Atlanta,GA,33.7550,-84.4010,-5\n"
+        "BUF,Orchard Park,NY,42.7738,-78.7868,-5\n"
+        "GB,Green Bay,WI,44.5013,-88.0622,-6\n",
+        encoding="utf-8",
+    )
     for name in ("visualcrossing_weather.parquet", "weather_games.parquet", "noaa_weather.parquet"):
         (proc_dir / name).touch()
 
@@ -56,6 +64,32 @@ def test_load_weather_sources_prefers_visualcrossing_over_tomorrow_and_noaa(tmp_
                     "away_team": "CAR",
                     "weather_source": "visualcrossing",
                     "weather_temp_f": 64.0,
+                    "venue_lat": pd.NA,
+                    "venue_lon": pd.NA,
+                },
+                {
+                    "game_id": "2026_04_MIN_GB",
+                    "season": 2026,
+                    "week": 4,
+                    "home_team": "GB",
+                    "away_team": "MIN",
+                    "weather_source": "visualcrossing",
+                    "weather_temp_f": 47.0,
+                    "venue_lat": pd.NA,
+                    "venue_lon": pd.NA,
+                },
+                {
+                    "game_id": "2026_04_BAL_BUF",
+                    "season": 2026,
+                    "week": 4,
+                    "home_team": "BUF",
+                    "away_team": "BAL",
+                    "weather_source": "visualcrossing",
+                    "weather_temp_f": 43.0,
+                    "venue_lat": pd.NA,
+                    "venue_lon": pd.NA,
+                    "vx_latitude": 42.7738,
+                    "vx_longitude": -78.7868,
                 }
             ]
         ),
@@ -68,6 +102,18 @@ def test_load_weather_sources_prefers_visualcrossing_over_tomorrow_and_noaa(tmp_
                     "home_team": "ATL",
                     "away_team": "CAR",
                     "weather_temp_f": 61.0,
+                    "venue_lat": 33.75,
+                    "venue_lon": -84.39,
+                },
+                {
+                    "game_id": "2026_04_BAL_BUF",
+                    "season": 2026,
+                    "week": 4,
+                    "home_team": "BUF",
+                    "away_team": "BAL",
+                    "weather_temp_f": 64.0,
+                    "venue_lat": 40.436238,
+                    "venue_lon": -80.009596,
                 }
             ]
         ),
@@ -89,14 +135,29 @@ def test_load_weather_sources_prefers_visualcrossing_over_tomorrow_and_noaa(tmp_
         return frames[path.name].copy()
 
     monkeypatch.setattr(build_features_module, "PROC_DIR", proc_dir)
+    monkeypatch.setattr(build_features_module, "TEAM_LOCATIONS_PATH", team_locations_path)
     monkeypatch.setattr(build_features_module, "read_df", fake_read_df)
 
     weather = build_features_module._load_weather_sources()
 
-    assert len(weather) == 1
-    row = weather.iloc[0]
-    assert row["weather_source"] == "visualcrossing"
-    assert row["weather_temp_f"] == 64.0
+    assert len(weather) == 3
+    atl = weather.set_index("game_id").loc["2026_03_CAR_ATL"]
+    assert atl["weather_source"] == "visualcrossing"
+    assert atl["weather_temp_f"] == 64.0
+    assert atl["venue_lat"] == 33.75
+    assert atl["venue_lon"] == -84.39
+
+    gb = weather.set_index("game_id").loc["2026_04_MIN_GB"]
+    assert gb["weather_source"] == "visualcrossing"
+    assert gb["weather_temp_f"] == 47.0
+    assert gb["venue_lat"] == 44.5013
+    assert gb["venue_lon"] == -88.0622
+
+    buf = weather.set_index("game_id").loc["2026_04_BAL_BUF"]
+    assert buf["weather_source"] == "visualcrossing"
+    assert buf["weather_temp_f"] == 43.0
+    assert buf["venue_lat"] == 42.7738
+    assert buf["venue_lon"] == -78.7868
 
 
 def test_has_weather_signal_accepts_live_temp_wind_or_precip_columns():

@@ -163,6 +163,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip Visual Crossing weather fetch even if an API key is configured.",
     )
     parser.add_argument(
+        "--skip-tomorrow-weather",
+        action="store_true",
+        help="Skip Tomorrow.io live weather refresh; Visual Crossing, NOAA, and static fallback remain available.",
+    )
+    parser.add_argument(
         "--skip-yahoo",
         action="store_true",
         help="Skip Yahoo Sports API fetch even if credentials are configured.",
@@ -362,6 +367,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--mtb-publish-strict",
         action="store_true",
         help="When publishing to MattyTheBookie, fail if any selected optional CSV is missing.",
+    )
+    parser.add_argument(
+        "--mtb-overwrite-week-archive",
+        action="store_true",
+        help="When publishing to MattyTheBookie, overwrite an existing season/week CSV and JSON archive snapshot.",
+    )
+    parser.add_argument(
+        "--mtb-allow-partial-week-archive",
+        action="store_true",
+        help=(
+            "When publishing to MattyTheBookie, archive the current season/week CSV snapshot even "
+            "when exclude-started or other live filters make the slate partial."
+        ),
     )
     parser.add_argument(
         "--skip-mtb-import",
@@ -825,6 +843,7 @@ def build_sequential_jobs(
     tuning_options: dict[str, object],
     skip_logit: bool,
     skip_market_roi: bool,
+    include_tomorrow_weather: bool = True,
     volatility_options: dict[str, object] | None = None,
     cv_folds: int = 3,
     prediction_week: str = "auto",
@@ -864,7 +883,8 @@ def build_sequential_jobs(
         )
     )
 
-    jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
+    if include_tomorrow_weather:
+        jobs.append(Job("weather", ["python", "-m", "src.data.weather", "--season", *season_args, *debug]))
 
     if include_visualcrossing:
         jobs.append(
@@ -1346,6 +1366,7 @@ def build_sequential_jobs(
             "--summary-output",
             str(pred_dir / "evaluation" / "player_props" / "historical_line_join_summary.csv"),
             *debug,
+            *live_exclude_args,
         ]
         jobs.append(Job("join_historical_player_prop_lines", historical_line_cmd))
         confidence_tiers_cmd = [
@@ -1365,6 +1386,7 @@ def build_sequential_jobs(
             "--output",
             str(pred_dir / "evaluation" / "player_props" / "confidence_tier_metrics.csv"),
             *debug,
+            *live_exclude_args,
         ]
         jobs.append(Job("evaluate_player_prop_confidence_tiers", confidence_tiers_cmd))
         over_probability_cmd = [
@@ -1380,6 +1402,7 @@ def build_sequential_jobs(
             "--bins-output",
             str(pred_dir / "evaluation" / "player_props" / "over_probability_bins.csv"),
             *debug,
+            *live_exclude_args,
         ]
         jobs.append(Job("evaluate_player_prop_over_probability", over_probability_cmd))
         edge_backtest_cmd = [
@@ -1398,7 +1421,10 @@ def build_sequential_jobs(
             str(pred_dir / "evaluation" / "player_props" / "edge_backtest_market_thresholds.csv"),
             "--policy-output",
             str(pred_dir / "evaluation" / "player_props" / "edge_recommendation_policy.csv"),
+            "--policy-diagnostics-output",
+            str(pred_dir / "evaluation" / "player_props" / "edge_policy_diagnostics.csv"),
             *debug,
+            *live_exclude_args,
         ]
         jobs.append(Job("backtest_player_prop_edges", edge_backtest_cmd))
         try:
@@ -1428,6 +1454,8 @@ def build_sequential_jobs(
                 str(pred_dir / "player_props_defense.csv"),
                 "--novelty-output",
                 str(pred_dir / "player_props_novelty.csv"),
+                "--public-output",
+                str(pred_dir / "player_props_public.csv"),
                 "--availability",
                 str(Path("data/processed/current_player_availability.parquet")),
                 "--player-identity",
@@ -1623,6 +1651,8 @@ def build_mtb_publish_job(
     prediction_week: str,
     current_only: bool,
     strict: bool,
+    overwrite_week_archive: bool = False,
+    allow_partial_week_archive: bool = False,
 ) -> Job:
     """Build the local MattyTheBookie CSV publishing command."""
     command = [
@@ -1648,22 +1678,26 @@ def build_mtb_publish_job(
         command.append("--current-only")
     if strict:
         command.append("--strict")
+    if overwrite_week_archive:
+        command.append("--overwrite-week-archive")
+    if allow_partial_week_archive:
+        command.append("--allow-partial-week-archive")
 
     return Job("publish_mtb_csvs", command)
 
 
-def build_mtb_import_job(*, repo_dir: Path) -> Job:
+def build_mtb_import_job(*, repo_dir: Path, overwrite_archive: bool = False) -> Job:
     """Build the local MattyTheBookie JSON import command."""
-    return Job(
-        "import_mtb_predictions",
-        [
-            "python",
-            "-m",
-            "tools.import_mtb_predictions",
-            "--repo-dir",
-            str(repo_dir),
-        ],
-    )
+    command = [
+        "python",
+        "-m",
+        "tools.import_mtb_predictions",
+        "--repo-dir",
+        str(repo_dir),
+    ]
+    if overwrite_archive:
+        command.append("--overwrite-archive")
+    return Job("import_mtb_predictions", command)
 
 
 
@@ -1805,6 +1839,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print("[pipeline] Visual Crossing API key not found; skipping Visual Crossing weather job.")
 
+    tomorrow_key = get_secret("TOMORROW_API_KEY") or get_secret("TOMORROWIO_API_KEY")
+
+    include_tomorrow_weather = bool(tomorrow_key) and not args.skip_tomorrow_weather
+
+    if args.skip_tomorrow_weather:
+
+        print("[pipeline] Tomorrow.io live weather fetch skipped via flag; Visual Crossing/NOAA/fallback remain enabled.")
+
+    elif not tomorrow_key:
+
+        print("[pipeline] Tomorrow.io API key not found; skipping live weather refresh.")
+
 
     propline_key = get_secret("PROPLINE_API_KEY")
 
@@ -1914,6 +1960,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         tuning_options=tuning_options,
         skip_logit=args.skip_logit,
         skip_market_roi=args.skip_market_roi,
+        include_tomorrow_weather=include_tomorrow_weather,
         volatility_options=volatility_options,
         cv_folds=args.cv_folds,
         prediction_week=args.prediction_week,
@@ -1929,10 +1976,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prediction_week=args.prediction_week,
                 current_only=args.mtb_current_only,
                 strict=args.mtb_publish_strict,
+                overwrite_week_archive=args.mtb_overwrite_week_archive,
+                allow_partial_week_archive=args.mtb_allow_partial_week_archive,
             )
         )
         if not args.skip_mtb_import:
-            sequential_jobs.append(build_mtb_import_job(repo_dir=args.mtb_repo_dir))
+            sequential_jobs.append(
+                build_mtb_import_job(
+                    repo_dir=args.mtb_repo_dir,
+                    overwrite_archive=args.mtb_overwrite_week_archive,
+                )
+            )
     print(f"[pipeline] Running {len(sequential_jobs)} sequential jobs")
     run_jobs_sequential(sequential_jobs, env=env, dry_run=args.dry_run)
 

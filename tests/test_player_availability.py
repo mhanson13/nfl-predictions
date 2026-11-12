@@ -113,6 +113,48 @@ def test_build_current_player_availability_bridges_espn_roster_to_gsis_ids(tmp_p
     assert len(loaded) == len(availability)
 
 
+def test_build_current_player_availability_stamps_latest_roster_rows_to_target_week(tmp_path):
+    nfl_rosters_path = tmp_path / "nfl_rosters.parquet"
+    pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 1,
+                "gsis_id": "old-1",
+                "espn_id": 100,
+                "team": "ATL",
+                "football_name": "Old One",
+                "position": "WR",
+                "status": "ACT",
+            },
+            {
+                "season": 2026,
+                "week": 7,
+                "gsis_id": "latest-1",
+                "espn_id": 200,
+                "team": "BUF",
+                "football_name": "Latest One",
+                "position": "RB",
+                "status": "ACT",
+            },
+        ]
+    ).to_parquet(nfl_rosters_path, index=False)
+
+    availability = build_current_player_availability(
+        season=2026,
+        week=8,
+        espn_rosters_path=tmp_path / "missing_espn_rosters.parquet",
+        espn_depthcharts_path=tmp_path / "missing_espn_depthcharts.parquet",
+        espn_injuries_path=tmp_path / "missing_espn_injuries.parquet",
+        nfl_rosters_path=nfl_rosters_path,
+        balldontlie_active_players_path=tmp_path / "missing_bdl_players.parquet",
+    )
+
+    assert set(availability["week"].dropna().astype(int)) == {8}
+    assert set(availability["season"].dropna().astype(int)) == {2026}
+    assert set(availability["player_id"].astype(str)) == {"old-1", "latest-1"}
+
+
 def test_attach_player_availability_marks_roster_validation_flags():
     predictions = pd.DataFrame(
         [

@@ -133,6 +133,11 @@ class TestParseArgs:
             "player_sacks",
         ]
 
+    def test_skip_tomorrow_weather_flag_parse(self):
+        args = self.rp.parse_args(["--skip-tomorrow-weather"])
+
+        assert args.skip_tomorrow_weather is True
+
     def test_mtb_publish_flags_parse(self):
         args = self.rp.parse_args([
             "--publish-mtb",
@@ -142,6 +147,8 @@ class TestParseArgs:
             "data/prediction-csvs",
             "--mtb-current-only",
             "--mtb-publish-strict",
+            "--mtb-overwrite-week-archive",
+            "--mtb-allow-partial-week-archive",
             "--skip-mtb-import",
         ])
 
@@ -150,6 +157,8 @@ class TestParseArgs:
         assert args.mtb_csv_dir == Path("data/prediction-csvs")
         assert args.mtb_current_only is True
         assert args.mtb_publish_strict is True
+        assert args.mtb_overwrite_week_archive is True
+        assert args.mtb_allow_partial_week_archive is True
         assert args.skip_mtb_import is True
 
 
@@ -350,6 +359,35 @@ class TestBuildSequentialJobs:
         assert predict_job.command[week_arg_index + 1] == "1"
         assert "--exclude-started" not in predict_job.command
 
+    def test_weather_jobs_can_use_visualcrossing_without_tomorrow(self, tmp_path):
+        jobs = self.rp.build_sequential_jobs(
+            years=[2026],
+            current_year=2026,
+            pred_dir=tmp_path / "predictions",
+            debug_flag=[],
+            skip_evaluation=True,
+            include_visualcrossing=True,
+            train_start_year=2016,
+            calibration_season_window=3,
+            use_gpu=False,
+            calibrate_winprob=False,
+            enable_tuning=False,
+            tuning_dir=tmp_path / "tuning",
+            tuning_options={},
+            skip_logit=True,
+            skip_market_roi=True,
+            include_tomorrow_weather=False,
+            volatility_options={"skip": True},
+            prediction_week="1",
+        )
+
+        names = [job.name for job in jobs]
+        assert "weather" not in names
+        assert "visualcrossing_weather" in names
+        visualcrossing_job = next(job for job in jobs if job.name == "visualcrossing_weather")
+        assert visualcrossing_job.command[:3] == ["python", "-m", "src.data.visualcrossing"]
+        assert "--only-missing" in visualcrossing_job.command
+
     def test_live_exclude_is_passed_to_training_and_analysis_jobs(self, tmp_path):
         jobs = self.rp.build_sequential_jobs(
             years=[2024, 2025, 2026],
@@ -385,6 +423,10 @@ class TestBuildSequentialJobs:
             "player_prop_features",
             "evaluate_player_prop_baselines",
             "train_player_prop_models",
+            "join_historical_player_prop_lines",
+            "evaluate_player_prop_confidence_tiers",
+            "evaluate_player_prop_over_probability",
+            "backtest_player_prop_edges",
         ]:
             command = next(job.command for job in jobs if job.name == name)
             assert "--exclude-from-season" in command
@@ -499,6 +541,7 @@ class TestBuildSequentialJobs:
         )
         assert "--novelty-labels" in player_props_job.command
         assert str(tmp_path / "predictions" / "player_props_qb.csv") in player_props_job.command
+        assert str(tmp_path / "predictions" / "player_props_public.csv") in player_props_job.command
 
         prop_quality_job = next(job for job in jobs if job.name == "player_prop_quality_report")
         assert prop_quality_job.command[prop_quality_job.command.index("--season") + 1] == "2026"
@@ -584,6 +627,8 @@ class TestBuildMtbPublishJob:
             prediction_week="2",
             current_only=True,
             strict=True,
+            overwrite_week_archive=True,
+            allow_partial_week_archive=True,
         )
 
         assert job.name == "publish_mtb_csvs"
@@ -596,6 +641,8 @@ class TestBuildMtbPublishJob:
         assert job.command[job.command.index("--week") + 1] == "2"
         assert "--current-only" in job.command
         assert "--strict" in job.command
+        assert "--overwrite-week-archive" in job.command
+        assert "--allow-partial-week-archive" in job.command
 
     def test_build_mtb_publish_job_skips_auto_week_archive(self):
         job = self.rp.build_mtb_publish_job(
@@ -618,6 +665,11 @@ class TestBuildMtbPublishJob:
         assert job.command[:3] == ["python", "-m", "tools.import_mtb_predictions"]
         assert "--repo-dir" in job.command
         assert Path(job.command[job.command.index("--repo-dir") + 1]) == Path("C:/Code/mtb")
+
+    def test_build_mtb_import_job_can_overwrite_archive(self):
+        job = self.rp.build_mtb_import_job(repo_dir=Path("C:/Code/mtb"), overwrite_archive=True)
+
+        assert "--overwrite-archive" in job.command
 
 
 # ---------------------------------------------------------------------------

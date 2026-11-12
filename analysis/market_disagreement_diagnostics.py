@@ -53,6 +53,10 @@ POLICY_RECONCILE_COLUMNS = [
     "disagreement_recommendation_gate_segments",
     "disagreement_recommendation_gate_candidate_segments",
     "disagreement_recommendation_gate_blocked_segments",
+    "disagreement_recommendation_gate_probability_edge_candidate_segments",
+    "disagreement_recommendation_gate_probability_edge_blocked_segments",
+    "disagreement_recommendation_gate_odds_bucket_candidate_segments",
+    "disagreement_recommendation_gate_odds_bucket_blocked_segments",
     "disagreement_recommendation_gate_candidate_count",
     "disagreement_recommendation_gate_blocked_count",
     "disagreement_recommendation_gate_max_probability_edge",
@@ -593,19 +597,37 @@ def reconcile_market_edge_policy(
         )
         status = "unavailable"
 
-    candidate_segments = _recommendation_segments(
+    candidate_probability_segments = _recommendation_segments(
         recommendations,
         action="candidate_model_side_segment",
         family="prob_edge_bin",
     )
-    blocked_segments = _recommendation_segments(
+    blocked_probability_segments = _recommendation_segments(
         recommendations,
         action="avoid_model_side_segment",
         family="prob_edge_bin",
     )
+    candidate_odds_bucket_segments = _recommendation_segments(
+        recommendations,
+        action="candidate_model_side_segment",
+        family="model_side_odds_bucket",
+    )
+    blocked_odds_bucket_segments = _recommendation_segments(
+        recommendations,
+        action="avoid_model_side_segment",
+        family="model_side_odds_bucket",
+    )
     label_set = set(labels)
-    matching_candidates = sorted(label_set.intersection(candidate_segments), key=labels.index)
-    matching_blocked = sorted(label_set.intersection(blocked_segments), key=labels.index)
+    matching_probability_candidates = sorted(
+        label_set.intersection(candidate_probability_segments),
+        key=labels.index,
+    )
+    matching_probability_blocked = sorted(
+        label_set.intersection(blocked_probability_segments),
+        key=labels.index,
+    )
+    matching_candidates = matching_probability_candidates + sorted(candidate_odds_bucket_segments)
+    matching_blocked = matching_probability_blocked + sorted(blocked_odds_bucket_segments)
 
     if not labels:
         status = status if status != "unavailable" else "no_actionable_probability_edge_segments"
@@ -615,7 +637,7 @@ def reconcile_market_edge_policy(
         status = "missing_disagreement_recommendations"
         gate_pass = False
         tier_override = "review"
-    elif matching_blocked:
+    elif matching_probability_blocked:
         status = "blocked_diagnostic_avoid_segment"
         gate_pass = False
         tier_override = "no_bet"
@@ -630,10 +652,25 @@ def reconcile_market_edge_policy(
 
     out.at[idx, "disagreement_recommendation_gate_pass"] = bool(gate_pass)
     out.at[idx, "disagreement_recommendation_gate_status"] = status
-    out.at[idx, "disagreement_recommendation_gate_family"] = "prob_edge_bin"
+    families = ["prob_edge_bin"]
+    if candidate_odds_bucket_segments or blocked_odds_bucket_segments:
+        families.append("model_side_odds_bucket")
+    out.at[idx, "disagreement_recommendation_gate_family"] = ";".join(families)
     out.at[idx, "disagreement_recommendation_gate_segments"] = ";".join(labels)
-    out.at[idx, "disagreement_recommendation_gate_candidate_segments"] = ";".join(matching_candidates)
-    out.at[idx, "disagreement_recommendation_gate_blocked_segments"] = ";".join(matching_blocked)
+    out.at[idx, "disagreement_recommendation_gate_candidate_segments"] = ";".join(matching_probability_candidates)
+    out.at[idx, "disagreement_recommendation_gate_blocked_segments"] = ";".join(matching_probability_blocked)
+    out.at[idx, "disagreement_recommendation_gate_probability_edge_candidate_segments"] = ";".join(
+        matching_probability_candidates
+    )
+    out.at[idx, "disagreement_recommendation_gate_probability_edge_blocked_segments"] = ";".join(
+        matching_probability_blocked
+    )
+    out.at[idx, "disagreement_recommendation_gate_odds_bucket_candidate_segments"] = ";".join(
+        sorted(candidate_odds_bucket_segments)
+    )
+    out.at[idx, "disagreement_recommendation_gate_odds_bucket_blocked_segments"] = ";".join(
+        sorted(blocked_odds_bucket_segments)
+    )
     out.at[idx, "disagreement_recommendation_gate_candidate_count"] = int(len(matching_candidates))
     out.at[idx, "disagreement_recommendation_gate_blocked_count"] = int(len(matching_blocked))
     out.at[idx, "disagreement_recommendation_gate_max_probability_edge"] = float(max_probability_edge)

@@ -342,8 +342,11 @@ def add_walk_forward_over_probabilities(
     market_blend_strength: float = DEFAULT_MARKET_BLEND_STRENGTH,
     market_blend_min_weight: float = DEFAULT_MARKET_BLEND_MIN_WEIGHT,
     market_blend_max_weight: float = DEFAULT_MARKET_BLEND_MAX_WEIGHT,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
 ) -> pd.DataFrame:
     prepared = prepare_probability_input(frame)
+    prepared = filter_before_week(prepared, exclude_from_season, exclude_from_week)
     if prepared.empty:
         return pd.DataFrame(columns=PROBABILITY_OUTPUT_COLUMNS)
 
@@ -628,6 +631,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-blend-strength", type=float, default=DEFAULT_MARKET_BLEND_STRENGTH)
     parser.add_argument("--market-blend-min-weight", type=float, default=DEFAULT_MARKET_BLEND_MIN_WEIGHT)
     parser.add_argument("--market-blend-max-weight", type=float, default=DEFAULT_MARKET_BLEND_MAX_WEIGHT)
+    parser.add_argument("--exclude-from-season", type=int, default=None)
+    parser.add_argument("--exclude-from-week", type=int, default=None)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -645,6 +650,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         market_blend_strength=args.market_blend_strength,
         market_blend_min_weight=args.market_blend_min_weight,
         market_blend_max_weight=args.market_blend_max_weight,
+        exclude_from_season=args.exclude_from_season,
+        exclude_from_week=args.exclude_from_week,
     )
     generated_at = datetime.now(timezone.utc).isoformat()
     metrics = summarize_over_probability(scored, generated_at=generated_at)

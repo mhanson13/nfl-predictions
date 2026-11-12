@@ -95,6 +95,7 @@ def test_build_quality_reports_summarizes_bettable_lines_and_flags():
     assert overall["edge_recommended_rows"] == 1
     assert overall["edge_strong_rows"] == 1
     assert overall["edge_below_threshold_rows"] == 1
+    assert overall["edge_no_positive_ev_rows"] == 0
     assert overall["edge_unavailable_rows"] == 1
     assert overall["injury_review_rows"] == 1
     assert overall["injury_exclusion_rows"] == 1
@@ -637,6 +638,104 @@ def test_build_line_gap_audit_reports_prediction_and_offer_gaps():
     offer_gap = audit[audit["gap_type"].eq("offered_pair_without_prediction")].iloc[0]
     assert offer_gap["sportsbook"] == "draftkings"
     assert offer_gap["offered_player_name_key"] == "o:back"
+    assert offer_gap["offer_gap_category"] == "identity_unmatched_offer"
+    assert "could not be matched" in offer_gap["reason"]
+
+
+def test_build_line_gap_audit_classifies_offer_gaps_with_identity_context():
+    predictions = pd.DataFrame()
+    odds = pd.DataFrame(
+        [
+            {
+                "home_team": "ATL Falcons",
+                "away_team": "CAR Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": market_key,
+                "outcome_name": outcome_name,
+                "player_name": player_name,
+                "price": -110,
+                "point": point,
+            }
+            for market_key, outcome_name, player_name, point in [
+                ("player_anytime_td", "Anytime Touchdown Scorer", "ATL Falcons D/ST", None),
+                ("player_1st_td", "First Touchdown Scorer", "No Touchdown Scorer", None),
+                ("player_rush_yds", "Over", "QB One", 34.5),
+                ("player_rush_yds", "Under", "QB One", 34.5),
+                ("player_rush_yds", "Over", "RB One", 62.5),
+                ("player_rush_yds", "Under", "RB One", 62.5),
+            ]
+        ]
+    )
+    identity = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "team": "ATL",
+                "player_id": "qb-1",
+                "alias_name": "QB One",
+                "position": "QB",
+                "position_group": "QB",
+                "alias_confidence": 1.0,
+            },
+            {
+                "season": 2026,
+                "week": 3,
+                "team": "ATL",
+                "player_id": "rb-1",
+                "alias_name": "RB One",
+                "position": "RB",
+                "position_group": "RB",
+                "alias_confidence": 1.0,
+            },
+        ]
+    )
+    availability = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "player_id": player_id,
+                "current_team": "ATL",
+                "active_roster_flag": True,
+                "practice_squad_flag": False,
+                "injured_reserve_flag": False,
+                "availability_status": "active",
+            }
+            for player_id in ["qb-1", "rb-1"]
+        ]
+    )
+    labels = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "player_id": "rb-1",
+                "market": "rb_rushing_yards",
+            }
+        ]
+    )
+
+    audit = build_line_gap_audit(
+        predictions,
+        odds,
+        season=2026,
+        week=3,
+        vendors=["draftkings"],
+        identity=identity,
+        availability=availability,
+        labels=labels,
+        generated_at="2026-09-22T00:00:00+00:00",
+    )
+
+    by_player = audit.set_index("player_name")
+    assert by_player.loc["ATL Falcons D/ST", "offer_gap_category"] == "non_player_dst"
+    assert by_player.loc["No Touchdown Scorer", "offer_gap_category"] == "non_player_no_touchdown_scorer"
+    assert by_player.loc["QB One", "offer_gap_category"] == "unsupported_position_for_modeled_market"
+    assert by_player.loc["QB One", "offered_position_group"] == "QB"
+    assert by_player.loc["RB One", "offer_gap_category"] == "candidate_expansion_gap"
+    assert by_player.loc["RB One", "offered_player_id"] == "rb-1"
+    assert "true prediction-universe expansion candidate" in by_player.loc["RB One", "reason"]
 
 
 def test_load_prop_predictions_includes_novelty_file(tmp_path):

@@ -220,3 +220,17 @@ def test_attach_current_over_probabilities_updates_lined_rows_only():
     assert lined["prob_over"] > 0.5
     assert lined["prob_edge"] == lined["prob_over"] - 0.51
     assert pd.isna(unlined["prob_over"])
+
+
+def test_walk_forward_over_probabilities_excludes_live_week_rows():
+    live = _historical_lines().assign(season=2026, week=8, game_id="2026_08_CAR_ATL")
+    scored = add_walk_forward_over_probabilities(
+        pd.concat([_historical_lines(), live], ignore_index=True),
+        min_samples=2,
+        shrinkage=0,
+        exclude_from_season=2026,
+        exclude_from_week=8,
+    )
+
+    assert not scored.empty
+    assert set(scored["season"]) == {2025}

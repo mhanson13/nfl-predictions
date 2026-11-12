@@ -12,13 +12,22 @@ from src.player_props.predict import (
     ANYTIME_TD_FALLBACK_LINE_TYPE,
     DEFAULT_ODDS_VENDORS,
     DEFAULT_PLAYER_IDENTITY_PATH,
+    LINE_OFFERED_CANDIDATE_POSITION_GROUPS,
+    LINE_OFFERED_NOVELTY_CANDIDATE_POSITION_GROUPS,
     PROPLINE_MARKET_TO_MODEL_MARKET,
     _add_anytime_td_fallback_odds,
+    _clean_team,
     _game_identity_parts,
     _prepare_player_identity,
     _player_name_key,
     _player_name_prefix_key,
+    _team_abbr_from_name,
     prepare_player_prop_odds,
+)
+from src.player_availability import DEFAULT_OUTPUT_PATH as DEFAULT_AVAILABILITY_PATH
+from src.player_props.labels import (
+    DEFAULT_NOVELTY_TD_OUTPUT_PATH as DEFAULT_NOVELTY_LABELS_PATH,
+    DEFAULT_OUTPUT_PATH as DEFAULT_LABELS_PATH,
 )
 from src.utils.io import RAW_DIR, read_df
 
@@ -50,6 +59,7 @@ REPORT_COLUMNS = [
     "edge_strong_rows",
     "edge_lean_rows",
     "edge_below_threshold_rows",
+    "edge_no_positive_ev_rows",
     "edge_unavailable_rows",
     "injury_reported_rows",
     "injury_review_rows",
@@ -139,13 +149,18 @@ LINE_GAP_AUDIT_COLUMNS = [
     "season",
     "week",
     "gap_type",
+    "offer_gap_category",
     "prediction_group",
     "game_id",
     "team",
+    "offered_team",
     "player_id",
+    "offered_player_id",
     "player_name",
     "position",
+    "offered_position",
     "position_group",
+    "offered_position_group",
     "market",
     "sportsbook",
     "line",
@@ -267,6 +282,7 @@ def _summarize(
         "edge_strong_rows": int(edge_tier.eq("strong").sum()),
         "edge_lean_rows": int(edge_tier.eq("lean").sum()),
         "edge_below_threshold_rows": int(edge_tier.eq("below_threshold").sum()),
+        "edge_no_positive_ev_rows": int(edge_tier.eq("no_positive_ev").sum()),
         "edge_unavailable_rows": int(edge_tier.eq("unavailable").sum()),
         "injury_reported_rows": int(_as_bool(frame, "injury_reported").sum()),
         "injury_review_rows": int(frame.get("prop_quality_flag", pd.Series("", index=frame.index)).eq("injury_review").sum()),
@@ -428,6 +444,36 @@ def _raw_odds_for_coverage(odds: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def _raw_propline_player_lookup(odds: pd.DataFrame, *, season: int, week: int, vendors: Sequence[str]) -> pd.DataFrame:
+    required = {"home_team", "away_team", "bookmaker_key", "market_key", "player_name"}
+    if odds.empty or not required.issubset(odds.columns):
+        return pd.DataFrame()
+    out = odds.copy()
+    out["sportsbook"] = out["bookmaker_key"].astype("string").str.strip().str.lower()
+    vendor_set = {str(vendor).strip().lower() for vendor in vendors if str(vendor).strip()}
+    if vendor_set:
+        out = out[out["sportsbook"].isin(vendor_set)].copy()
+    out["market"] = out["market_key"].map(PROPLINE_MARKET_TO_MODEL_MARKET)
+    out["home_abbr"] = out["home_team"].apply(_team_abbr_from_name)
+    out["away_abbr"] = out["away_team"].apply(_team_abbr_from_name)
+    out = out.dropna(subset=["market", "home_abbr", "away_abbr", "player_name"]).copy()
+    if out.empty:
+        return pd.DataFrame()
+    if "game_id" not in out.columns:
+        out["game_id"] = pd.NA
+    source_game_id = out["game_id"].astype("string").str.strip()
+    computed_game_id = out.apply(
+        lambda row: f"{int(season)}_{int(week):02d}_{row['away_abbr']}_{row['home_abbr']}",
+        axis=1,
+    )
+    out["game_id"] = source_game_id.where(source_game_id.notna() & source_game_id.ne(""), computed_game_id)
+    out["player_name_key"] = out["player_name"].apply(_player_name_key)
+    out["player_name_prefix_key"] = out["player_name"].apply(_player_name_prefix_key)
+    return out[
+        ["game_id", "market", "player_name_key", "player_name_prefix_key", "player_name"]
+    ].drop_duplicates()
+
+
 def _split_csv_values(value: object) -> list[str]:
     if value is None or pd.isna(value):
         return []
@@ -468,6 +514,13 @@ def _prepared_odds_for_coverage(
         return empty
     if {"bookmaker_key", "market_key", "outcome_name", "player_name", "price", "point"}.issubset(odds.columns):
         prepared = prepare_player_prop_odds(odds, season=season, week=week, vendor=vendors)
+        raw_names = _raw_propline_player_lookup(odds, season=season, week=week, vendors=vendors)
+        if not prepared.empty and not raw_names.empty and "player_name" not in prepared.columns:
+            prepared = prepared.merge(
+                raw_names,
+                on=["game_id", "market", "player_name_key", "player_name_prefix_key"],
+                how="left",
+            )
         return _add_anytime_td_fallback_odds(
             prepared,
             predictions if predictions is not None else pd.DataFrame(),
@@ -482,6 +535,315 @@ def _prepared_odds_for_coverage(
             identity_table=identity_table,
         )
     return empty
+
+
+def _prepare_offer_identity(identity: pd.DataFrame | None) -> pd.DataFrame:
+    """Prepare identity rows for diagnosing offered sportsbook players."""
+    if identity is None or identity.empty:
+        return pd.DataFrame()
+    required = {"season", "week", "team", "player_id"}
+    if missing := required - set(identity.columns):
+        raise ValueError(f"Player identity table missing required columns: {sorted(missing)}")
+
+    out = identity.copy()
+    out["identity_season"] = pd.to_numeric(out["season"], errors="coerce")
+    out["identity_week"] = pd.to_numeric(out["week"], errors="coerce")
+    out["identity_team"] = out["team"].apply(_clean_team)
+    out["identity_player_id"] = out["player_id"].astype("string").str.strip()
+    if "alias_name_key" not in out.columns:
+        out["alias_name_key"] = out.get("alias_name", pd.Series(pd.NA, index=out.index)).apply(_player_name_key)
+    if "alias_prefix_key" not in out.columns:
+        out["alias_prefix_key"] = out.get("alias_name", pd.Series(pd.NA, index=out.index)).apply(_player_name_prefix_key)
+    out["alias_name_key"] = out["alias_name_key"].astype("string").str.strip()
+    out["alias_prefix_key"] = out["alias_prefix_key"].astype("string").str.strip()
+    if "alias_confidence" not in out.columns:
+        out["alias_confidence"] = 0.0
+    out["alias_confidence"] = pd.to_numeric(out["alias_confidence"], errors="coerce").fillna(0.0)
+
+    for col in ["canonical_name", "position", "position_group", "status"]:
+        if col not in out.columns:
+            out[col] = pd.NA
+    out["identity_position"] = out["position"].astype("string").str.strip().str.upper()
+    out["identity_position_group"] = out["position_group"].astype("string").str.strip().str.upper()
+    out["identity_status"] = out["status"].astype("string").str.strip()
+    out["identity_canonical_name"] = out["canonical_name"]
+
+    keys = ["identity_season", "identity_week", "identity_team", "alias_name_key", "alias_prefix_key"]
+    out = out.dropna(subset=[*keys, "identity_player_id"]).copy()
+    if out.empty:
+        return pd.DataFrame()
+    out["identity_season"] = out["identity_season"].astype(int)
+    out["identity_week"] = out["identity_week"].astype(int)
+    counts = (
+        out.groupby(keys, dropna=False)["identity_player_id"]
+        .nunique(dropna=True)
+        .reset_index(name="_identity_player_count")
+    )
+    out = out.merge(counts, on=keys, how="left")
+    out = out[out["_identity_player_count"].eq(1)].copy()
+    out = out.sort_values(keys + ["alias_confidence"], ascending=[True, True, True, True, True, False], kind="stable")
+    out = out.drop_duplicates(keys, keep="first")
+    return out[
+        keys
+        + [
+            "identity_player_id",
+            "identity_position",
+            "identity_position_group",
+            "identity_status",
+            "identity_canonical_name",
+        ]
+    ].reset_index(drop=True)
+
+
+def _prepare_offer_availability(availability: pd.DataFrame | None, *, season: int, week: int) -> pd.DataFrame:
+    if availability is None or availability.empty or "player_id" not in availability.columns:
+        return pd.DataFrame()
+
+    out = availability.copy()
+    if {"season", "week"}.issubset(out.columns):
+        season_values = pd.to_numeric(out["season"], errors="coerce")
+        week_values = pd.to_numeric(out["week"], errors="coerce")
+        exact_week = season_values.eq(int(season)) & week_values.eq(int(week))
+        if exact_week.any():
+            out = out[exact_week].copy()
+
+    out["identity_player_id"] = out["player_id"].astype("string").str.strip()
+    team_source = out["current_team"] if "current_team" in out.columns else out.get("team", pd.Series(pd.NA, index=out.index))
+    out["availability_team"] = team_source.apply(_clean_team)
+    for col in ["active_roster_flag", "practice_squad_flag", "injured_reserve_flag"]:
+        if col not in out.columns:
+            out[col] = False
+        out[col] = out[col].astype("boolean").fillna(False)
+    for col in ["availability_status", "availability_priority"]:
+        if col not in out.columns:
+            out[col] = pd.NA
+    out["availability_priority"] = pd.to_numeric(out["availability_priority"], errors="coerce").fillna(0)
+    out = out.dropna(subset=["identity_player_id"]).copy()
+    if out.empty:
+        return pd.DataFrame()
+    keep = [
+        "identity_player_id",
+        "availability_team",
+        "active_roster_flag",
+        "practice_squad_flag",
+        "injured_reserve_flag",
+        "availability_status",
+        "availability_priority",
+    ]
+    out = out.sort_values(["identity_player_id", "availability_priority"], ascending=[True, False], kind="stable")
+    return out[keep].drop_duplicates("identity_player_id", keep="first").reset_index(drop=True)
+
+
+def _prior_history_keys(
+    labels: pd.DataFrame | None,
+    novelty_labels: pd.DataFrame | None,
+    *,
+    season: int,
+    week: int,
+) -> set[tuple[str, str]]:
+    frames = [frame for frame in [labels, novelty_labels] if frame is not None and not frame.empty]
+    if not frames:
+        return set()
+    required = {"season", "week", "player_id", "market"}
+    prepared: list[pd.DataFrame] = []
+    for frame in frames:
+        if not required.issubset(frame.columns):
+            continue
+        out = frame[list(required)].copy()
+        out["season"] = pd.to_numeric(out["season"], errors="coerce")
+        out["week"] = pd.to_numeric(out["week"], errors="coerce")
+        out["player_id"] = out["player_id"].astype("string").str.strip()
+        out["market"] = out["market"].astype("string").str.strip().str.lower()
+        out = out.dropna(subset=["season", "week", "player_id", "market"])
+        out["season"] = out["season"].astype(int)
+        out["week"] = out["week"].astype(int)
+        out = out[(out["season"].lt(int(season))) | (out["season"].eq(int(season)) & out["week"].lt(int(week)))]
+        prepared.append(out[["player_id", "market"]])
+    if not prepared:
+        return set()
+    history = pd.concat(prepared, ignore_index=True, sort=False).drop_duplicates()
+    return set(map(tuple, history.astype(str).to_numpy()))
+
+
+def _market_allowed_position_groups(market: object) -> frozenset[str]:
+    market_text = str(market).strip().lower()
+    if market_text in LINE_OFFERED_NOVELTY_CANDIDATE_POSITION_GROUPS:
+        return LINE_OFFERED_NOVELTY_CANDIDATE_POSITION_GROUPS[market_text]
+    return LINE_OFFERED_CANDIDATE_POSITION_GROUPS.get(market_text, frozenset())
+
+
+def _non_player_offer_category(player_name: object) -> str | None:
+    name = "" if player_name is None or pd.isna(player_name) else str(player_name).strip().lower()
+    if not name:
+        return None
+    if "no touchdown scorer" in name:
+        return "non_player_no_touchdown_scorer"
+    if "d/st" in name or "defense/special teams" in name:
+        return "non_player_dst"
+    return None
+
+
+def _classify_offer_gap(record: Mapping[str, object], history_keys: set[tuple[str, str]]) -> str:
+    non_player = _non_player_offer_category(record.get("player_name"))
+    if non_player:
+        return non_player
+    player_id = record.get("identity_player_id")
+    if player_id is None or pd.isna(player_id):
+        return "identity_unmatched_offer"
+
+    active = record.get("active_roster_flag")
+    practice = record.get("practice_squad_flag")
+    injured_reserve = record.get("injured_reserve_flag")
+    has_availability = not pd.isna(active) if active is not None else False
+    if not has_availability:
+        return "availability_unmatched_offer"
+    if bool(injured_reserve):
+        return "injured_reserve_offer"
+    if bool(practice):
+        return "practice_squad_offer"
+    if not bool(active):
+        return "inactive_roster_offer"
+
+    allowed_groups = _market_allowed_position_groups(record.get("market"))
+    offered_group = record.get("identity_position_group")
+    offered_group_text = "" if offered_group is None or pd.isna(offered_group) else str(offered_group).strip().upper()
+    if allowed_groups and offered_group_text not in allowed_groups:
+        return "unsupported_position_for_modeled_market"
+    history_key = (str(player_id).strip(), str(record.get("market")).strip().lower())
+    if history_key not in history_keys:
+        return "missing_prior_market_history"
+    return "candidate_expansion_gap"
+
+
+def _offer_gap_reason(category: object) -> str:
+    reasons = {
+        "non_player_dst": "Sportsbook offer is a team D/ST outcome; player-prop models publish individual-player rows only.",
+        "non_player_no_touchdown_scorer": "Sportsbook offer is No Touchdown Scorer; no individual player projection exists for that outcome.",
+        "identity_unmatched_offer": "Sportsbook offer could not be matched to a unique player identity for this game/team/name.",
+        "availability_unmatched_offer": "Sportsbook offer matched player identity, but current active-roster availability was unavailable.",
+        "inactive_roster_offer": "Sportsbook offer matched player identity, but current availability does not mark the player active.",
+        "practice_squad_offer": "Sportsbook offer matched player identity, but current availability marks the player as practice squad.",
+        "injured_reserve_offer": "Sportsbook offer matched player identity, but current availability marks the player as injured reserve.",
+        "unsupported_position_for_modeled_market": (
+            "Sportsbook offer matched an active player, but the player's position group is outside the "
+            "currently modeled position set for this market."
+        ),
+        "missing_prior_market_history": (
+            "Sportsbook offer matched an active player, but no prior pre-week labels exist for this player/market; "
+            "the model cannot add a history-based candidate safely yet."
+        ),
+        "candidate_expansion_gap": (
+            "Sportsbook offer matched an active player with prior pre-week labels for this market; "
+            "this is a true prediction-universe expansion candidate if it persists."
+        ),
+    }
+    key = "" if category is None or pd.isna(category) else str(category)
+    return reasons.get(
+        key,
+        "PropLine offered this player/game/market, but the model universe did not publish a matching prediction.",
+    )
+
+
+def _attach_offer_gap_context(
+    offer: pd.DataFrame,
+    *,
+    identity: pd.DataFrame | None,
+    availability: pd.DataFrame | None,
+    labels: pd.DataFrame | None,
+    novelty_labels: pd.DataFrame | None,
+    season: int,
+    week: int,
+) -> pd.DataFrame:
+    if offer.empty:
+        return offer
+    out = offer.copy()
+    out["_offer_row_id"] = range(len(out))
+
+    identity_table = _prepare_offer_identity(identity)
+    if not identity_table.empty:
+        identity_source = out.dropna(subset=["game_id", "player_name_key", "player_name_prefix_key"]).copy()
+        parts = identity_source["game_id"].apply(_game_identity_parts)
+        identity_source["_identity_season"] = [part[0] for part in parts]
+        identity_source["_identity_week"] = [part[1] for part in parts]
+        identity_source["_identity_candidate_team"] = [part[2] for part in parts]
+        identity_source = identity_source.explode("_identity_candidate_team")
+        identity_source = identity_source.dropna(
+            subset=["_identity_season", "_identity_week", "_identity_candidate_team"]
+        ).copy()
+        if not identity_source.empty:
+            identity_source["_identity_season"] = identity_source["_identity_season"].astype(int)
+            identity_source["_identity_week"] = identity_source["_identity_week"].astype(int)
+            identity_source = identity_source[
+                identity_source["_identity_season"].eq(int(season))
+                & identity_source["_identity_week"].eq(int(week))
+            ].copy()
+            matches = identity_source.merge(
+                identity_table,
+                left_on=[
+                    "_identity_season",
+                    "_identity_week",
+                    "_identity_candidate_team",
+                    "player_name_key",
+                    "player_name_prefix_key",
+                ],
+                right_on=[
+                    "identity_season",
+                    "identity_week",
+                    "identity_team",
+                    "alias_name_key",
+                    "alias_prefix_key",
+                ],
+                how="inner",
+            )
+            if not matches.empty:
+                match_cols = [
+                    "_offer_row_id",
+                    "identity_team",
+                    "identity_player_id",
+                    "identity_position",
+                    "identity_position_group",
+                    "identity_status",
+                ]
+                matches = matches[match_cols].drop_duplicates("_offer_row_id", keep="first")
+                out = out.merge(matches, on="_offer_row_id", how="left")
+
+    availability_table = _prepare_offer_availability(availability, season=season, week=week)
+    if not availability_table.empty and "identity_player_id" in out.columns:
+        out = out.merge(availability_table, on="identity_player_id", how="left")
+
+    for col in [
+        "identity_team",
+        "identity_player_id",
+        "identity_position",
+        "identity_position_group",
+        "identity_status",
+        "active_roster_flag",
+        "practice_squad_flag",
+        "injured_reserve_flag",
+        "availability_status",
+    ]:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    history_keys = _prior_history_keys(labels, novelty_labels, season=season, week=week)
+    out["offer_gap_category"] = [
+        _classify_offer_gap(record, history_keys) for record in out.to_dict(orient="records")
+    ]
+    return out.drop(
+        columns=[
+            "_offer_row_id",
+            "_identity_season",
+            "_identity_week",
+            "_identity_candidate_team",
+            "identity_season",
+            "identity_week",
+            "alias_name_key",
+            "alias_prefix_key",
+            "availability_team",
+            "availability_priority",
+        ],
+        errors="ignore",
+    )
 
 
 def _offer_keys(frame: pd.DataFrame) -> set[tuple[str, str, str, str]]:
@@ -1076,6 +1438,9 @@ def build_line_gap_audit(
     week: int,
     vendors: Sequence[str] = DEFAULT_ODDS_VENDORS,
     identity: pd.DataFrame | None = None,
+    availability: pd.DataFrame | None = None,
+    labels: pd.DataFrame | None = None,
+    novelty_labels: pd.DataFrame | None = None,
     generated_at: str | None = None,
 ) -> pd.DataFrame:
     """Detail prediction/offer gaps behind the aggregate line coverage counts."""
@@ -1106,13 +1471,18 @@ def build_line_gap_audit(
                     "season": int(season),
                     "week": int(week),
                     "gap_type": "prediction_without_offered_line",
+                    "offer_gap_category": "prediction_without_offered_line",
                     "prediction_group": record.get("prediction_group"),
                     "game_id": record.get("game_id"),
                     "team": record.get("team"),
+                    "offered_team": pd.NA,
                     "player_id": record.get("player_id"),
+                    "offered_player_id": pd.NA,
                     "player_name": record.get("player_name"),
                     "position": record.get("position"),
+                    "offered_position": pd.NA,
                     "position_group": record.get("position_group"),
+                    "offered_position_group": pd.NA,
                     "market": record.get("market"),
                     "sportsbook": record.get("sportsbook"),
                     "line": record.get("line"),
@@ -1176,19 +1546,33 @@ def build_line_gap_audit(
                 subset=["game_id", "market", "player_name_key"],
                 keep="first",
             )
+            offer = _attach_offer_gap_context(
+                offer,
+                identity=identity,
+                availability=availability,
+                labels=labels,
+                novelty_labels=novelty_labels,
+                season=season,
+                week=week,
+            )
             for record in offer.to_dict(orient="records"):
                 rows.append(
                     {
                         "season": int(season),
                         "week": int(week),
                         "gap_type": "offered_pair_without_prediction",
+                        "offer_gap_category": record.get("offer_gap_category"),
                         "prediction_group": pd.NA,
                         "game_id": record.get("game_id"),
                         "team": pd.NA,
+                        "offered_team": record.get("identity_team"),
                         "player_id": pd.NA,
+                        "offered_player_id": record.get("identity_player_id"),
                         "player_name": record.get("player_name"),
                         "position": pd.NA,
+                        "offered_position": record.get("identity_position"),
                         "position_group": pd.NA,
+                        "offered_position_group": record.get("identity_position_group"),
                         "market": record.get("market"),
                         "sportsbook": record.get("_sportsbooks_available"),
                         "line": record.get("line"),
@@ -1197,12 +1581,12 @@ def build_line_gap_audit(
                         "under_odds": record.get("under_odds"),
                         "prop_quality_flag": pd.NA,
                         "roster_validation_flag": pd.NA,
-                        "availability_status": pd.NA,
+                        "availability_status": record.get("availability_status"),
                         "injury_status": pd.NA,
                         "prediction_player_name_key": pd.NA,
                         "offered_player_name_key": record.get("player_name_key"),
                         "offered_player_prefix_key": record.get("player_name_prefix_key"),
-                        "reason": "PropLine offered this player/game/market, but the model universe did not publish a matching prediction.",
+                        "reason": _offer_gap_reason(record.get("offer_gap_category")),
                         "generated_at": generated_at,
                     }
                 )
@@ -1218,6 +1602,9 @@ def write_quality_reports(
     week: int,
     odds_path: Path | None = None,
     player_identity_path: Path = DEFAULT_PLAYER_IDENTITY_PATH,
+    availability_path: Path = DEFAULT_AVAILABILITY_PATH,
+    labels_path: Path = DEFAULT_LABELS_PATH,
+    novelty_labels_path: Path = DEFAULT_NOVELTY_LABELS_PATH,
     generated_at: str | None = None,
 ) -> tuple[Path, Path, Path, Path, Path]:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
@@ -1230,6 +1617,9 @@ def write_quality_reports(
     )
     odds = _read_data_if_exists(odds_path or _default_odds_path(season, week))
     identity = _read_data_if_exists(player_identity_path)
+    availability = _read_data_if_exists(availability_path)
+    labels = _read_data_if_exists(labels_path)
+    novelty_labels = _read_data_if_exists(novelty_labels_path)
     coverage = build_line_coverage_report(
         predictions,
         odds,
@@ -1252,6 +1642,9 @@ def write_quality_reports(
         season=season,
         week=week,
         identity=identity,
+        availability=availability,
+        labels=labels,
+        novelty_labels=novelty_labels,
         generated_at=generated_at,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1279,6 +1672,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--odds-source", type=Path, default=None)
     parser.add_argument("--player-identity", type=Path, default=DEFAULT_PLAYER_IDENTITY_PATH)
+    parser.add_argument("--availability", type=Path, default=DEFAULT_AVAILABILITY_PATH)
+    parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
+    parser.add_argument("--novelty-labels", type=Path, default=DEFAULT_NOVELTY_LABELS_PATH)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -1292,6 +1688,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         week=args.week,
         odds_path=args.odds_source,
         player_identity_path=args.player_identity,
+        availability_path=args.availability,
+        labels_path=args.labels,
+        novelty_labels_path=args.novelty_labels,
     )
     if args.debug:
         summary = pd.read_csv(summary_path)
@@ -1309,6 +1708,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(line_gap_audit.to_string(index=False))
         else:
             print(line_gap_audit["gap_type"].value_counts(dropna=False).to_string())
+            if "offer_gap_category" in line_gap_audit.columns:
+                print(line_gap_audit["offer_gap_category"].value_counts(dropna=False).to_string())
             print(line_gap_audit.head(40).to_string(index=False))
     print(f"[player_props.quality] wrote detail -> {detail_path.resolve()}")
     print(f"[player_props.quality] wrote summary -> {summary_path.resolve()}")

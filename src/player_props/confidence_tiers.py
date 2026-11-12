@@ -17,6 +17,7 @@ from src.player_props.features import (
 from src.player_props.historical_lines import DEFAULT_OUTPUT_PATH as DEFAULT_LINE_EVAL_PATH
 from src.player_props.train import DEFAULT_OUTPUT_DIR, MODEL_PREDICTIONS_NAME
 from src.utils.io import read_df
+from src.utils.week_filter import filter_before_week
 
 
 DEFAULT_MODEL_PREDICTIONS_PATH = DEFAULT_OUTPUT_DIR / MODEL_PREDICTIONS_NAME
@@ -245,14 +246,26 @@ def build_confidence_tier_metrics(
     feature_frames: Sequence[pd.DataFrame],
     line_eval: pd.DataFrame | None = None,
     generated_at: str | None = None,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
 ) -> pd.DataFrame:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
-    sample_lookup = _feature_sample_lookup(feature_frames)
+    sample_lookup = filter_before_week(
+        _feature_sample_lookup(feature_frames),
+        exclude_from_season,
+        exclude_from_week,
+    )
     rows: list[dict[str, object]] = []
-    model = attach_confidence_tiers(model_predictions, sample_lookup)
+    model = attach_confidence_tiers(
+        filter_before_week(model_predictions, exclude_from_season, exclude_from_week),
+        sample_lookup,
+    )
     rows.extend(_summaries_for_frame(model, evaluation_scope="model_predictions", generated_at=generated_at))
     if line_eval is not None and not line_eval.empty:
-        lines = attach_confidence_tiers(line_eval, sample_lookup)
+        lines = attach_confidence_tiers(
+            filter_before_week(line_eval, exclude_from_season, exclude_from_week),
+            sample_lookup,
+        )
         rows.extend(_summaries_for_frame(lines, evaluation_scope="historical_lines", generated_at=generated_at))
     if not rows:
         return pd.DataFrame(columns=METRIC_COLUMNS)
@@ -274,6 +287,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--novelty-features", type=Path, default=DEFAULT_NOVELTY_OUTPUT_PATH)
     parser.add_argument("--line-eval", type=Path, default=DEFAULT_LINE_EVAL_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
+    parser.add_argument("--exclude-from-season", type=int, default=None)
+    parser.add_argument("--exclude-from-week", type=int, default=None)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -288,6 +303,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         feature_frames=feature_frames,
         line_eval=line_eval,
         generated_at=datetime.now(timezone.utc).isoformat(),
+        exclude_from_season=args.exclude_from_season,
+        exclude_from_week=args.exclude_from_week,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     metrics.to_csv(args.output, index=False)

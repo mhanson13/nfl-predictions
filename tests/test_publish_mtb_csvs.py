@@ -24,6 +24,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     _write_csv(source_root / "predictions" / "player_props_offense.csv", "player_id,projection\nrb,75\n")
     _write_csv(source_root / "predictions" / "player_props_defense.csv", "player_id,projection\ndl,0.5\n")
     _write_csv(source_root / "predictions" / "player_props_novelty.csv", "player_id,projection\n")
+    _write_csv(source_root / "predictions" / "player_props_public.csv", "player_id,public_board_status\nrb,no_bet\n")
     _write_csv(source_root / "predictions" / "evaluation" / "overall_metrics.csv", "metric,value\nauc,0.7\n")
     _write_csv(
         source_root / "predictions" / "evaluation" / "feature_family_ablation.csv",
@@ -131,6 +132,10 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
         source_root / "predictions" / "evaluation" / "player_props" / "confidence_tier_metrics.csv",
         "evaluation_scope,scope,n_rows\nhistorical_lines,overall,100\n",
     )
+    _write_csv(
+        source_root / "predictions" / "evaluation" / "player_props" / "edge_policy_diagnostics.csv",
+        "market,policy_failure_reason\nqb_passing_yards,non_positive_historical_roi\n",
+    )
 
     published = publish_csvs(
         source_root=source_root,
@@ -147,6 +152,7 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "current" / "player_props_offense.csv").exists()
     assert (destination_root / "current" / "player_props_defense.csv").exists()
     assert (destination_root / "current" / "player_props_novelty.csv").exists()
+    assert (destination_root / "current" / "player_props_public.csv").exists()
     assert (destination_root / "evaluation" / "overall_metrics.csv").exists()
     assert (destination_root / "evaluation" / "feature_family_ablation.csv").exists()
     assert (destination_root / "evaluation" / "live_prediction_vs_actual.csv").exists()
@@ -185,9 +191,11 @@ def test_publish_csvs_copies_current_diagnostics_and_week_snapshot(tmp_path):
     assert (destination_root / "evaluation" / "live_prediction_vs_actual_summary_week_02.csv").exists()
     assert (destination_root / "evaluation" / "live_prediction_vs_actual_segments_week_02.csv").exists()
     assert (destination_root / "evaluation" / "player_props" / "confidence_tier_metrics.csv").exists()
+    assert (destination_root / "evaluation" / "player_props" / "edge_policy_diagnostics.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "predictions.csv").exists()
     assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_qb.csv").exists()
-    assert len(published) == 50
+    assert (destination_root / "seasons" / "2026" / "week_02" / "player_props_public.csv").exists()
+    assert len(published) == 53
 
 
 def test_publish_csvs_requires_predictions_csv(tmp_path):
@@ -251,6 +259,32 @@ def test_publish_csvs_preserves_existing_week_archive_by_default(tmp_path):
     assert (
         destination_root / "seasons" / "2026" / "week_07" / "predictions.csv"
     ).read_text(encoding="utf-8") == "game_id\nold\n"
+
+
+def test_publish_csvs_overwrites_existing_week_archive_when_requested(tmp_path):
+    source_root = tmp_path / "nfl-predictions"
+    mtb_repo = tmp_path / "mtb"
+    mtb_repo.mkdir()
+    destination_root = mtb_repo / "data" / "prediction-csvs"
+
+    _write_csv(source_root / "predictions" / "predictions.csv", "game_id\nnew\n")
+    _write_csv(
+        destination_root / "seasons" / "2026" / "week_07" / "predictions.csv",
+        "game_id\nold\n",
+    )
+
+    publish_csvs(
+        source_root=source_root,
+        repo_dir=mtb_repo,
+        include_diagnostics=False,
+        season=2026,
+        week=7,
+        overwrite_week_archive=True,
+    )
+
+    assert (
+        destination_root / "seasons" / "2026" / "week_07" / "predictions.csv"
+    ).read_text(encoding="utf-8") == "game_id\nnew\n"
 
 
 def test_publish_csvs_skips_partial_week_archive_by_default(tmp_path):

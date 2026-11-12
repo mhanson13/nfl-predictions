@@ -6,7 +6,7 @@ import sys
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import joblib
 import numpy as np
@@ -42,6 +42,7 @@ DEFAULT_QB_OUTPUT = DEFAULT_PREDICTION_DIR / "player_props_qb.csv"
 DEFAULT_OFFENSE_OUTPUT = DEFAULT_PREDICTION_DIR / "player_props_offense.csv"
 DEFAULT_DEFENSE_OUTPUT = DEFAULT_PREDICTION_DIR / "player_props_defense.csv"
 DEFAULT_NOVELTY_OUTPUT = DEFAULT_PREDICTION_DIR / "player_props_novelty.csv"
+DEFAULT_PUBLIC_OUTPUT = DEFAULT_PREDICTION_DIR / "player_props_public.csv"
 DEFAULT_ROSTERS_PATH = RAW_DIR / "nfl_rosters.parquet"
 DEFAULT_INJURIES_PATH = RAW_DIR / "nfl_injuries.parquet"
 DEFAULT_BDL_INJURIES_PATH = RAW_DIR / "balldontlie_injuries.parquet"
@@ -80,6 +81,19 @@ ONE_SIDED_TOUCHDOWN_MARKET_LINES = {
 ANYTIME_TD_FALLBACK_LINE_TYPE = "anytime_td_fallback"
 ANYTIME_TD_FALLBACK_TARGET_MARKETS = frozenset({"rb_rushing_tds", "wrte_receiving_tds"})
 NON_BETTABLE_LINE_TYPES = frozenset({ANYTIME_TD_FALLBACK_LINE_TYPE})
+LINE_OFFERED_CANDIDATE_POSITION_GROUPS = {
+    "qb_passing_yards": frozenset({"QB"}),
+    "qb_passing_tds": frozenset({"QB"}),
+    "rb_rushing_yards": frozenset({"RB"}),
+    "rb_rushing_tds": frozenset({"RB"}),
+    "wrte_receiving_yards": frozenset({"WR", "TE"}),
+    "wrte_receiving_tds": frozenset({"WR", "TE"}),
+    "anytime_td": frozenset({"QB", "RB", "WR", "TE"}),
+    "def_sacks": frozenset({"DL", "LB", "DB"}),
+}
+LINE_OFFERED_NOVELTY_CANDIDATE_POSITION_GROUPS = {
+    market: frozenset({"QB", "RB", "WR", "TE"}) for market in NOVELTY_MARKETS
+}
 
 MARKET_TO_BDL_PROP_TYPE = {
     "qb_passing_yards": "passing_yards",
@@ -175,6 +189,16 @@ OUTPUT_COLUMNS = [
     "depth_chart_position",
     "depth_chart_rank",
     "bettable_flag",
+    "public_board_status",
+    "public_board_reason",
+    "public_bettable_flag",
+    "public_pick_flag",
+    "public_pick_tier",
+    "public_pick_reason",
+    "public_sort_rank",
+    "model_signal_score",
+    "model_signal_label",
+    "model_signal_reason",
     "games_sampled",
     "player_rank",
     "generated_at",
@@ -234,6 +258,11 @@ def _team_abbr_from_name(value: object) -> str | None:
         return None
     abbr = get_team_abbr_from_name(text) or _clean_team(text)
     return "LA" if abbr == "LAR" else abbr
+
+
+def _line_offer_team_key(value: object) -> str | None:
+    team = _clean_team(value)
+    return "LA" if team == "LAR" else team
 
 
 def _as_text(series: pd.Series) -> pd.Series:
@@ -325,6 +354,20 @@ def _clean_injury_text(value: object) -> str | None:
     return text
 
 
+def _is_non_injury_context(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return any(
+        token in text
+        for token in [
+            "not injury related",
+            "resting player",
+            "personal matter",
+            "coach's decision",
+            "coaches decision",
+        ]
+    )
+
+
 def _injury_severity(value: object) -> int:
     text = str(value or "").strip().lower()
     if any(token in text for token in ["injured reserve", "reserve", "ir", "pup", "nfi", "out"]):
@@ -358,6 +401,8 @@ def _injury_reported(row: pd.Series) -> bool:
     status = _clean_injury_text(row.get("injury_status"))
     body_part = _clean_injury_text(row.get("injury_body_part"))
     practice_status = (_clean_injury_text(row.get("injury_practice_status")) or "").strip().lower()
+    if not status and _is_non_injury_context(body_part):
+        return False
     full_practice = "full participation" in practice_status
     return bool(
         status
@@ -641,18 +686,21 @@ def _attach_edge_recommendations(predictions: pd.DataFrame, policy: pd.DataFrame
     threshold = pd.to_numeric(out["edge_policy_threshold"], errors="coerce")
     bettable = out.get("bettable_flag", pd.Series(False, index=out.index)).astype("boolean").fillna(False).astype(bool)
     has_policy = threshold.notna()
-    recommended = bettable & has_policy & edge_probability.ge(threshold) & edge_ev.gt(0)
+    passes_threshold = bettable & has_policy & edge_probability.ge(threshold)
+    positive_ev = edge_ev.gt(0)
+    recommended = passes_threshold & positive_ev
     out["edge_recommendation_flag"] = recommended
     out["edge_recommendation_tier"] = np.select(
         [
             recommended & out.get("_edge_policy_tier", pd.Series(pd.NA, index=out.index)).eq("strong"),
             recommended,
-            has_policy,
+            has_policy & ~bettable,
+            has_policy & bettable & edge_probability.lt(threshold),
+            passes_threshold & ~positive_ev,
         ],
-        ["strong", "lean", "below_threshold"],
+        ["strong", "lean", "unavailable", "below_threshold", "no_positive_ev"],
         default="research_only",
     )
-    out.loc[has_policy & ~bettable, "edge_recommendation_tier"] = "unavailable"
     out = _attach_edge_publish_status(out)
     return out.drop(columns=["_edge_market_key", "_edge_sportsbook_key", "_edge_row_id", "_edge_policy_tier"], errors="ignore")
 
@@ -710,6 +758,12 @@ def _attach_edge_publish_status(predictions: pd.DataFrame) -> pd.DataFrame:
     out.loc[below_threshold, "edge_publish_status"] = "no_bet"
     out.loc[below_threshold, "edge_reason"] = "Current probability edge is below the historical policy threshold."
 
+    no_positive_ev = has_policy & tier.eq("no_positive_ev")
+    out.loc[no_positive_ev, "edge_publish_status"] = "no_bet"
+    out.loc[no_positive_ev, "edge_reason"] = (
+        "Current probability edge meets the historical threshold, but the current odds do not produce positive EV after juice."
+    )
+
     no_line = line_missing
     out.loc[no_line, "edge_publish_status"] = "unavailable"
     out.loc[no_line, "edge_reason"] = "No sportsbook line was matched for this player, game, and market."
@@ -743,6 +797,296 @@ def _attach_edge_publish_status(predictions: pd.DataFrame) -> pd.DataFrame:
         "Historical policy passed, but current line quality or availability blocks betting."
     )
     return out
+
+
+PUBLIC_BOARD_STATUS_RANK = {
+    "strong": 0,
+    "lean": 5,
+    "no_bet": 30,
+    "line_available": 40,
+    "research_only": 50,
+    "review": 70,
+    "projection_only": 80,
+    "unavailable": 90,
+}
+
+
+def _attach_public_board_fields(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Add website-facing prop board fields without dropping diagnostic rows."""
+    if predictions.empty:
+        out = predictions.copy()
+        for col in [
+            "public_board_status",
+            "public_board_reason",
+            "public_bettable_flag",
+            "public_pick_flag",
+            "public_pick_tier",
+            "public_pick_reason",
+            "public_sort_rank",
+        ]:
+            if col not in out.columns:
+                out[col] = pd.Series(dtype="object")
+        return out
+
+    out = predictions.copy()
+    quality = out.get("prop_quality_flag", pd.Series("ok", index=out.index)).astype("string").str.lower()
+    line_type = out.get("line_type", pd.Series(pd.NA, index=out.index)).astype("string").str.lower()
+    edge_status = out.get("edge_publish_status", pd.Series("research_only", index=out.index)).astype("string").fillna(
+        "research_only"
+    )
+    roster_flag = out.get("roster_validation_flag", pd.Series("unknown", index=out.index)).astype("string").str.lower()
+    active_roster = _as_output_bool(out.get("active_current_roster", pd.Series(True, index=out.index)), default=True)
+    bettable = _as_output_bool(out.get("bettable_flag", pd.Series(False, index=out.index)))
+    edge_recommended = _as_output_bool(
+        out.get("edge_recommendation_flag", pd.Series(False, index=out.index))
+    )
+    injury_exclusion = _as_output_bool(out.get("injury_exclusion_flag", pd.Series(False, index=out.index)))
+    has_line = pd.to_numeric(out.get("line", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
+    fallback_line = line_type.isin(NON_BETTABLE_LINE_TYPES).fillna(False) | quality.eq("fallback_line")
+    roster_exclusion = quality.isin({"roster_mismatch", "roster_exclusion"}) | roster_flag.isin(
+        {"team_mismatch", "inactive_roster", "practice_squad"}
+    )
+
+    exact_clean_line = has_line & ~fallback_line
+    clean_roster = active_roster & roster_flag.eq("ok")
+    public_visible = exact_clean_line & clean_roster & ~injury_exclusion & ~roster_exclusion
+    public_bettable = public_visible & bettable
+
+    out["public_bettable_flag"] = public_bettable
+    public_pick = public_bettable & edge_recommended & edge_status.isin(["strong", "lean"])
+    out["public_pick_flag"] = public_pick
+    out["public_pick_tier"] = "none"
+    out.loc[public_pick, "public_pick_tier"] = edge_status.loc[public_pick]
+    out["public_pick_reason"] = (
+        "Not a public pick; this row is visible for projection, line, or research context only."
+    )
+    out["public_board_status"] = "projection_only"
+    out["public_board_reason"] = "Projection is retained for diagnostics, but no exact sportsbook line is available."
+
+    out.loc[has_line & fallback_line, "public_board_status"] = "research_only"
+    out.loc[has_line & fallback_line, "public_board_reason"] = (
+        "Line is inferred from a related anytime TD market; keep it out of bettable public boards."
+    )
+
+    out.loc[public_visible, "public_board_status"] = np.where(
+        edge_status.loc[public_visible].isin(["strong", "lean", "review", "no_bet", "research_only"]),
+        edge_status.loc[public_visible],
+        "line_available",
+    )
+    out.loc[public_visible, "public_board_reason"] = np.where(
+        public_bettable.loc[public_visible],
+        "Exact sportsbook line matched an active roster player with no exclusion flags.",
+        "Exact sportsbook line is available, but model policy keeps this row informational.",
+    )
+
+    out.loc[edge_status.isin(["strong", "lean"]) & public_bettable, "public_board_reason"] = (
+        "Exact line and roster checks passed, and the historical edge policy recommends this row."
+    )
+    out.loc[public_pick, "public_pick_reason"] = (
+        "Exact line, roster checks, historical edge policy, and current price/EV gates all passed."
+    )
+    clean_blocked = public_bettable & ~public_pick
+    out.loc[clean_blocked, "public_pick_reason"] = (
+        "Clean enough to evaluate, but not a pick because the edge policy or current price/EV gate did not pass."
+    )
+    out.loc[edge_status.eq("review") & public_visible, "public_board_reason"] = (
+        "Exact line and roster checks passed, but injury or availability context requires review."
+    )
+    out.loc[edge_status.eq("no_bet") & public_visible, "public_board_reason"] = (
+        "Exact line and roster checks passed, but the current edge is below the betting threshold."
+    )
+    out.loc[edge_status.eq("research_only") & public_visible, "public_board_reason"] = (
+        "Exact line and roster checks passed, but this market is research-only until backtests support betting."
+    )
+
+    out.loc[injury_exclusion, "public_board_status"] = "unavailable"
+    out.loc[injury_exclusion, "public_board_reason"] = (
+        "Player is excluded by injury or availability status; keep only in diagnostic outputs."
+    )
+    out.loc[roster_exclusion | ~active_roster, "public_board_status"] = "unavailable"
+    out.loc[roster_exclusion | ~active_roster, "public_board_reason"] = (
+        "Current roster validation blocks this row from the public board."
+    )
+
+    out["public_sort_rank"] = out["public_board_status"].map(PUBLIC_BOARD_STATUS_RANK).fillna(
+        PUBLIC_BOARD_STATUS_RANK["unavailable"]
+    )
+    out["public_sort_rank"] = out["public_sort_rank"].astype(int)
+    return out
+
+
+def _positive_percentile(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").clip(lower=0)
+    ranked = pd.Series(0.0, index=numeric.index, dtype="float64")
+    valid = numeric.notna() & numeric.gt(0)
+    if valid.any():
+        ranked.loc[valid] = numeric.loc[valid].rank(method="average", pct=True)
+    return ranked.fillna(0.0)
+
+
+def _market_percentile(values: pd.Series, markets: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").abs()
+    ranked = pd.Series(0.0, index=numeric.index, dtype="float64")
+    valid = numeric.notna() & numeric.gt(0)
+    if not valid.any():
+        return ranked
+    market_key = markets.astype("string").fillna("unknown")
+    market_rank = numeric[valid].groupby(market_key[valid]).rank(method="average", pct=True)
+    ranked.loc[valid] = market_rank
+    return ranked.fillna(0.0)
+
+
+def _normalized_text(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip().lower()
+
+
+def _model_signal_reason(row: pd.Series) -> str:
+    status = _normalized_text(row.get("public_board_status"))
+    tier = _normalized_text(row.get("edge_recommendation_tier"))
+    market = _normalized_text(row.get("market"))
+    line_type = _normalized_text(row.get("line_type"))
+    public_pick = bool(row.get("public_pick_flag", False))
+
+    if public_pick:
+        return "Official pick: historical edge policy, roster checks, and current price all passed."
+    if status == "review":
+        return "Watchlist only: player availability needs review before this can be treated as playable."
+    if line_type in NON_BETTABLE_LINE_TYPES:
+        return "Watchlist only: line is inferred from a related market, not a true sportsbook prop."
+    if market in NOVELTY_OUTPUT_MARKETS:
+        return "Watchlist only: touchdown ladder markets are research-only until history supports them."
+    if tier == "no_positive_ev":
+        return "Watchlist only: the model side is interesting, but the current odds are not valuable enough."
+    if tier == "below_threshold":
+        return "Watchlist only: the model side is below the historical pick threshold."
+    if status == "research_only":
+        return "Watchlist only: this market does not yet have a validated betting policy."
+    if status == "no_bet":
+        return "Watchlist only: the current price or historical edge gate did not clear."
+    if status in {"projection_only", "unavailable"}:
+        return "Informational only: this row is not available as a public pick."
+    return "Model signal only: use as context, not an official pick."
+
+
+def _attach_model_signal_fields(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Add a beginner-facing 0-100 signal without loosening official pick gates."""
+    if predictions.empty:
+        out = predictions.copy()
+        out["model_signal_score"] = pd.Series(dtype="float64")
+        out["model_signal_label"] = pd.Series(dtype="object")
+        out["model_signal_reason"] = pd.Series(dtype="object")
+        return out
+
+    out = predictions.copy()
+    index = out.index
+    prob_rank = _positive_percentile(
+        out.get("edge_probability_edge", pd.Series(np.nan, index=index))
+    )
+    ev_rank = _positive_percentile(out.get("edge_ev", pd.Series(np.nan, index=index)))
+    projection_rank = _market_percentile(
+        out.get("edge", pd.Series(np.nan, index=index)),
+        out.get("market", pd.Series("unknown", index=index)),
+    )
+    confidence = (
+        out.get("confidence_tier", pd.Series("", index=index))
+        .astype("string")
+        .str.lower()
+        .map({"high": 1.0, "medium": 0.65, "low": 0.35})
+        .fillna(0.0)
+    )
+    score = (0.35 * prob_rank + 0.25 * ev_rank + 0.25 * projection_rank + 0.15 * confidence) * 100
+
+    status = out.get("public_board_status", pd.Series("", index=index)).astype("string").str.lower()
+    tier = out.get("edge_recommendation_tier", pd.Series("", index=index)).astype("string").str.lower()
+    market = out.get("market", pd.Series("", index=index)).astype("string")
+    line_type = out.get("line_type", pd.Series("", index=index)).astype("string").str.lower()
+    public_pick = _as_output_bool(out.get("public_pick_flag", pd.Series(False, index=index)))
+    cap = pd.Series(100.0, index=index)
+    cap.loc[status.eq("no_bet")] = 84.0
+    cap.loc[status.eq("research_only")] = 74.0
+    cap.loc[status.eq("review")] = 64.0
+    cap.loc[status.isin(["projection_only", "unavailable"])] = 49.0
+    cap.loc[tier.eq("no_positive_ev")] = np.minimum(cap.loc[tier.eq("no_positive_ev")], 69.0)
+    novelty = market.isin(NOVELTY_OUTPUT_MARKETS)
+    cap.loc[novelty] = np.minimum(cap.loc[novelty], 69.0)
+    fallback_line = line_type.isin(NON_BETTABLE_LINE_TYPES).fillna(False)
+    cap.loc[fallback_line] = np.minimum(cap.loc[fallback_line], 49.0)
+    score = np.minimum(score.clip(lower=0.0, upper=100.0), cap)
+    score = pd.Series(score, index=index).round().astype("Int64")
+    score.loc[public_pick & status.eq("strong")] = np.maximum(score.loc[public_pick & status.eq("strong")], 90)
+    score.loc[public_pick & status.eq("lean")] = np.maximum(score.loc[public_pick & status.eq("lean")], 85)
+
+    out["model_signal_score"] = score.astype("float64")
+    out["model_signal_label"] = np.select(
+        [
+            public_pick,
+            status.eq("review"),
+            score.ge(85),
+            score.ge(70),
+            score.ge(55),
+        ],
+        [
+            "Official Pick",
+            "Review First",
+            "Strong Model Signal",
+            "Solid Lean",
+            "Mild Lean",
+        ],
+        default="Low Signal",
+    )
+    out["model_signal_reason"] = out.apply(_model_signal_reason, axis=1)
+    return out
+
+
+def build_public_player_prop_board(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    """Return the cleaner public prop board while preserving full CSVs separately."""
+    available = [frame for frame in frames if frame is not None and not frame.empty]
+    if not available:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+    out = pd.concat(available, ignore_index=True, sort=False)
+    out = _attach_public_board_fields(out)
+    quality = (
+        out.get("prop_quality_flag", pd.Series("ok", index=out.index))
+        .astype("string")
+        .str.lower()
+    )
+    line_type = out.get("line_type", pd.Series(pd.NA, index=out.index)).astype("string").str.lower()
+    exact_line = pd.to_numeric(
+        out.get("line", pd.Series(np.nan, index=out.index)),
+        errors="coerce",
+    ).notna()
+    exact_line = (
+        exact_line
+        & ~line_type.isin(NON_BETTABLE_LINE_TYPES).fillna(False)
+        & ~quality.eq("fallback_line")
+    )
+    visible_statuses = ["strong", "lean", "review", "no_bet", "line_available", "research_only"]
+    keep = exact_line & out["public_board_status"].isin(visible_statuses)
+    out = out[keep].copy()
+    out = _attach_model_signal_fields(out)
+    edge_abs = pd.to_numeric(
+        out.get("edge_probability_edge", pd.Series(np.nan, index=out.index)),
+        errors="coerce",
+    ).abs()
+    fallback_edge_abs = pd.to_numeric(
+        out.get("edge", pd.Series(np.nan, index=out.index)),
+        errors="coerce",
+    ).abs()
+    edge_abs = edge_abs.where(edge_abs.notna(), fallback_edge_abs)
+    out["_public_edge_abs"] = edge_abs.fillna(-1)
+    out = out.sort_values(
+        ["public_sort_rank", "_public_edge_abs", "game_id", "market", "player_name"],
+        ascending=[True, False, True, True, True],
+        kind="stable",
+    )
+    out = out.drop(columns=["_public_edge_abs"], errors="ignore")
+    for col in OUTPUT_COLUMNS:
+        if col not in out.columns:
+            out[col] = np.nan
+    return out[OUTPUT_COLUMNS]
 
 
 def _position_group(position: object) -> str | None:
@@ -1136,7 +1480,7 @@ def _active_availability_lookup(availability: pd.DataFrame | None, *, season: in
     )
 
 
-def _line_offered_def_sack_candidates(
+def _line_offered_market_candidates(
     *,
     labels: pd.DataFrame,
     odds: pd.DataFrame | None,
@@ -1144,6 +1488,8 @@ def _line_offered_def_sack_candidates(
     availability: pd.DataFrame | None,
     season: int,
     week: int,
+    supported_market_positions: Mapping[str, frozenset[str]] | None = None,
+    market_family: str | None = None,
 ) -> pd.DataFrame:
     if odds is None or odds.empty:
         return pd.DataFrame()
@@ -1154,15 +1500,26 @@ def _line_offered_def_sack_candidates(
 
     identity = _prepare_player_identity(player_identity)
     active_players = _active_availability_lookup(availability, season=season, week=week)
-    history = _prior_player_market_summary(labels, market="def_sacks", season=season, week=week)
-    if identity.empty or active_players.empty or history.empty:
+    if identity.empty or active_players.empty:
         return pd.DataFrame()
 
-    line_odds = odds[odds["market"].eq("def_sacks")].dropna(
-        subset=["game_id", "player_name_key", "player_name_prefix_key"]
+    supported_market_positions = supported_market_positions or LINE_OFFERED_CANDIDATE_POSITION_GROUPS
+    supported_markets = set(supported_market_positions)
+    line_odds = odds[odds["market"].isin(supported_markets)].dropna(
+        subset=["game_id", "market", "player_name_key", "player_name_prefix_key"]
     ).copy()
     if line_odds.empty:
         return pd.DataFrame()
+
+    history_frames: list[pd.DataFrame] = []
+    for market in sorted(line_odds["market"].dropna().unique()):
+        market_history = _prior_player_market_summary(labels, market=str(market), season=season, week=week)
+        if not market_history.empty:
+            market_history["market"] = str(market)
+            history_frames.append(market_history)
+    if not history_frames:
+        return pd.DataFrame()
+    history = pd.concat(history_frames, ignore_index=True, sort=False)
 
     parts = line_odds["game_id"].apply(_game_identity_parts)
     line_odds["_identity_season"] = [part[0] for part in parts]
@@ -1206,11 +1563,13 @@ def _line_offered_def_sack_candidates(
 
     line_identity = line_identity.rename(columns={"identity_player_id": "player_id"})
     line_identity = line_identity.merge(active_players, on="player_id", how="inner")
-    line_identity = line_identity[line_identity["availability_team"].eq(line_identity["identity_team"])].copy()
+    identity_team_key = line_identity["identity_team"].apply(_line_offer_team_key)
+    availability_team_key = line_identity["availability_team"].apply(_line_offer_team_key)
+    line_identity = line_identity[availability_team_key.eq(identity_team_key)].copy()
     if line_identity.empty:
         return pd.DataFrame()
 
-    line_identity = line_identity.merge(history, on="player_id", how="inner")
+    line_identity = line_identity.merge(history, on=["player_id", "market"], how="inner")
     if line_identity.empty:
         return pd.DataFrame()
 
@@ -1234,21 +1593,28 @@ def _line_offered_def_sack_candidates(
         line_identity["position_group"].notna(),
         line_identity["position"].apply(_position_group),
     )
+    allowed_groups = line_identity["market"].map(supported_market_positions)
+    position_allowed = [
+        bool(position_group in groups) if isinstance(groups, frozenset) else False
+        for position_group, groups in zip(line_identity["position_group"], allowed_groups)
+    ]
     line_identity = line_identity[
         line_identity["team"].notna()
         & line_identity["opponent"].notna()
         & line_identity["team_side"].notna()
         & line_identity["player_name"].notna()
-        & line_identity["position_group"].isin(["DL", "LB", "DB"])
+        & pd.Series(position_allowed, index=line_identity.index)
     ].copy()
     if line_identity.empty:
         return pd.DataFrame()
 
     line_identity["season"] = int(season)
     line_identity["week"] = int(week)
-    line_identity["market"] = "def_sacks"
-    line_identity["market_family"] = "defense"
-    line_identity["source_projection_col"] = "historical_def_sacks_avg"
+    if market_family:
+        line_identity["market_family"] = market_family
+    else:
+        line_identity["market_family"] = np.where(line_identity["market"].eq("def_sacks"), "defense", "offense")
+    line_identity["source_projection_col"] = "historical_" + line_identity["market"].astype(str) + "_avg"
     line_identity["player_rank"] = (
         line_identity.sort_values(
             ["game_id", "team", "baseline_projection", "player_id"],
@@ -1283,7 +1649,7 @@ def _line_offered_def_sack_candidates(
     )
 
 
-def _add_line_offered_def_sack_candidates(
+def _add_line_offered_market_candidates(
     candidates: pd.DataFrame,
     *,
     labels: pd.DataFrame,
@@ -1293,7 +1659,7 @@ def _add_line_offered_def_sack_candidates(
     season: int,
     week: int,
 ) -> pd.DataFrame:
-    additions = _line_offered_def_sack_candidates(
+    additions = _line_offered_market_candidates(
         labels=labels,
         odds=odds,
         player_identity=player_identity,
@@ -1313,10 +1679,10 @@ def _add_line_offered_def_sack_candidates(
     )
     if "player_rank" not in combined.columns:
         combined["player_rank"] = np.nan
-    rank_missing = combined["player_rank"].isna() & combined["market"].eq("def_sacks")
+    rank_missing = combined["player_rank"].isna()
     if rank_missing.any() and "baseline_projection" in combined.columns:
         computed = (
-            combined[combined["market"].eq("def_sacks")]
+            combined[rank_missing]
             .sort_values(
                 ["game_id", "team", "baseline_projection", "player_id"],
                 ascending=[True, True, False, True],
@@ -1332,6 +1698,39 @@ def _add_line_offered_def_sack_candidates(
             combined.get("_computed_player_rank", pd.Series(np.nan, index=combined.index)),
         )
         combined = combined.drop(columns=["_computed_player_rank"], errors="ignore")
+    return combined
+
+
+def _add_line_offered_novelty_candidates(
+    candidates: pd.DataFrame,
+    *,
+    labels: pd.DataFrame,
+    odds: pd.DataFrame | None,
+    player_identity: pd.DataFrame | None,
+    availability: pd.DataFrame | None,
+    season: int,
+    week: int,
+) -> pd.DataFrame:
+    additions = _line_offered_market_candidates(
+        labels=labels,
+        odds=odds,
+        player_identity=player_identity,
+        availability=availability,
+        season=season,
+        week=week,
+        supported_market_positions=LINE_OFFERED_NOVELTY_CANDIDATE_POSITION_GROUPS,
+        market_family="novelty",
+    )
+    if additions.empty:
+        return candidates
+    if candidates.empty:
+        return additions
+
+    combined = pd.concat([candidates, additions], ignore_index=True, sort=False)
+    combined = combined.drop_duplicates(
+        subset=["season", "week", "game_id", "team", "player_id", "market"],
+        keep="first",
+    )
     return combined
 
 
@@ -2291,6 +2690,12 @@ def _prepare_nflverse_injuries(injuries: pd.DataFrame, *, season: int, week: int
     primary = out.get("report_primary_injury", pd.Series(pd.NA, index=out.index)).apply(_clean_injury_text)
     practice = out.get("practice_primary_injury", pd.Series(pd.NA, index=out.index)).apply(_clean_injury_text)
     out["injury_body_part"] = primary.where(primary.notna(), practice)
+    non_injury_context = out["injury_status"].isna() & out["injury_body_part"].apply(_is_non_injury_context)
+    full_practice_clear = (
+        out["injury_status"].isna()
+        & out["injury_practice_status"].astype("string").str.lower().str.contains("full participation", na=False)
+    )
+    out.loc[non_injury_context | full_practice_clear, ["injury_practice_status", "injury_body_part"]] = pd.NA
     out["injury_report_week"] = out["week"].astype("Int64")
     out["injury_source"] = "nflverse"
     out["injury_last_updated"] = out.get("date_modified", pd.Series(pd.NA, index=out.index))
@@ -2433,6 +2838,46 @@ def _attach_injury_status(predictions: pd.DataFrame, injuries: pd.DataFrame) -> 
     return out.drop(columns=["_player_name_key", "_team_key"], errors="ignore")
 
 
+def _clear_soft_bdl_injury_reviews_with_clean_availability(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Let clean current availability override soft BallDontLie injury/news tags."""
+    if predictions.empty:
+        return predictions
+
+    out = predictions.copy()
+    source = out.get("injury_source", pd.Series(pd.NA, index=out.index)).astype("string").str.lower()
+    status = out.get("injury_status", pd.Series(pd.NA, index=out.index)).astype("string").str.lower()
+    availability_status = out.get("availability_status", pd.Series(pd.NA, index=out.index)).apply(_clean_injury_text)
+    roster_flag = out.get("roster_validation_flag", pd.Series("unknown", index=out.index)).astype("string").str.lower()
+    active_roster = _as_output_bool(out.get("active_current_roster", pd.Series(False, index=out.index)))
+    hard_exclusion = _as_output_bool(out.get("injury_exclusion_flag", pd.Series(False, index=out.index)))
+
+    clear = (
+        source.eq("balldontlie")
+        & status.isin(["questionable", "probable"])
+        & active_roster
+        & roster_flag.eq("ok")
+        & availability_status.isna()
+        & ~hard_exclusion
+    )
+    if not bool(clear.any()):
+        return out
+
+    for col in [
+        "injury_status",
+        "injury_practice_status",
+        "injury_body_part",
+        "injury_report_week",
+        "injury_source",
+        "injury_last_updated",
+    ]:
+        if col in out.columns:
+            out.loc[clear, col] = pd.NA
+    out.loc[clear, "injury_reported"] = False
+    out.loc[clear, "injury_exclusion_flag"] = False
+    out.loc[clear, "prop_quality_flag"] = "ok"
+    return out
+
+
 def _score_market(
     features: pd.DataFrame,
     *,
@@ -2558,7 +3003,7 @@ def predict_player_props(
         novelty_candidates = novelty_candidates[
             (novelty_candidates["season"].eq(int(season))) & (novelty_candidates["week"].eq(int(week)))
         ].copy()
-    candidates = _add_line_offered_def_sack_candidates(
+    candidates = _add_line_offered_market_candidates(
         candidates,
         labels=labels,
         odds=odds,
@@ -2567,6 +3012,16 @@ def predict_player_props(
         season=int(season),
         week=int(week),
     )
+    if not novelty_labels.empty:
+        novelty_candidates = _add_line_offered_novelty_candidates(
+            novelty_candidates,
+            labels=novelty_labels,
+            odds=odds,
+            player_identity=player_identity,
+            availability=availability,
+            season=int(season),
+            week=int(week),
+        )
 
     scored: list[pd.DataFrame] = []
     feature_sets: list[tuple[str, pd.DataFrame]] = []
@@ -2616,6 +3071,7 @@ def predict_player_props(
     predictions = _add_prop_betting_edges(predictions)
     predictions = _attach_injury_status(predictions, injuries if injuries is not None else pd.DataFrame())
     predictions = attach_player_availability(predictions, availability if availability is not None else pd.DataFrame())
+    predictions = _clear_soft_bdl_injury_reviews_with_clean_availability(predictions)
     roster_flag = predictions.get("roster_validation_flag", pd.Series("unknown", index=predictions.index))
     roster_exclusion = roster_flag.isin({"team_mismatch", "inactive_roster", "practice_squad"})
     predictions.loc[roster_flag.eq("team_mismatch"), "prop_quality_flag"] = "roster_mismatch"
@@ -2634,6 +3090,8 @@ def predict_player_props(
     predictions.loc[novelty_mask, "bettable_flag"] = False
     predictions.loc[novelty_mask, "edge_recommendation_flag"] = False
     predictions.loc[novelty_mask, "edge_recommendation_tier"] = "research_only"
+    predictions = _attach_public_board_fields(predictions)
+    predictions = _attach_model_signal_fields(predictions)
     for col in ["games_sampled", "player_rank", "team_side", "baseline_projection"]:
         if col not in predictions.columns:
             predictions[col] = np.nan
@@ -2683,6 +3141,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--offense-output", type=Path, default=DEFAULT_OFFENSE_OUTPUT)
     parser.add_argument("--defense-output", type=Path, default=DEFAULT_DEFENSE_OUTPUT)
     parser.add_argument("--novelty-output", type=Path, default=DEFAULT_NOVELTY_OUTPUT)
+    parser.add_argument("--public-output", type=Path, default=DEFAULT_PUBLIC_OUTPUT)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -2739,6 +3198,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _write_output(offense, args.offense_output)
     _write_output(defense, args.defense_output)
     _write_output(novelty, args.novelty_output)
+    public = build_public_player_prop_board([qb, offense, defense, novelty])
+    _write_output(public, args.public_output)
 
     if args.debug:
         print("[player_props.predict] row counts:")
@@ -2746,10 +3207,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  offense: {len(offense)}")
         print(f"  defense: {len(defense)}")
         print(f"  novelty: {len(novelty)}")
+        print(f"  public: {len(public)}")
     print(f"[player_props.predict] wrote QB rows={len(qb)} -> {args.qb_output.resolve()}")
     print(f"[player_props.predict] wrote offense rows={len(offense)} -> {args.offense_output.resolve()}")
     print(f"[player_props.predict] wrote defense rows={len(defense)} -> {args.defense_output.resolve()}")
     print(f"[player_props.predict] wrote novelty rows={len(novelty)} -> {args.novelty_output.resolve()}")
+    print(f"[player_props.predict] wrote public rows={len(public)} -> {args.public_output.resolve()}")
     return 0
 
 

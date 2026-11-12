@@ -22,7 +22,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.utils.io import PROC_DIR, RAW_DIR, write_df
+from src.utils.io import PROC_DIR, RAW_DIR, df_path_exists, read_df, resolve_df_path, write_df
 from src.utils.pydantic_schemas import validate_dataframe
 from src.utils.teams import normalize_team_abbr
 
@@ -53,10 +53,10 @@ def _log(msg: str, *, debug: bool) -> None:
 
 def _load_pbp(columns: Iterable[str], *, debug: bool) -> pd.DataFrame:
     pbp_path = RAW_DIR / "nfl_pbp.parquet"
-    if not pbp_path.exists():
-        raise FileNotFoundError(f"Expected play-by-play data at {pbp_path}")
-    _log(f"reading {pbp_path}", debug=debug)
-    return pd.read_parquet(pbp_path, columns=list(columns), engine="fastparquet")
+    if not df_path_exists(pbp_path):
+        raise FileNotFoundError(f"Expected play-by-play data at {pbp_path} or {pbp_path.with_suffix('.csv')}")
+    _log(f"reading {resolve_df_path(pbp_path)}", debug=debug)
+    return read_df(pbp_path, columns=list(columns))
 
 
 def _clean_team(series: pd.Series) -> pd.Series:

@@ -4,12 +4,21 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.model_metrics_export import build_model_metrics_rows
+from analysis.model_metrics_export import _read_csv_if_exists, build_model_metrics_rows
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def test_read_csv_if_exists_treats_headerless_optional_file_as_empty(tmp_path):
+    path = tmp_path / "empty_summary.csv"
+    path.write_text("\r\n", encoding="utf-8")
+
+    result = _read_csv_if_exists(path)
+
+    assert result.empty
 
 
 def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
@@ -198,6 +207,14 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
                 "clv_tracked_games": 12,
                 "clv_avg_prob_delta": 0.012,
                 "clv_positive_rate": 0.583,
+                "segment_gate_status": "weak_probability_edge_segment",
+                "segment_gate_worst_segment": "8-10%",
+                "segment_gate_worst_roi": -0.452,
+                "disagreement_recommendation_gate_status": "blocked_diagnostic_avoid_segment",
+                "disagreement_recommendation_gate_probability_edge_candidate_segments": "2-5%;5-8%",
+                "disagreement_recommendation_gate_probability_edge_blocked_segments": "8-10%",
+                "disagreement_recommendation_gate_odds_bucket_candidate_segments": "-119 to +99",
+                "disagreement_recommendation_gate_odds_bucket_blocked_segments": "+121 to +200",
             },
             {
                 "signal": "spread_threshold",
@@ -270,7 +287,9 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
 
     by_key = metrics.set_index("metric_key")
     assert by_key.loc["accuracy", "display_value"] == "65.4%"
+    assert by_key.loc["live_published_source_week", "display_value"] == "Week 3"
     assert by_key.loc["live_published_games", "display_value"] == "16"
+    assert by_key.loc["live_published_games", "label"] == "Latest graded published-pick games"
     assert by_key.loc["live_published_accuracy", "display_value"] == "62.5%"
     assert by_key.loc["live_published_moneyline_roi", "display_value"] == "5.2%"
     assert by_key.loc["live_published_avg_moneyline_clv_prob_delta", "display_value"] == "1.1%"
@@ -293,6 +312,21 @@ def test_build_model_metrics_rows_exports_about_page_metrics(tmp_path):
     assert by_key.loc["moneyline_disagreement_policy_clv_tracked_games", "display_value"] == "12"
     assert by_key.loc["moneyline_disagreement_policy_clv_avg_prob_delta", "display_value"] == "1.2%"
     assert by_key.loc["moneyline_disagreement_policy_clv_positive_rate", "display_value"] == "58.3%"
+    assert by_key.loc["moneyline_disagreement_policy_segment_gate_status", "display_value"] == "weak_probability_edge_segment"
+    assert by_key.loc["moneyline_disagreement_policy_segment_gate_worst_segment", "display_value"] == "8-10%"
+    assert by_key.loc["moneyline_disagreement_policy_segment_gate_worst_roi", "display_value"] == "-45.2%"
+    assert (
+        by_key.loc["moneyline_disagreement_policy_diagnostic_gate_status", "display_value"]
+        == "blocked_diagnostic_avoid_segment"
+    )
+    assert (
+        by_key.loc["moneyline_disagreement_policy_diagnostic_probability_edge_candidates", "display_value"]
+        == "2-5%;5-8%"
+    )
+    assert (
+        by_key.loc["moneyline_disagreement_policy_diagnostic_odds_bucket_candidates", "display_value"]
+        == "-119 to +99"
+    )
     assert by_key.loc["spread_threshold_policy", "display_value"] == "home edge > 3 pts"
     assert by_key.loc["spread_threshold_policy_roi", "display_value"] == "4.8%"
     assert by_key.loc["spread_edge_bin_policy", "display_value"] == "No bet"
@@ -348,6 +382,7 @@ def test_build_model_metrics_rows_uses_latest_finalized_live_summary(tmp_path):
     )
 
     by_key = metrics.set_index("metric_key")
+    assert by_key.loc["live_published_source_week", "display_value"] == "Week 6"
     assert by_key.loc["live_published_games", "display_value"] == "12"
     assert by_key.loc["live_published_accuracy", "display_value"] == "58.3%"
     assert (

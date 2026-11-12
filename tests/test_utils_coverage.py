@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -162,6 +163,7 @@ from src.utils.io import (
     _is_nested_like,
     _sanitize_for_parquet,
     _to_json_safe,
+    df_path_exists,
     read_df,
     write_df,
     write_json,
@@ -260,6 +262,29 @@ class TestWriteReadDf:
         p = tmp_path / "sub" / "dir" / "data.parquet"
         write_df(df, p)
         assert p.exists()
+
+    def test_read_df_prefers_newer_csv_fallback_for_parquet_path(self, tmp_path):
+        parquet_path = tmp_path / "data.parquet"
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame({"x": [1], "y": ["old"]}).to_parquet(parquet_path, index=False)
+        pd.DataFrame({"x": [2], "y": ["fresh"]}).to_csv(csv_path, index=False)
+        os.utime(parquet_path, (1000, 1000))
+        os.utime(csv_path, (2000, 2000))
+
+        result = read_df(parquet_path, columns=["x"])
+
+        assert result.columns.tolist() == ["x"]
+        assert result["x"].tolist() == [2]
+
+    def test_read_df_uses_csv_fallback_when_parquet_missing(self, tmp_path):
+        parquet_path = tmp_path / "data.parquet"
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame({"x": [3]}).to_csv(csv_path, index=False)
+
+        assert df_path_exists(parquet_path)
+        result = read_df(parquet_path)
+
+        assert result["x"].tolist() == [3]
 
 
 class TestWriteJson:

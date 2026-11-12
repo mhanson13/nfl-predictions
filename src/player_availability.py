@@ -362,6 +362,9 @@ def _deduplicate_availability(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return _finalize_availability_types(frame)
     out = frame.copy()
+    for col in AVAILABILITY_COLUMNS:
+        if col not in out.columns:
+            out[col] = pd.NA
     out["availability_priority"] = pd.to_numeric(out["availability_priority"], errors="coerce").fillna(0)
     out["depth_chart_rank"] = pd.to_numeric(out["depth_chart_rank"], errors="coerce")
     out = out.sort_values(
@@ -408,7 +411,12 @@ def build_current_player_availability(
     if not frames:
         return _finalize_availability_types(pd.DataFrame(columns=AVAILABILITY_COLUMNS))
     availability = pd.concat(frames, ignore_index=True, sort=False)
-    return _deduplicate_availability(availability)
+    availability = _deduplicate_availability(availability)
+    if not availability.empty:
+        availability["season"] = int(season)
+        availability["week"] = int(week)
+        availability = _finalize_availability_types(availability)
+    return availability
 
 
 def _unique_name_lookup(availability: pd.DataFrame) -> pd.DataFrame:

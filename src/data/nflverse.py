@@ -47,6 +47,7 @@ SCHEDULE_TEXT_ID_COLUMNS = (
     "espn",
     "ftn",
 )
+PBP_TEXT_ID_COLUMNS = ("old_game_id", "play_clock")
 
 
 def _load_finalized_seasons() -> set[int]:
@@ -143,6 +144,17 @@ def _normalize_schedule_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _normalize_pbp_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize PBP columns that frequently mix numeric and string IDs."""
+    if df.empty:
+        return df
+    out = df.copy()
+    for col in PBP_TEXT_ID_COLUMNS:
+        if col in out.columns:
+            out[col] = out[col].map(_as_optional_text_id).astype("string")
+    return out
+
+
 def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> Path:
     """Append new rows onto cached dataset and write back to disk."""
     if path.name == "nfl_player_stats.parquet":
@@ -152,6 +164,9 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
     elif path.name == "nfl_schedules.parquet":
         existing = _normalize_schedule_columns(existing)
         new_df = _normalize_schedule_columns(new_df)
+    elif path.name == "nfl_pbp.parquet":
+        existing = _normalize_pbp_columns(existing)
+        new_df = _normalize_pbp_columns(new_df)
 
     if existing.empty:
         combined = new_df
@@ -165,6 +180,8 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
             combined = pd.concat([existing, new_df], ignore_index=True, sort=False)
     if path.name == "nfl_schedules.parquet":
         combined = _normalize_schedule_columns(_dedupe_schedule_rows(combined))
+    elif path.name == "nfl_pbp.parquet":
+        combined = _normalize_pbp_columns(combined.drop_duplicates(ignore_index=True))
     else:
         combined = combined.drop_duplicates(ignore_index=True)
     return write_df(combined, path)

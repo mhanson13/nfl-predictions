@@ -7,7 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.analysis.shap_gpu import _load_model, _prepare_feature_matrix
+from src.analysis.shap_gpu import (
+    _load_model,
+    _native_tree_shap_values,
+    _plot_shap_bar,
+    _plot_shap_summary,
+    _prepare_feature_matrix,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +69,73 @@ class TestPrepareFeatureMatrix:
         df = _make_feature_df()
         with pytest.raises(ValueError, match="Feature columns required"):
             _prepare_feature_matrix(df, feature_order=["nonexistent_col"])
+
+
+# ---------------------------------------------------------------------------
+# _native_tree_shap_values
+# ---------------------------------------------------------------------------
+class _FakeBooster:
+    def __init__(self, contribs: np.ndarray):
+        self.contribs = contribs
+
+    def predict(self, dmatrix, pred_contribs=False, validate_features=True):
+        assert pred_contribs is True
+        assert validate_features is True
+        return self.contribs
+
+
+class TestNativeTreeShapValues:
+    def test_splits_feature_contributions_from_bias_column(self):
+        sample = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+        booster = _FakeBooster(
+            np.array(
+                [
+                    [0.1, 0.2, 0.7],
+                    [0.3, 0.4, 0.7],
+                ]
+            )
+        )
+
+        shap_array, base_value = _native_tree_shap_values(booster, sample)
+
+        assert shap_array.tolist() == [[0.1, 0.2], [0.3, 0.4]]
+        assert base_value == pytest.approx(0.7)
+
+    def test_rejects_unexpected_contribution_shape(self):
+        sample = pd.DataFrame({"a": [1.0], "b": [2.0]})
+        booster = _FakeBooster(np.array([[0.1, 0.2]]))
+
+        with pytest.raises(ValueError, match="Unexpected XGBoost SHAP contribution shape"):
+            _native_tree_shap_values(booster, sample)
+
+
+# ---------------------------------------------------------------------------
+# Plot helpers
+# ---------------------------------------------------------------------------
+class TestPlotHelpers:
+    def test_local_plot_helpers_write_pngs(self, tmp_path: Path):
+        sample = pd.DataFrame(
+            {
+                "a": np.linspace(0.0, 1.0, 12),
+                "b": np.linspace(1.0, 0.0, 12),
+                "c": np.ones(12),
+            }
+        )
+        shap_array = np.column_stack(
+            [
+                np.linspace(-0.5, 0.5, 12),
+                np.linspace(0.2, -0.2, 12),
+                np.zeros(12),
+            ]
+        )
+        summary_path = tmp_path / "summary.png"
+        bar_path = tmp_path / "bar.png"
+
+        _plot_shap_summary(shap_array, sample, summary_path)
+        _plot_shap_bar(shap_array, sample, bar_path)
+
+        assert summary_path.stat().st_size > 0
+        assert bar_path.stat().st_size > 0
 
 
 # ---------------------------------------------------------------------------

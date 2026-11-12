@@ -4,6 +4,7 @@ import pandas as pd
 
 from src.player_props.edge_backtest import (
     build_edge_backtest,
+    build_edge_policy_diagnostics,
     build_edge_recommendation_policy,
     build_market_threshold_summary,
     summarize_edge_backtest,
@@ -147,6 +148,34 @@ def test_edge_backtest_uses_strict_positive_thresholds():
     assert detail.empty
 
 
+def test_edge_backtest_excludes_live_week_rows():
+    historical_lines = pd.DataFrame(
+        [
+            _line_row(player_id="p1", sportsbook="draftkings", line=100.5, over_odds=100, under_odds=100, actual_value=130),
+        ]
+    )
+    historical_probabilities = pd.DataFrame(
+        [
+            _probability_row(player_id="p1", sportsbook="draftkings", line=100.5, prob_over_model=0.60, prob_over_market=0.50),
+        ]
+    )
+    live_lines = historical_lines.assign(season=2026, week=8, game_id="2026_08_ARI_NO")
+    live_probabilities = historical_probabilities.assign(season=2026, week=8, game_id="2026_08_ARI_NO")
+
+    detail = build_edge_backtest(
+        pd.concat([historical_lines, live_lines], ignore_index=True),
+        pd.concat([historical_probabilities, live_probabilities], ignore_index=True),
+        ev_thresholds=[0.0],
+        prob_edge_thresholds=[0.05],
+        generated_at="2026-09-25T00:00:00+00:00",
+        exclude_from_season=2026,
+        exclude_from_week=8,
+    )
+
+    assert not detail.empty
+    assert set(detail["season"]) == {2025}
+
+
 def test_build_edge_recommendation_policy_selects_positive_market_thresholds():
     summary = pd.DataFrame(
         [
@@ -201,3 +230,61 @@ def test_build_edge_recommendation_policy_selects_positive_market_thresholds():
     row = policy.iloc[0]
     assert row["threshold"] == 0.02
     assert row["recommendation_tier"] == "strong"
+
+
+def test_build_edge_policy_diagnostics_explains_rejected_markets():
+    summary = pd.DataFrame(
+        [
+            {
+                "selection_scope": "best_price",
+                "strategy": "prob_edge",
+                "scope": "market",
+                "market": "qb_passing_yards",
+                "sportsbook": pd.NA,
+                "threshold": 0.02,
+                "n_bets": 200,
+                "wins": 100,
+                "losses": 100,
+                "pushes": 0,
+                "win_rate": 0.50,
+                "avg_odds": -110.0,
+                "avg_model_probability": 0.55,
+                "avg_market_probability": 0.50,
+                "avg_prob_edge": 0.05,
+                "avg_edge_ev": 0.02,
+                "roi": -0.01,
+                "avg_profit_per_bet": -0.01,
+                "generated_at": "2026-09-25T00:00:00+00:00",
+            },
+            {
+                "selection_scope": "best_price",
+                "strategy": "prob_edge",
+                "scope": "market",
+                "market": "anytime_td",
+                "sportsbook": pd.NA,
+                "threshold": 0.02,
+                "n_bets": 125,
+                "wins": 20,
+                "losses": 105,
+                "pushes": 0,
+                "win_rate": 0.16,
+                "avg_odds": 600.0,
+                "avg_model_probability": 0.20,
+                "avg_market_probability": 0.08,
+                "avg_prob_edge": 0.12,
+                "avg_edge_ev": 1.2,
+                "roi": 0.12,
+                "avg_profit_per_bet": 0.12,
+                "generated_at": "2026-09-25T00:00:00+00:00",
+            },
+        ]
+    )
+
+    diagnostics = build_edge_policy_diagnostics(summary, min_bets=100, min_roi=0.0, min_threshold=0.02)
+
+    reasons = dict(zip(diagnostics["market"], diagnostics["policy_failure_reason"]))
+    eligible = dict(zip(diagnostics["market"], diagnostics["policy_eligible"]))
+    assert reasons["qb_passing_yards"] == "non_positive_historical_roi"
+    assert reasons["anytime_td"] == "eligible"
+    assert bool(eligible["qb_passing_yards"]) is False
+    assert bool(eligible["anytime_td"]) is True

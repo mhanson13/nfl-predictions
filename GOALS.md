@@ -103,6 +103,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - Current operational defaults: `--start-year 2017`, `--max-parallel-data 8`, `--data-start-delay 1`, `--live-run`, and `--publish-mtb` when exporting to the website repo.
 - Live prediction reruns now pass `--exclude-started` into `src.predict.predict_upcoming` when `--live-run` is active, so Friday/Saturday reruns do not regenerate post-kickoff Thursday game picks.
 - NFLVerse, ESPN, NFL.com, NOAA/weather, Visual Crossing, BallDontLie, PropLine, Yahoo, SportsDataIO fallback, and local reference-data ingestion paths.
+- Weekly publish runs can now skip Tomorrow.io live weather with `--skip-tomorrow-weather` while retaining the paid Visual Crossing source plus NOAA/static fallback, reducing rate-limit noise without disabling weather features.
 - BallDontLie is the preferred commercial feed. SportsDataIO remains a fallback and should not run by default when BallDontLie is configured.
 - BallDontLie current-season team game stats are now converted into modular weekly form features through `src.features.balldontlie_team_form`. The features ignore non-final live rows, expose prior/rolling values only for modeling, and are merged week-to-week from `data/raw/balldontlie_team_stats_<season>.parquet`.
 - Production team-model feature selection now gates `bdl_*` features off by default while preserving BDL ingestion and feature generation. Training and tuning can opt in with `--include-bdl-features`, and feature-family ablation still opts in automatically so BDL lift can keep being measured.
@@ -111,7 +112,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `predictions/predictions.csv`
   - `predictions/predictions_full.csv`
   - `predictions/history/*.csv`
-- Current team prediction CSVs now include market-policy guardrail fields so the website can distinguish automatic moneyline recommendations, review-only moneyline edges, lean spread research, blocked spread edges, and no-bet rows without reimplementing policy logic.
+- Current team prediction CSVs now include market-policy guardrail fields and public recommendation labels so the website can distinguish `recommended`, `lean`, `research_only`, `review`, and `no_bet` rows without reimplementing policy logic.
   - `predictions/evaluation/*.csv`
 - Current rate-based player projection outputs:
   - `predictions/predictions_players_qb.csv`
@@ -191,6 +192,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - Unified current-player availability is now built from ESPN, nflverse, and BallDontLie sources:
   - `src.player_availability`
   - `data/processed/current_player_availability.parquet`
+  - Output rows are stamped to the requested prediction season/week even when the nflverse fallback uses the latest known roster row from an earlier source week.
 - Weekly player-prop CSVs can now include roster validation fields:
   - `current_team`
   - `active_current_roster`
@@ -340,9 +342,9 @@ Current read from the Week 5 evaluation set:
 - Weekly CLV detail and summary artifacts are now published from local pick-time and close/latest odds snapshots, and `analysis/market_edge_policy.csv` consumes the threshold-specific CLV summary before allowing a moneyline policy to become `strong`. Current Week 5 favorite-disagreement rows have 2 tracked games, +0.7 percentage-point average no-vig implied-probability CLV, and a 100.0% positive CLV rate, so the policy remains blocked until the tracked-game sample is large enough.
 - Model-confidence empirical recalibration is now published for moneyline disagreement picks. High-confidence disagreement bins with enough sample and model overestimate above the policy threshold hard-block moneyline promotion and surface `blocked_model_confidence_overconfidence` in weekly prediction policy fields.
 - Walk-forward confidence recalibration strategy decisions are now published. Current read: no-vig Vegas remains the probability benchmark to beat, while empirical confidence shrinkage is now surfaced as a candidate diagnostic path. Weekly predictions export calibrated moneyline confidence fields for downstream review, but the base public pick probability is not changed until repeated live runs prove the strategy is durable.
-- Favorite-disagreement diagnostics are now published and reconciled back into `analysis/market_edge_policy.csv`. The strongest current model-side research slices are `prob_edge_bin=5-8%` (47 games, +29.2% ROI, 61.7% SU), `model_side_odds_bucket=+100 to +120` (121 games, +14.5% ROI), and `prob_edge_bin=10-15%` (112 games, +13.3% ROI). For the current `prob_edge >= 0.05` policy window, `5-8%` is a diagnostic candidate segment and `8-10%` is a diagnostic avoid segment, so the reconciled moneyline policy remains `no_bet` with `blocked_diagnostic_avoid_segment`. The segment gates now also handle a selected `prob_edge >= 0.10` threshold by evaluating the 10%+ bins instead of treating the policy window as empty.
+- Favorite-disagreement diagnostics are now published and reconciled back into `analysis/market_edge_policy.csv`. The strongest current model-side research slices are `prob_edge_bin=5-8%` (47 games, +29.2% ROI, 61.7% SU), `model_side_odds_bucket=+100 to +120` (121 games, +14.5% ROI), and `prob_edge_bin=10-15%` (112 games, +13.3% ROI). The policy reconciliation now tracks probability-edge candidate/avoid bins separately from model-side moneyline bucket candidate/avoid bins, so a near-pick plus-money slice can be evaluated without promoting all broad disagreement rows. For the current `prob_edge >= 0.05` policy window, `5-8%` is a diagnostic candidate segment and `8-10%` is a diagnostic avoid segment, so the reconciled moneyline policy remains `no_bet` with `blocked_diagnostic_avoid_segment`. The segment gates now also handle a selected `prob_edge >= 0.10` threshold by evaluating the 10%+ bins instead of treating the policy window as empty.
 - Broad spread threshold strategies are now policy-blocked as `no_bet`. Away edge >2 points is -1.5% ROI despite 61.0% average modeled cover probability, which confirms spread cover-probability overconfidence.
-- Corrected spread edge-bin ROI is only positive in the 2-to-3 point bucket: 368 bets, +1.2% ROI, and 52.5% hit rate. That bucket is now review-only until the empirical spread cover calibration gate passes; spread edges of 5+ points are negative and should not be promoted.
+- Corrected spread edge-bin ROI is only positive in the 2-to-3 point bucket: 368 bets, +1.2% ROI, and 52.5% hit rate. That bucket is now `research_only` until the empirical spread cover calibration gate passes; spread edges of 5+ points are negative and should not be promoted.
 - Spread key-number diagnostics are now published for 3, 6, 7, and 10. In the current 2-to-3 point spread-edge bucket, key-window ROI is -5.4% around 3, +9.0% around 6, +10.9% around 7, and roughly flat around 10. Treat this as a monitoring slice, not a promotion rule, until season stability and CLV confirm it.
 - Spread cover-probability calibration and empirical recalibration gates are now published. The 70-75% bucket has a 33.3% actual cover rate, and the 80%+ bucket has a 0.0% actual cover rate in the current sample, so raw spread `cover_prob` remains diagnostic-only and blocks spread edge-bin promotion while high-confidence calibration errors are unacceptable.
 
@@ -364,7 +366,7 @@ Roadmap:
 - [x] Hard-gate broad spread threshold policy to `no_bet` until calibrated spread probabilities and CLV justify promotion.
 - [x] Restrict spread edge-bin policy recommendations to the 2-to-3 point bucket as lean/research; block 5+ point spread edges from promotion.
 - [x] Add season-stability gates for the moneyline disagreement policy before raising confidence beyond the current strong research signal.
-- [x] Add current-week publishing guardrails so MattyTheBookie can distinguish strong moneyline policy picks, review-only high moneyline edges, lean spread research picks, blocked spread signals, and no-bet rows.
+- [x] Add current-week publishing guardrails so MattyTheBookie can distinguish `recommended`, `lean`, `research_only`, `review`, and `no_bet` rows.
 - [x] Compare model probability directly to no-vig Vegas probability by probability bin and publish the calibration/edge table.
 - [x] Add a confidence-aware moneyline disagreement policy gate that uses empirical recalibration bins before promoting disagreement picks.
 - [x] Add a walk-forward confidence recalibration strategy backtest and decision artifact before making any live probability change.
@@ -383,7 +385,7 @@ Roadmap:
 
 ### 5. Player Prop Prediction Goals
 
-Current state: legacy player CSVs remain available as rate-based projections, and trained-model player prop CSVs now publish weekly for QB passing yards, QB passing TDs, RB rushing yards, RB rushing TDs, WR/TE receiving yards, WR/TE receiving TDs, anytime TD scorer, defensive player sacks, and research-only first/last/2+/3+ TD scorer novelty rows. PropLine line ingestion is wired through DraftKings, Hard Rock, and FanDuel when `PROPLINE_API_KEY` is configured, with line-consensus/variance diagnostics, injury quality controls, current-roster validation, and conservative edge-recommendation policy fields included in the weekly prop CSVs. Default current PropLine requests include yardage, stat-specific TD, anytime TD, first/last/2+/3+ TD scorer novelty keys, and defensive sack market keys; the weekly coverage artifact now separates exact line rows from `anytime_td_fallback` display rows so RB rushing TD and WR/TE receiving TD coverage is visible without making those rows bettable. Published prop CSVs now include `edge_publish_status` and `edge_reason` for user-facing policy clarity, and the weekly quality suite includes `prop_line_gap_audit_week_NN.csv` to separate model predictions without offered lines from offered player/game/market pairs outside the prediction universe. A durable cross-source player identity table now publishes to `data/processed/player_identity.parquet` and links GSIS player IDs to nflverse, ESPN, BallDontLie, Sportradar, and sportsbook-style player-name aliases for safer historical and current prop-line matching. Goal: expand line availability reporting, calibrate confidence tiers, backtest prop edges, broaden markets, and score the outputs weekly.
+Current state: legacy player CSVs remain available as rate-based projections, and trained-model player prop CSVs now publish weekly for QB passing yards, QB passing TDs, RB rushing yards, RB rushing TDs, WR/TE receiving yards, WR/TE receiving TDs, anytime TD scorer, defensive player sacks, and research-only first/last/2+/3+ TD scorer novelty rows. PropLine line ingestion is wired through DraftKings, Hard Rock, and FanDuel when `PROPLINE_API_KEY` is configured, with line-consensus/variance diagnostics, injury quality controls, current-roster validation, and conservative edge-recommendation policy fields included in the weekly prop CSVs. Default current PropLine requests include yardage, stat-specific TD, anytime TD, first/last/2+/3+ TD scorer novelty keys, and defensive sack market keys; the weekly coverage artifact now separates exact line rows from `anytime_td_fallback` display rows so RB rushing TD and WR/TE receiving TD coverage is visible without making those rows bettable. Published prop CSVs now include `edge_publish_status`, `edge_reason`, and public-board policy fields for user-facing policy clarity, while `predictions/player_props_public.csv` provides a cleaner website board limited to exact sportsbook-line rows that pass active-roster, injury-exclusion, roster-mismatch, and fallback-line gates. The weekly quality suite includes `prop_line_gap_audit_week_NN.csv` to separate model predictions without offered lines from offered player/game/market pairs outside the prediction universe, and offered-line candidate expansion now uses PropLine offers plus identity, active-roster, and prior pre-week label history beyond defensive sacks. A durable cross-source player identity table now publishes to `data/processed/player_identity.parquet` and links GSIS player IDs to nflverse, ESPN, BallDontLie, Sportradar, and sportsbook-style player-name aliases for safer historical and current prop-line matching. Goal: expand line availability reporting, calibrate confidence tiers, backtest prop edges, broaden markets, and score the outputs weekly.
 
 #### First Implementation Slice
 
@@ -416,6 +418,8 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Add identity-aware anytime-TD fallback mapping for RB rushing TD and WR/TE receiving TD current outputs; fallback rows use `line_type=anytime_td_fallback`, `prop_quality_flag=fallback_line`, and are excluded from bettable/recommendation gates.
 - [x] Publish fallback-only TD split rows as `edge_publish_status=research_only` with an explicit true-line-required reason so consumer apps do not treat inferred lines as bettable edges.
 - [x] Add line-offered defensive sack candidate expansion using PropLine offers plus player identity, active-roster availability, and prior non-leaking sack history.
+- [x] Generalize line-offered candidate expansion for modeled main prop markets when PropLine offers the player/game/market and identity, active-roster, and prior pre-week label history are available.
+- [x] Extend the same line-offered candidate expansion to research-only novelty TD markets so first/last/2+/3+ TD rows are scored when a sportsbook offers the player and the player has prior pre-week novelty labels.
 - [x] Add sportsbook line consensus/variance fields to prop exports.
 - [x] Add injury status, injury-exclusion, and bettable flags to prop exports.
 - [x] Add current-week ESPN roster/depthchart/injury snapshots for explicit prediction weeks.
@@ -426,6 +430,7 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Report PropLine availability and match quality by week, sportsbook, market, and player naming.
 - [x] Add player-prop edge recommendation counts and EV/probability-edge diagnostics to weekly quality summaries.
 - [x] Add weekly player-prop line-gap audit output: `predictions/evaluation/player_props/prop_line_gap_audit_week_NN.csv`.
+- [x] Add line-gap taxonomy with `offer_gap_category` and offered identity/position fields so sportsbook offers outside predictions are separated into non-player outcomes, unsupported position/market pairs, inactive/IR/practice-squad rows, missing prior market history, identity misses, and true `candidate_expansion_gap` rows.
 - [x] Add manual Odds API historical event/event-market/player-prop fetcher for backfill experiments.
 - [x] Build historical prop-line backfill manifest by season/week/game/snapshot time before running quota-heavy pulls.
 - [x] Add resumable Odds API historical backfill controller with paid-key confirmation, event discovery, market discovery, odds fetch, and normalized historical line output.
@@ -439,14 +444,19 @@ Current state: legacy player CSVs remain available as rate-based projections, an
 - [x] Backtest player-prop edge thresholds before treating projection-vs-line deltas as betting signals.
 - [x] Add conservative edge-recommendation policy fields to current prop CSVs.
 - [x] Add website-ready player-prop policy explanation fields to current prop CSVs: `edge_publish_status`, `edge_reason`, `edge_required_threshold`, `edge_current_probability_edge`, `edge_policy_sample_size`, and `edge_policy_historical_roi`.
+- [x] Add website-facing `predictions/player_props_public.csv` with `public_board_status`, `public_board_reason`, `public_bettable_flag`, `public_pick_flag`, `public_pick_tier`, `public_pick_reason`, and `public_sort_rank`, while keeping full diagnostic prop CSVs intact.
+- [x] Keep injury-review player props visible in the public export for transparency, but demote them below clean no-bet/research rows so default website sorting is not dominated by availability warnings.
+- [x] Split current recommendation blockers into `below_threshold` versus `no_positive_ev` so rows that pass the historical edge threshold but fail the current price/juice gate are no longer mislabeled.
+- [x] Add `predictions/evaluation/player_props/edge_policy_diagnostics.csv` so unsupported player-prop markets have explicit rejection reasons such as insufficient sample, non-positive historical ROI, or below-minimum probability-edge threshold instead of silently staying `research_only`.
+- [x] Add live-week leakage guardrails to downstream player-prop policy stages: historical line joins, confidence-tier metrics, over-probability calibration, and edge-policy backtests now receive the pipeline live cutoff.
 - [ ] Prove player-prop `prob_edge` and `edge_ev` add durable lift versus sportsbook implied probabilities before expanding recommendation signals beyond sparse market-specific policies.
 - [ ] Add true current and historical sportsbook line coverage for RB rushing TDs and WR/TE receiving TDs before treating those stat-specific TD props as bettable recommendations; current anytime-TD fallback lines are display/coverage aids only.
 - [ ] Add historical sportsbook line coverage and edge backtests for anytime TD before treating it as a recommendation signal.
 - [ ] Backfill historical first/last/2+/3+ TD scorer lines before promoting novelty TD markets beyond research-only output.
 
-Current edge-backtest read: the policy selects only market-level thresholds with at least 100 historical bets and positive ROI: strong anytime TD at `prob_edge >= 0.10` and lean RB rushing yards at `prob_edge >= 0.02`. Current rows expose these thresholds and explain blocked picks through `edge_publish_status` / `edge_reason`, but the latest Week 8 review still has zero current recommended rows because EV, threshold, availability, and true-line gates are not met after price/juice.
+Current edge-backtest read: the policy selects only market-level thresholds with at least 100 historical bets and positive ROI: strong anytime TD at `prob_edge >= 0.10` and lean RB rushing yards at `prob_edge >= 0.02`. Current rows expose these thresholds and explain blocked picks through `edge_publish_status` / `edge_reason`. The latest Week 8 review has zero current recommended rows because recommendation flags now require both the historical probability-edge threshold and positive current EV after sportsbook juice; rows that clear the threshold but fail the price gate publish as `no_positive_ev`, not `below_threshold`.
 
-Current line-gap read: the latest Week 8 line-gap audit separates 1,006 model prediction rows without an offered sportsbook line from 572 offered player/game/market pairs that were not in the prediction universe. This is now a coverage/prediction-universe problem, not an unknown-roster problem.
+Current line-gap read: the latest Week 8 quality rerun has 728 model prediction rows without an offered sportsbook line and 237 offered player/game/market pairs outside predictions. The LA/LAR team-alias mismatch in line-offered candidate expansion is fixed, and the true `candidate_expansion_gap` bucket is now 0. Remaining offered rows are non-player D/ST/no-touchdown outcomes, unsupported market/position pairs such as QB rushing yards under the RB rushing model, inactive/IR/practice-squad rows, missing-history rows, and identity misses; handle those separately without loosening public pick gates.
 
 Current confidence-tier read: higher historical sample size should remain diagnostic-only. The latest historical-line evaluation shows high-tier rows with more volume but weaker line MAE/model-pick accuracy than low/medium tiers, so confidence tier must not boost published recommendations until calibrated by market and line context.
 
@@ -498,6 +508,7 @@ These should stay labeled as novelty longshot watchlists until backtests prove s
 - [x] `predictions/player_props_offense.csv`
 - [x] `predictions/player_props_defense.csv`
 - [x] `predictions/player_props_novelty.csv` research-only first/last/2+/3+ TD scorer output.
+- [x] `predictions/player_props_public.csv` cleaner website-facing board derived from full diagnostic prop exports.
 - [x] MattyTheBookie CSV publishing support for player prop files.
 - [x] MattyTheBookie website/import consumption for player prop files.
 
@@ -531,6 +542,7 @@ Principle: keep archived prediction snapshots immutable as the public record of 
 - [x] Add MTB archive support for displaying prediction-vs-actual as a result overlay, not by mutating the stored prediction fields.
 - [x] Protect MTB season/week archive CSVs during live reruns: preserve existing snapshots and skip creating partial archive snapshots when already-started games have been excluded.
 - [x] Keep latest finalized live-published holdout metrics available in `analysis/model_metrics_week_NN.csv` when the active prediction week is not finalized yet.
+- [x] Add `live_published_source_week` and latest-graded wording to `analysis/model_metrics_week_NN.csv` so the website does not present an earlier finalized holdout as current-week grading.
 - [x] Defer player-prop archive grading until per-market player actuals and sportsbook line mappings are reliable enough to avoid false grading.
 - [ ] Review the first finalized week with MTB result overlays and live-published holdout metrics together, then decide which repeated live misses should become model/policy work items.
 

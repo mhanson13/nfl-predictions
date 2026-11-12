@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.utils.io import PROC_DIR, read_df, write_df
+from src.utils.week_filter import filter_before_week
 
 
 DEFAULT_LINES_PATH = PROC_DIR / "player_prop_historical_line_eval.parquet"
@@ -17,6 +18,7 @@ DEFAULT_DETAIL_PATH = Path("predictions/evaluation/player_props/edge_backtest_de
 DEFAULT_SUMMARY_PATH = Path("predictions/evaluation/player_props/edge_backtest_summary.csv")
 DEFAULT_MARKET_THRESHOLDS_PATH = Path("predictions/evaluation/player_props/edge_backtest_market_thresholds.csv")
 DEFAULT_POLICY_PATH = Path("predictions/evaluation/player_props/edge_recommendation_policy.csv")
+DEFAULT_POLICY_DIAGNOSTICS_PATH = Path("predictions/evaluation/player_props/edge_policy_diagnostics.csv")
 
 DEFAULT_EV_THRESHOLDS = (0.0, 0.02, 0.05, 0.10)
 DEFAULT_PROB_EDGE_THRESHOLDS = (0.0, 0.02, 0.05, 0.10)
@@ -118,6 +120,12 @@ POLICY_COLUMNS = [
     "policy_min_roi",
     "policy_min_threshold",
     "generated_at",
+]
+
+POLICY_DIAGNOSTIC_COLUMNS = [
+    *POLICY_COLUMNS,
+    "policy_eligible",
+    "policy_failure_reason",
 ]
 
 
@@ -387,9 +395,12 @@ def build_edge_backtest(
     ev_thresholds: Iterable[float] = DEFAULT_EV_THRESHOLDS,
     prob_edge_thresholds: Iterable[float] = DEFAULT_PROB_EDGE_THRESHOLDS,
     generated_at: str | None = None,
+    exclude_from_season: int | None = None,
+    exclude_from_week: int | None = None,
 ) -> pd.DataFrame:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
     prepared = prepare_backtest_frame(lines, probabilities)
+    prepared = filter_before_week(prepared, exclude_from_season, exclude_from_week)
     if prepared.empty:
         return pd.DataFrame(columns=BACKTEST_COLUMNS)
 
@@ -546,6 +557,63 @@ def build_edge_recommendation_policy(
     return out[POLICY_COLUMNS].sort_values(["scope", "market", "sportsbook"], kind="stable").reset_index(drop=True)
 
 
+def build_edge_policy_diagnostics(
+    summary: pd.DataFrame,
+    *,
+    min_bets: int = DEFAULT_POLICY_MIN_BETS,
+    min_roi: float = DEFAULT_POLICY_MIN_ROI,
+    min_threshold: float = DEFAULT_POLICY_MIN_THRESHOLD,
+) -> pd.DataFrame:
+    if summary.empty:
+        return pd.DataFrame(columns=POLICY_DIAGNOSTIC_COLUMNS)
+
+    out = summary[
+        summary["selection_scope"].eq("best_price")
+        & summary["strategy"].eq("prob_edge")
+        & summary["scope"].isin(["market_sportsbook", "market"])
+    ].copy()
+    if out.empty:
+        return pd.DataFrame(columns=POLICY_DIAGNOSTIC_COLUMNS)
+
+    out["n_bets"] = pd.to_numeric(out["n_bets"], errors="coerce")
+    out["roi"] = pd.to_numeric(out["roi"], errors="coerce")
+    out["threshold"] = pd.to_numeric(out["threshold"], errors="coerce")
+    out["policy_min_bets"] = int(min_bets)
+    out["policy_min_roi"] = float(min_roi)
+    out["policy_min_threshold"] = float(min_threshold)
+
+    eligible = (
+        out["market"].notna()
+        & out["n_bets"].ge(int(min_bets))
+        & out["roi"].gt(float(min_roi))
+        & out["threshold"].ge(float(min_threshold))
+    )
+    out["policy_eligible"] = eligible
+    out["recommendation_tier"] = np.where(eligible & out["roi"].ge(0.05), "strong", np.where(eligible, "lean", "research_only"))
+
+    reasons: list[str] = []
+    for row in out.itertuples(index=False):
+        row_reasons: list[str] = []
+        if pd.isna(getattr(row, "market")):
+            row_reasons.append("missing_market")
+        if pd.isna(getattr(row, "n_bets")) or float(getattr(row, "n_bets")) < int(min_bets):
+            row_reasons.append("insufficient_sample")
+        if pd.isna(getattr(row, "roi")) or float(getattr(row, "roi")) <= float(min_roi):
+            row_reasons.append("non_positive_historical_roi")
+        if pd.isna(getattr(row, "threshold")) or float(getattr(row, "threshold")) < float(min_threshold):
+            row_reasons.append("below_minimum_probability_edge_threshold")
+        reasons.append(";".join(row_reasons) if row_reasons else "eligible")
+    out["policy_failure_reason"] = reasons
+
+    for col in POLICY_DIAGNOSTIC_COLUMNS:
+        if col not in out.columns:
+            out[col] = np.nan
+    return out[POLICY_DIAGNOSTIC_COLUMNS].sort_values(
+        ["scope", "market", "sportsbook", "threshold"],
+        kind="stable",
+    ).reset_index(drop=True)
+
+
 def _float_sequence(values: Sequence[str] | None, default: Sequence[float]) -> list[float]:
     if not values:
         return list(default)
@@ -563,11 +631,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--summary-output", type=Path, default=DEFAULT_SUMMARY_PATH)
     parser.add_argument("--market-threshold-output", type=Path, default=DEFAULT_MARKET_THRESHOLDS_PATH)
     parser.add_argument("--policy-output", type=Path, default=DEFAULT_POLICY_PATH)
+    parser.add_argument("--policy-diagnostics-output", type=Path, default=DEFAULT_POLICY_DIAGNOSTICS_PATH)
     parser.add_argument("--ev-thresholds", nargs="*", default=None)
     parser.add_argument("--prob-edge-thresholds", nargs="*", default=None)
     parser.add_argument("--policy-min-bets", type=int, default=DEFAULT_POLICY_MIN_BETS)
     parser.add_argument("--policy-min-roi", type=float, default=DEFAULT_POLICY_MIN_ROI)
     parser.add_argument("--policy-min-threshold", type=float, default=DEFAULT_POLICY_MIN_THRESHOLD)
+    parser.add_argument("--exclude-from-season", type=int, default=None)
+    parser.add_argument("--exclude-from-week", type=int, default=None)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
 
@@ -583,10 +654,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         ev_thresholds=_float_sequence(args.ev_thresholds, DEFAULT_EV_THRESHOLDS),
         prob_edge_thresholds=_float_sequence(args.prob_edge_thresholds, DEFAULT_PROB_EDGE_THRESHOLDS),
         generated_at=generated_at,
+        exclude_from_season=args.exclude_from_season,
+        exclude_from_week=args.exclude_from_week,
     )
     summary = summarize_edge_backtest(detail, generated_at=generated_at)
     market_thresholds = build_market_threshold_summary(summary)
     policy = build_edge_recommendation_policy(
+        summary,
+        min_bets=args.policy_min_bets,
+        min_roi=args.policy_min_roi,
+        min_threshold=args.policy_min_threshold,
+    )
+    policy_diagnostics = build_edge_policy_diagnostics(
         summary,
         min_bets=args.policy_min_bets,
         min_roi=args.policy_min_roi,
@@ -597,6 +676,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = write_df(summary, args.summary_output)
     market_threshold_path = write_df(market_thresholds, args.market_threshold_output)
     policy_path = write_df(policy, args.policy_output)
+    policy_diagnostics_path = write_df(policy_diagnostics, args.policy_diagnostics_output)
 
     if args.debug:
         display = summary[summary["scope"].eq("all")].copy()
@@ -619,10 +699,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not policy.empty:
             print("[player_props.edge_backtest] recommendation policy:")
             print(policy[["scope", "market", "sportsbook", "threshold", "n_bets", "roi", "recommendation_tier"]].to_string(index=False))
+        if not policy_diagnostics.empty:
+            print("[player_props.edge_backtest] policy diagnostics:")
+            print(policy_diagnostics["policy_failure_reason"].value_counts(dropna=False).to_string())
     print(f"[player_props.edge_backtest] wrote detail rows={len(detail)} -> {detail_path.resolve()}")
     print(f"[player_props.edge_backtest] wrote summary rows={len(summary)} -> {summary_path.resolve()}")
     print(f"[player_props.edge_backtest] wrote market thresholds rows={len(market_thresholds)} -> {market_threshold_path.resolve()}")
     print(f"[player_props.edge_backtest] wrote recommendation policy rows={len(policy)} -> {policy_path.resolve()}")
+    print(
+        f"[player_props.edge_backtest] wrote policy diagnostics rows={len(policy_diagnostics)} "
+        f"-> {policy_diagnostics_path.resolve()}"
+    )
     return 0
 
 

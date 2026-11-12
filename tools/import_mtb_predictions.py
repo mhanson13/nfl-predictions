@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,10 +36,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="import:predictions",
         help="npm script to run in the MattyTheBookie repo.",
     )
+    parser.add_argument(
+        "--overwrite-archive",
+        action="store_true",
+        help="Overwrite an existing season/week JSON archive snapshot in the MattyTheBookie repo.",
+    )
     return parser.parse_args(argv)
 
 
-def import_predictions(repo_dir: Path, script: str = "import:predictions") -> None:
+def import_predictions(repo_dir: Path, script: str = "import:predictions", *, overwrite_archive: bool = False) -> None:
     repo_root = repo_dir.resolve()
     if not repo_root.exists():
         raise FileNotFoundError(f"MattyTheBookie repo not found: {repo_root}")
@@ -53,8 +59,12 @@ def import_predictions(repo_dir: Path, script: str = "import:predictions") -> No
     if not npm:
         raise FileNotFoundError("npm was not found on PATH; cannot run MattyTheBookie importer.")
 
+    env = os.environ.copy()
+    if overwrite_archive:
+        env["PREDICTIONS_OVERWRITE_ARCHIVE"] = "1"
+
     print(f"[import_mtb] Running npm run {script} in {repo_root}")
-    result = subprocess.run([npm, "run", script], cwd=repo_root, check=False)
+    result = subprocess.run([npm, "run", script], cwd=repo_root, check=False, env=env)
     if result.returncode != 0:
         raise RuntimeError(f"MattyTheBookie importer failed with exit code {result.returncode}")
     print("[import_mtb] MattyTheBookie prediction JSON updated.")
@@ -62,7 +72,7 @@ def import_predictions(repo_dir: Path, script: str = "import:predictions") -> No
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    import_predictions(args.repo_dir, script=args.script)
+    import_predictions(args.repo_dir, script=args.script, overwrite_archive=args.overwrite_archive)
     return 0
 
 

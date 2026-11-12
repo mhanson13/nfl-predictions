@@ -8,6 +8,7 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 
 DEFAULT_OUTPUT_DIR = Path("analysis")
@@ -45,7 +46,10 @@ class MetricRow:
 def _read_csv_if_exists(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
-    return pd.read_csv(path)
+    try:
+        return pd.read_csv(path)
+    except EmptyDataError:
+        return pd.DataFrame()
 
 
 def _latest_overall_metrics(path: Path) -> pd.Series | None:
@@ -189,6 +193,13 @@ def _resolve_live_results_summary_path(week: int, summary_dir: Path = LIVE_RESUL
     if not candidates:
         return exact_path
     return max(candidates, key=lambda item: item[0])[1]
+
+
+def _live_results_summary_week(path: Path) -> int | None:
+    try:
+        return int(path.stem.rsplit("_", 1)[-1])
+    except ValueError:
+        return None
 
 
 def _select_live_results_summary_row(path: Path) -> pd.Series | None:
@@ -352,116 +363,137 @@ def build_model_metrics_rows(
     )
     live_summary = _select_live_results_summary_row(live_summary_path)
     live_n = int(float(_value(live_summary, "n_games", 0) or 0)) if live_summary is not None else ""
+    live_source_week = _live_results_summary_week(live_summary_path)
+    if live_summary is not None and live_source_week is not None:
+        _add_metric(
+            rows,
+            season=season,
+            week=week,
+            generated_at=generated_at,
+            section="live_published_holdout",
+            sort_order=89,
+            metric_key="live_published_source_week",
+            label="Latest graded published-pick source week",
+            value=live_source_week,
+            display_value=f"Week {live_source_week}",
+            unit="week",
+            sample_size=live_n,
+            description=(
+                "Most recent finalized published-pick holdout week used in this metrics file. "
+                "This may be earlier than the current prediction week."
+            ),
+            source_artifact=live_summary_path,
+        )
     for order, key, metric_key, label, unit, formatter, sample_key, description in [
         (
             90,
             "n_games",
             "live_published_games",
-            "Published-pick graded games",
+            "Latest graded published-pick games",
             "games",
             _fmt_count,
             "n_games",
-            "Games from immutable published/locked prediction snapshots that have finalized result overlays.",
+            "Games from the latest immutable published/locked prediction snapshot with finalized result overlays.",
         ),
         (
             91,
             "accuracy",
             "live_published_accuracy",
-            "Published-pick SU accuracy",
+            "Latest graded published-pick SU accuracy",
             "percent",
             _fmt_percent,
             "n_games",
-            "Straight-up accuracy from predictions that were published or locked before result grading.",
+            "Straight-up accuracy from the latest finalized published-pick holdout, not necessarily the current week.",
         ),
         (
             92,
             "f1",
             "live_published_f1",
-            "Published-pick F1",
+            "Latest graded published-pick F1",
             "percent",
             _fmt_percent,
             "n_games",
-            "F1 score from the published-pick holdout overlay.",
+            "F1 score from the latest finalized published-pick holdout overlay.",
         ),
         (
             93,
             "auc",
             "live_published_auc",
-            "Published-pick AUC",
+            "Latest graded published-pick AUC",
             "decimal",
             _fmt_decimal,
             "n_games",
-            "AUC from the published-pick holdout overlay.",
+            "AUC from the latest finalized published-pick holdout overlay.",
         ),
         (
             94,
             "brier",
             "live_published_brier",
-            "Published-pick Brier",
+            "Latest graded published-pick Brier",
             "decimal",
             _fmt_decimal,
             "n_games",
-            "Brier score from the published-pick holdout overlay.",
+            "Brier score from the latest finalized published-pick holdout overlay.",
         ),
         (
             95,
             "log_loss",
             "live_published_log_loss",
-            "Published-pick log loss",
+            "Latest graded published-pick log loss",
             "decimal",
             _fmt_decimal,
             "n_games",
-            "Log loss from the published-pick holdout overlay.",
+            "Log loss from the latest finalized published-pick holdout overlay.",
         ),
         (
             96,
             "mae_margin",
             "live_published_margin_mae",
-            "Published-pick margin MAE",
+            "Latest graded published-pick margin MAE",
             "points",
             _fmt_points,
             "n_games",
-            "Average absolute predicted-margin error from published picks.",
+            "Average absolute predicted-margin error from the latest finalized published-pick holdout.",
         ),
         (
             97,
             "ats_hit_rate",
             "live_published_ats_hit_rate",
-            "Published-pick ATS hit rate",
+            "Latest graded published-pick ATS hit rate",
             "percent",
             _fmt_percent,
             "ats_graded",
-            "Hit rate for published-pick spread selections when a valid market line exists.",
+            "Hit rate for latest finalized published-pick spread selections when a valid market line exists.",
         ),
         (
             98,
             "moneyline_roi",
             "live_published_moneyline_roi",
-            "Published-pick moneyline ROI",
+            "Latest graded published-pick moneyline ROI",
             "percent",
             _fmt_percent,
             "moneyline_graded",
-            "Flat one-unit moneyline ROI for the model-selected side from published-pick result overlays.",
+            "Flat one-unit moneyline ROI for the model-selected side from the latest finalized published-pick holdout.",
         ),
         (
             99,
             "avg_moneyline_clv_prob_delta",
             "live_published_avg_moneyline_clv_prob_delta",
-            "Published-pick avg moneyline CLV",
+            "Latest graded published-pick avg moneyline CLV",
             "percent",
             _fmt_percent,
             "moneyline_clv_tracked",
-            "Average close-minus-pick no-vig implied probability movement for published picks with matched CLV snapshots.",
+            "Average close-minus-pick no-vig implied probability movement for latest finalized published picks with matched CLV snapshots.",
         ),
         (
             100,
             "positive_moneyline_clv_rate",
             "live_published_positive_moneyline_clv_rate",
-            "Published-pick positive moneyline CLV",
+            "Latest graded published-pick positive moneyline CLV",
             "percent",
             _fmt_percent,
             "moneyline_clv_tracked",
-            "Share of published picks with positive moneyline CLV among matched CLV snapshots.",
+            "Share of latest finalized published picks with positive moneyline CLV among matched CLV snapshots.",
         ),
     ]:
         value = _value(live_summary, key)
@@ -1034,6 +1066,121 @@ def build_model_metrics_rows(
                         metric_key=f"{metric_key}_{metric_suffix}",
                         label=confidence_label,
                         value=confidence_value,
+                        display_value=display_value,
+                        unit=unit,
+                        sample_size=policy_n,
+                        description=description,
+                        source_artifact=market_edge_policy_path,
+                    )
+            segment_status = _value(policy, "segment_gate_status")
+            if segment_status is not None and not pd.isna(segment_status):
+                segment_worst = _value(policy, "segment_gate_worst_segment")
+                segment_worst_roi = _value(policy, "segment_gate_worst_roi")
+                for segment_order, metric_suffix, segment_label, segment_value, display_value, unit, description in [
+                    (
+                        15,
+                        "segment_gate_status",
+                        "Moneyline disagreement segment gate",
+                        segment_status,
+                        str(segment_status),
+                        "status",
+                        "Probability-edge segment gate status for the selected moneyline disagreement policy.",
+                    ),
+                    (
+                        16,
+                        "segment_gate_worst_segment",
+                        "Moneyline disagreement weakest segment",
+                        segment_worst,
+                        str(segment_worst),
+                        "segment",
+                        "Worst bounded probability-edge segment inside the selected policy window.",
+                    ),
+                    (
+                        17,
+                        "segment_gate_worst_roi",
+                        "Moneyline disagreement weakest-segment ROI",
+                        segment_worst_roi,
+                        _fmt_percent(segment_worst_roi),
+                        "percent",
+                        "Historical ROI for the weakest bounded probability-edge segment inside the selected policy window.",
+                    ),
+                ]:
+                    _add_metric(
+                        rows,
+                        season=season,
+                        week=week,
+                        generated_at=generated_at,
+                        section="market_policy",
+                        sort_order=order + segment_order,
+                        metric_key=f"{metric_key}_{metric_suffix}",
+                        label=segment_label,
+                        value=segment_value,
+                        display_value=display_value,
+                        unit=unit,
+                        sample_size=policy_n,
+                        description=description,
+                        source_artifact=market_edge_policy_path,
+                    )
+            diagnostic_status = _value(policy, "disagreement_recommendation_gate_status")
+            if diagnostic_status is not None and not pd.isna(diagnostic_status):
+                diagnostic_fields = [
+                    (
+                        18,
+                        "diagnostic_gate_status",
+                        "Moneyline disagreement diagnostic gate",
+                        diagnostic_status,
+                        str(diagnostic_status),
+                        "status",
+                        "Diagnostic recommendation gate after reconciling probability-edge and moneyline-price segments.",
+                    ),
+                    (
+                        19,
+                        "diagnostic_probability_edge_candidates",
+                        "Moneyline candidate probability-edge bins",
+                        _value(policy, "disagreement_recommendation_gate_probability_edge_candidate_segments"),
+                        str(_value(policy, "disagreement_recommendation_gate_probability_edge_candidate_segments", "")),
+                        "segments",
+                        "Bounded probability-edge bins that diagnostics currently support inside the policy window.",
+                    ),
+                    (
+                        20,
+                        "diagnostic_probability_edge_blocked",
+                        "Moneyline blocked probability-edge bins",
+                        _value(policy, "disagreement_recommendation_gate_probability_edge_blocked_segments"),
+                        str(_value(policy, "disagreement_recommendation_gate_probability_edge_blocked_segments", "")),
+                        "segments",
+                        "Bounded probability-edge bins that diagnostics currently block inside the policy window.",
+                    ),
+                    (
+                        21,
+                        "diagnostic_odds_bucket_candidates",
+                        "Moneyline candidate price buckets",
+                        _value(policy, "disagreement_recommendation_gate_odds_bucket_candidate_segments"),
+                        str(_value(policy, "disagreement_recommendation_gate_odds_bucket_candidate_segments", "")),
+                        "segments",
+                        "Model-side moneyline buckets that diagnostics currently support.",
+                    ),
+                    (
+                        22,
+                        "diagnostic_odds_bucket_blocked",
+                        "Moneyline blocked price buckets",
+                        _value(policy, "disagreement_recommendation_gate_odds_bucket_blocked_segments"),
+                        str(_value(policy, "disagreement_recommendation_gate_odds_bucket_blocked_segments", "")),
+                        "segments",
+                        "Model-side moneyline buckets that diagnostics currently block.",
+                    ),
+                ]
+                for diag_order, metric_suffix, diag_label, diag_value, display_value, unit, description in diagnostic_fields:
+                    _add_metric(
+                        rows,
+                        season=season,
+                        week=week,
+                        generated_at=generated_at,
+                        section="market_policy",
+                        sort_order=order + diag_order,
+                        metric_key=f"{metric_key}_{metric_suffix}",
+                        label=diag_label,
+                        value=diag_value,
                         display_value=display_value,
                         unit=unit,
                         sample_size=policy_n,

@@ -55,6 +55,41 @@ def test_merge_and_write_normalizes_mixed_schedule_id_columns(tmp_path):
     assert result["old_game_id"].astype("string").tolist() == ["2025090400", "2026090900"]
 
 
+def test_merge_and_write_normalizes_mixed_pbp_text_columns(tmp_path):
+    existing = pd.DataFrame(
+        [
+            {
+                "game_id": "2025_01_DAL_PHI",
+                "season": 2025,
+                "week": 1,
+                "old_game_id": 2025090400,
+                "play_clock": 0,
+                "play_id": 1,
+            }
+        ]
+    )
+    new_df = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_01_BAL_IND",
+                "season": 2026,
+                "week": 1,
+                "old_game_id": "2026090900",
+                "play_clock": "00:12",
+                "play_id": 1,
+            }
+        ]
+    )
+    path = tmp_path / "nfl_pbp.parquet"
+
+    output_path = _merge_and_write(path, existing, new_df)
+    result = read_df(output_path)
+
+    assert output_path.suffix == ".parquet"
+    assert result["old_game_id"].astype("string").tolist() == ["2025090400", "2026090900"]
+    assert result["play_clock"].astype("string").tolist() == ["0", "00:12"]
+
+
 def test_fetch_pbp_prefers_release_files(monkeypatch):
     release_df = pd.DataFrame(
         {

@@ -44,6 +44,8 @@ FEATURE_COLUMNS = [
     "favorite_agreement_flag",
 ]
 
+BLEND_LOGIT_SOLVER = "liblinear"
+
 DETAIL_COLUMNS = [
     "season",
     "week",
@@ -81,6 +83,39 @@ DETAIL_COLUMNS = [
     "pred_home_margin",
     "market_home_margin",
     "spread_edge_points",
+]
+
+SUMMARY_COLUMNS = [
+    "scope",
+    "season",
+    "segment",
+    "n_games",
+    "model_accuracy",
+    "vegas_accuracy",
+    "blend_accuracy",
+    "model_brier",
+    "vegas_brier",
+    "blend_brier",
+    "blend_brier_delta_vs_model",
+    "blend_brier_delta_vs_vegas",
+    "model_log_loss",
+    "vegas_log_loss",
+    "blend_log_loss",
+    "model_auc",
+    "vegas_auc",
+    "blend_auc",
+    "model_side_roi",
+    "vegas_side_roi",
+    "blend_side_roi",
+    "blend_roi_delta_vs_model",
+    "blend_roi_delta_vs_vegas",
+    "model_vegas_agreement_rate",
+    "blend_vegas_agreement_rate",
+    "blend_model_agreement_rate",
+    "avg_model_home_prob",
+    "avg_vegas_home_prob",
+    "avg_blend_home_prob",
+    "avg_prob_edge_blend_side",
 ]
 
 INTERNAL_COLUMNS = [
@@ -229,7 +264,7 @@ def walk_forward_blend(
         model = Pipeline(
             steps=[
                 ("scale", StandardScaler()),
-                ("logit", LogisticRegression(C=float(blend_c), max_iter=1000, solver="lbfgs")),
+                ("logit", LogisticRegression(C=float(blend_c), max_iter=1000, solver=BLEND_LOGIT_SOLVER)),
             ]
         )
         model.fit(train[FEATURE_COLUMNS], train["home_win_actual"].astype(int))
@@ -340,7 +375,7 @@ def _summary_record(
 def summarize_blend_backtest(scored: pd.DataFrame) -> pd.DataFrame:
     records: list[dict[str, object]] = []
     if scored.empty:
-        return pd.DataFrame.from_records(records)
+        return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
     def add_group(scope: str, season: int | str, group: pd.DataFrame) -> None:
         segments = [
@@ -366,7 +401,7 @@ def summarize_blend_backtest(scored: pd.DataFrame) -> pd.DataFrame:
     add_group("overall", "all", scored)
     for season, season_df in scored.groupby("season", sort=True):
         add_group("season", int(season), season_df)
-    return pd.DataFrame.from_records(records)
+    return pd.DataFrame.from_records(records, columns=SUMMARY_COLUMNS)
 
 
 def build_blend_policy(

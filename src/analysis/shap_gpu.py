@@ -34,6 +34,7 @@ MODEL_PATH = Path("models/xgb_winprob.json")
 MODEL_BUNDLE_PATH = Path("models/winprob_gb.pkl")
 OUTPUT_DIR = Path("analysis/shap")
 SAMPLE_SIZE = 2000
+MAX_PLOT_FEATURES = 20
 
 
 def _prepare_feature_matrix(
@@ -88,6 +89,109 @@ def _load_model() -> Tuple[xgb.Booster, Optional[List[str]]]:
     raise FileNotFoundError(f"Model not found at {MODEL_PATH} or {MODEL_BUNDLE_PATH}")
 
 
+def _native_tree_shap_values(
+    booster: xgb.Booster,
+    sample: pd.DataFrame,
+) -> tuple[np.ndarray, float | np.ndarray]:
+    """Compute TreeSHAP contributions with XGBoost's native predictor."""
+    dmatrix = xgb.DMatrix(sample, feature_names=list(sample.columns))
+    contribs = np.asarray(
+        booster.predict(dmatrix, pred_contribs=True, validate_features=True)
+    )
+    feature_count = sample.shape[1]
+    if contribs.ndim == 3:
+        if contribs.shape[1] == feature_count + 1:
+            contribs = contribs[:, :, 0]
+        elif contribs.shape[2] == feature_count + 1:
+            contribs = contribs[:, 0, :]
+    if contribs.ndim != 2 or contribs.shape[1] != feature_count + 1:
+        raise ValueError(
+            "Unexpected XGBoost SHAP contribution shape "
+            f"{contribs.shape}; expected (*, {feature_count + 1})."
+        )
+    shap_array = contribs[:, :-1]
+    bias = contribs[:, -1]
+    if bias.size and np.allclose(bias, bias[0], equal_nan=True):
+        base_value: float | np.ndarray = float(bias[0])
+    else:
+        base_value = bias
+    return shap_array, base_value
+
+
+def _top_shap_importance(shap_array: np.ndarray, feature_names: list[str]) -> pd.Series:
+    """Return mean absolute SHAP importance, largest first."""
+    if shap_array.ndim != 2:
+        raise ValueError(f"Expected 2D SHAP array, got shape {shap_array.shape}.")
+    if shap_array.shape[1] != len(feature_names):
+        raise ValueError(
+            "SHAP feature width does not match feature names: "
+            f"{shap_array.shape[1]} vs {len(feature_names)}."
+        )
+    return pd.Series(np.abs(shap_array).mean(axis=0), index=feature_names).sort_values(ascending=False)
+
+
+def _plot_shap_bar(shap_array: np.ndarray, sample: pd.DataFrame, output_path: Path) -> None:
+    """Write a compact mean-absolute-SHAP bar chart without importing shap."""
+    importance = _top_shap_importance(shap_array, list(sample.columns)).head(MAX_PLOT_FEATURES)
+    display = importance.iloc[::-1]
+    height = max(5.0, 0.34 * len(display) + 1.2)
+    fig, ax = plt.subplots(figsize=(10, height))
+    ax.barh(display.index, display.values, color="#4c78a8")
+    ax.set_xlabel("mean |SHAP value|")
+    ax.set_title("Top win-probability feature impacts")
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_shap_summary(shap_array: np.ndarray, sample: pd.DataFrame, output_path: Path) -> None:
+    """Write a beeswarm-style SHAP summary using only matplotlib/numpy."""
+    importance = _top_shap_importance(shap_array, list(sample.columns)).head(MAX_PLOT_FEATURES)
+    top_features = list(importance.index)[::-1]
+    col_positions = {col: idx for idx, col in enumerate(sample.columns)}
+    rng = np.random.default_rng(42)
+    height = max(6.0, 0.36 * len(top_features) + 1.4)
+    fig, ax = plt.subplots(figsize=(10, height))
+
+    for y_pos, feature in enumerate(top_features):
+        shap_values = shap_array[:, col_positions[feature]].astype(float)
+        feature_values = pd.to_numeric(sample[feature], errors="coerce").to_numpy(dtype=float)
+        valid_values = feature_values[np.isfinite(feature_values)]
+        if valid_values.size:
+            low, high = np.nanpercentile(valid_values, [5, 95])
+            denom = high - low
+            if denom <= 0:
+                colors = np.full_like(shap_values, 0.5, dtype=float)
+            else:
+                colors = np.clip((feature_values - low) / denom, 0.0, 1.0)
+                colors = np.where(np.isfinite(colors), colors, 0.5)
+        else:
+            colors = np.full_like(shap_values, 0.5, dtype=float)
+        jitter = rng.normal(0.0, 0.08, size=len(shap_values))
+        scatter = ax.scatter(
+            shap_values,
+            np.full_like(shap_values, y_pos, dtype=float) + jitter,
+            c=colors,
+            cmap="coolwarm",
+            s=10,
+            alpha=0.65,
+            linewidths=0,
+        )
+
+    ax.axvline(0.0, color="#555555", linewidth=1.0, alpha=0.7)
+    ax.set_yticks(range(len(top_features)))
+    ax.set_yticklabels(top_features)
+    ax.set_xlabel("SHAP value")
+    ax.set_title("Win-probability SHAP summary")
+    ax.grid(axis="x", alpha=0.25)
+    cbar = fig.colorbar(scatter, ax=ax, pad=0.01)
+    cbar.set_label("feature value")
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     """Entrypoint for generating SHAP values/plots used by diagnostics."""
     if not MATCHUP_PATH.exists():
@@ -113,34 +217,18 @@ def main() -> None:
         return
     sample = X.sample(n=min(len(X), SAMPLE_SIZE), random_state=42)
     print(f"[shap_gpu] Computing SHAP for {len(sample)} rows and {len(feat_cols)} features.")
-    import shap
 
-    dmatrix = xgb.DMatrix(sample, feature_names=list(sample.columns))
-    explainer = shap.TreeExplainer(booster)
-    shap_values = explainer.shap_values(dmatrix)
-    base_value = explainer.expected_value
-    if isinstance(shap_values, list):
-        shap_array = shap_values[0]
-    else:
-        shap_array = shap_values
+    shap_array, base_value = _native_tree_shap_values(booster, sample)
     shap_dir = OUTPUT_DIR
     shap_dir.mkdir(parents=True, exist_ok=True)
     np.save(shap_dir / "shap_values_winprob.npy", shap_array)
     sample.to_parquet(shap_dir / "shap_sample_features.parquet")
     with open(shap_dir / "shap_base_value_winprob.txt", "w", encoding="utf-8") as fh:
         fh.write(str(base_value))
-    plt.figure()
-    shap.summary_plot(shap_array, sample, show=False)
-    plt.tight_layout()
-    plt.savefig(shap_dir / "summary_winprob.png", bbox_inches="tight")
-    plt.close()
-    plt.figure()
-    shap.summary_plot(shap_array, sample, plot_type="bar", show=False)
-    plt.tight_layout()
-    plt.savefig(shap_dir / "summary_bar_winprob.png", bbox_inches="tight")
-    plt.close()
+    _plot_shap_summary(shap_array, sample, shap_dir / "summary_winprob.png")
+    _plot_shap_bar(shap_array, sample, shap_dir / "summary_bar_winprob.png")
     print(f"[shap_gpu] SHAP artifacts saved to {shap_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    main()

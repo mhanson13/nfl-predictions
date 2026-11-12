@@ -2,23 +2,23 @@
 
 ## Model Performance
 
-The latest validated win-probability evaluation run is **winprob_model (run_376)** from 2026-10-29. It logged AUC=0.703, Brier=0.219, LogLoss=0.629, Accuracy=0.652, F1=0.688, MAE=10.16, and RMSE=13.20. Compared to the earliest current-schema baseline (winprob_model / run_212), AUC changed by -0.005 and Brier changed by +0.000 (lower Brier is better).
+The latest validated win-probability evaluation run is **winprob_model (run_451)** from 2026-11-12. It logged AUC=0.704, Brier=0.219, LogLoss=0.629, Accuracy=0.648, F1=0.687, MAE=10.19, and RMSE=13.22. Compared to the earliest current-schema baseline (winprob_model / run_212), AUC changed by -0.004 and Brier changed by +0.000 (lower Brier is better).
 
 ### Metrics Snapshot
 | Metric | Value |
 |--------|-------|
-| Accuracy | 0.652 |
-| AUC | 0.703 |
+| Accuracy | 0.648 |
+| AUC | 0.704 |
 | Brier | 0.219 |
 | LogLoss | 0.629 |
-| MAE | 10.16 |
-| RMSE | 13.20 |
-| n | 2325 |
+| MAE | 10.19 |
+| RMSE | 13.22 |
+| n | 2354 |
 
 ### Why it matters
-- **AUC ~0.703** - ranking quality for winners vs. losers.
+- **AUC ~0.704** - ranking quality for winners vs. losers.
 - **Brier ~0.219** - probability calibration/error for game winners.
-- **F1 ~0.688** - balance between precision and recall on home-win calls.
+- **F1 ~0.687** - balance between precision and recall on home-win calls.
 
 ### Explainability (GPU SHAP)
 We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm which engineered signals (QB availability deltas, passing EPA trends, opponent-adjusted efficiency, red-zone execution, and pressure metrics) drove these gains.
@@ -49,9 +49,9 @@ Current highlights:
 - NFLVerse ingestion now prefers maintained `nflverse-data` release assets for core datasets, with `nfl_data_py` retained as fallback.
 - BallDontLie is the preferred commercial feed; SportsDataIO is a fallback and is disabled by default unless explicitly enabled.
 - BallDontLie `bdl_*` features are generated and ablated, but kept out of production training unless `--include-bdl-features` is passed because recent Week 4/Week 5 ablations did not show repeatable lift.
-- Team prediction outputs include market-policy guardrails so downstream consumers can distinguish strong moneyline policy picks, review-only, diagnostic-segment-blocked, segment-blocked or confidence-blocked moneyline edges, blocked spread signals, and no-bet rows.
+- Team prediction outputs include market-policy guardrails and public recommendation fields so downstream consumers can distinguish `recommended`, `lean`, `research_only`, `review`, and `no_bet` rows. Moneyline disagreement gates now evaluate probability-edge bins and model-side moneyline buckets, while spread signals remain research-only or blocked until cover-probability calibration improves.
 - Team prediction outputs now also include raw and empirically calibrated model-side moneyline confidence fields. The calibrated fields are diagnostic until the walk-forward confidence decision is promoted, but they make overconfident bins visible to MattyTheBookie without changing the base pick.
-- Player-prop models publish QB, offense, defense, and novelty CSVs with line consensus, injury/roster validation, line variance, over-probability, EV, and conservative edge-policy fields. Published prop rows now include `edge_publish_status` and `edge_reason` so downstream consumers can explain `strong`, `lean`, `review`, `no_bet`, `research_only`, and `unavailable` rows without recreating backend policy logic. Inferred TD split rows that use `anytime_td_fallback` lines remain display/research only and are never marked bettable.
+- Player-prop models publish full diagnostic QB, offense, defense, and novelty CSVs plus a cleaner `player_props_public.csv` board. Full rows keep line consensus, injury/roster validation, line variance, over-probability, EV, and conservative edge-policy fields; public rows prioritize exact sportsbook lines, active roster validation, no injury exclusions, and no fallback-only TD split lines. Recommendation labels distinguish rows that miss the historical probability threshold from rows that clear it but still fail the current price/juice EV gate.
 - Market benchmarking publishes ROI, model-vs-Vegas calibration, model-confidence calibration/recalibration tiers, walk-forward confidence recalibration decision artifacts, market-blend experiment overlays in `market_blend_policy.csv`, favorite-disagreement diagnostics/recommendations reconciled into `market_edge_policy.csv`, spread key-number diagnostics, CLV detail/summary artifacts, and optional per-game CLV fields in `analysis/market_benchmark.csv` when evaluated rows match pick-time snapshots.
 
 ## 3. System Architecture
@@ -67,7 +67,7 @@ raw data (nflverse release assets / ESPN / NOAA / Visual Crossing / BallDontLie 
         -> src/models/train.py + analysis/volatility_classifier.py
         -> models/*.pkl
         -> src/player_props/*.py
-        -> predictions/player_props_*.csv + predictions/evaluation/player_props/*.csv
+        -> predictions/player_props_*.csv + predictions/player_props_public.csv + predictions/evaluation/player_props/*.csv
         -> src/predict/predict_upcoming.py + src/predict/predict_history.py
         -> predictions/*.csv
         -> analysis.market_clv / analysis.market_roi / analysis.market_blend / analysis.market_confidence_recalibration / analysis.market_disagreement_diagnostics / analysis.model_metrics_export
@@ -132,17 +132,21 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
      --skip-logit `
      --prediction-week 5 `
      --live-run `
+     --skip-tomorrow-weather `
      --publish-mtb `
      --mtb-repo-dir C:\Code\mtb `
+     --mtb-overwrite-week-archive `
+     --mtb-allow-partial-week-archive `
      --debug
    ```
    - Replace `5` with the target NFL week.
    - Data fetchers run in parallel, with `--max-parallel-data 8` and `--data-start-delay 1` as the current operating defaults.
    - NFLVerse fetches prefer release files for PBP, schedules, rosters, injuries, snap counts, depth charts, and player stats, then fall back to `nfl_data_py`. Current-season release files can still lag upstream updates, so unavailable feeds continue with cached historical data where possible.
-   - Use `--prediction-week 5 --live-run` with the target week substituted to force a live slate, exclude that week from training/calibration/evaluation, and avoid regenerating predictions for games that already kicked off. Current-week odds, availability, and line-quality data may be attached to the published board, but same-week outcomes are not used as model labels or training features.
-   - Use `--publish-mtb` to copy current prediction, evaluation, ROI, and volatility CSVs into the local MattyTheBookie repo and refresh its normalized JSON. Season/week archive CSVs are immutable by default: existing archive files are preserved, and partial live slates are not archived unless `tools.publish_mtb_csvs --allow-partial-week-archive` is explicitly used.
+   - Use `--prediction-week 5 --live-run` with the target week substituted to force a live slate, exclude that week from training/calibration/evaluation, and avoid regenerating predictions for games that already kicked off. Current-week odds, availability, and line-quality data may be attached to the published board, but same-week outcomes are not used as model labels, training features, historical prop-line joins, over-probability calibration rows, confidence-tier metrics, or edge-policy backtests.
+   - Use `--publish-mtb` to copy current prediction, evaluation, ROI, and volatility CSVs into the local MattyTheBookie repo and refresh its normalized JSON. Season/week archive CSVs are immutable by default: existing archive files are preserved, and partial live slates are not archived unless `--mtb-overwrite-week-archive --mtb-allow-partial-week-archive` is explicitly used.
    - BallDontLie is preferred when `BALLDONTLIE_API_KEY` exists. SportsDataIO is skipped unless `--enable-sportsdataio` is passed.
    - PropLine player-prop odds run for explicit prediction weeks when `PROPLINE_API_KEY` is configured.
+   - Use `--skip-tomorrow-weather` while Tomorrow.io is rate-limited; Visual Crossing remains the preferred paid weather source and NOAA/static fallback still fill weather columns where available.
    - Sequential stages build features, train team and prop models, predict history/upcoming, evaluate, run market CLV/ROI/blend diagnostics, export website metrics, compare runs, generate SHAP artifacts, update this README, and publish to MTB when requested.
    - Native Windows stack-overflow exit codes (0xC0000409) are tolerated for predict_upcoming if the outputs were written (due to a PyArrow teardown bug).
 
@@ -169,18 +173,19 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
 | `data/raw/*.parquet` | Cached ingestion results, one file per feed; generated locally and ignored by Git. |
 | `data/processed/matchup_features.parquet` | Final team-game matrix with engineered features; generated locally and ignored by Git. |
 | `data/processed/player_identity.parquet` | Cross-source player identity table linking GSIS, ESPN, BallDontLie, Sportradar, and sportsbook aliases. |
-| `data/processed/current_player_availability.parquet` | Weekly availability table built from ESPN, nflverse, and BallDontLie context. |
+| `data/processed/current_player_availability.parquet` | Current prediction-week availability table built from ESPN, nflverse, and BallDontLie context. nflverse rows may use the latest known roster row up to the target week, but the output is stamped to the requested season/week so stale source weeks do not leak into current-week publishing. |
 | `models/winprob_gb.pkl`, `models/spread_gb.pkl`, `models/isotonic_calibrator.pkl` | Serialized team models and calibration artifacts; ignored by Git. |
 | `models/player_props/*/*_model.pkl` | Serialized player-prop market models; ignored by Git. |
-| `predictions/predictions.csv` | Upcoming week team predictions with Mountain Time kickoff, market policy, and volatility metadata. |
+| `predictions/predictions.csv` | Upcoming week team predictions with Mountain Time kickoff, market policy, public recommendation status/reason, and volatility metadata. |
 | `predictions/predictions_full.csv` | Full feature dump for upcoming games, used for debugging and analytics. |
 | `predictions/predictions_players_*.csv` | Legacy rate-based player projections for QB, offense, and defense. |
-| `predictions/player_props_qb.csv`, `predictions/player_props_offense.csv`, `predictions/player_props_defense.csv`, `predictions/player_props_novelty.csv` | Trained player-prop prediction exports with sportsbook lines, quality flags, EV fields, conservative recommendation policy, and website-ready `edge_publish_status` / `edge_reason` fields. |
+| `predictions/player_props_qb.csv`, `predictions/player_props_offense.csv`, `predictions/player_props_defense.csv`, `predictions/player_props_novelty.csv` | Full trained player-prop prediction exports with sportsbook lines, quality flags, EV fields, conservative recommendation policy, website-ready `edge_publish_status` / `edge_reason`, and public-board policy fields. Policy tiers include `below_threshold` and `no_positive_ev` so current rows can explain whether the block is model edge or sportsbook price/juice. |
+| `predictions/player_props_public.csv` | Cleaner website-facing player-prop board derived from the full exports. It keeps exact sportsbook-line rows for active roster players without injury exclusions or roster mismatches, excludes fallback-only TD split lines, and carries `public_board_status`, `public_board_reason`, `public_bettable_flag`, `public_pick_flag`, `public_pick_tier`, `public_pick_reason`, and `public_sort_rank`. `public_bettable_flag` means the row is clean enough to evaluate; only `public_pick_flag=true` should be displayed as a pick. Injury-review rows remain visible for transparency, but sort below clean no-bet/research rows so the public board is not led by availability warnings. |
 | `predictions/history/*.csv` | Historical win-probability predictions by season/week. |
 | `predictions/evaluation/*.csv` | Team model evaluation artifacts, calibration bins, weekly metrics, team errors, feature-quality reports, and feature-family ablations. |
 | `predictions/evaluation/live_prediction_vs_actual*.csv` | Postgame live-published prediction grading overlays. These join immutable MTB/locked prediction snapshots to finalized results without rewriting the original prediction files, and include CLV fields when `analysis/market_clv_detail.csv` matches the published pick side. |
-| `predictions/evaluation/player_props/*.csv` | Player-prop model metrics, historical line joins, over-probability diagnostics, edge backtests, weekly quality reports, line coverage, roster-line audits, and `prop_line_gap_audit_week_NN.csv` coverage gaps. |
-| `analysis/market_*.csv`, `analysis/model_metrics_week_NN.csv` | Market ROI, model-vs-Vegas benchmark, model-confidence calibration/recalibration, confidence strategy decisions, favorite-disagreement diagnostics/recommendations, CLV, blend, spread calibration, policy, published-pick holdout metrics, and website-ready metrics exports; generated locally and ignored by Git. |
+| `predictions/evaluation/player_props/*.csv` | Player-prop model metrics, historical line joins, over-probability diagnostics, edge backtests, weekly quality reports, line coverage, roster-line audits, and `prop_line_gap_audit_week_NN.csv` coverage gaps. The line-gap audit includes `offer_gap_category` and offered identity/position fields, so sportsbook offers outside predictions can be separated into non-player outcomes, unsupported position/market pairs, inactive/IR/practice-squad players, missing prior market history, identity misses, and true `candidate_expansion_gap` rows. Quality summaries include separate counts for below-threshold rows and rows blocked because current odds do not produce positive EV. `edge_policy_diagnostics.csv` keeps rejected market/threshold candidates auditable, so new prop markets are not promoted until sample, ROI, and threshold gates pass. |
+| `analysis/market_*.csv`, `analysis/model_metrics_week_NN.csv` | Market ROI, model-vs-Vegas benchmark, model-confidence calibration/recalibration, confidence strategy decisions, favorite-disagreement diagnostics/recommendations, CLV, blend, spread calibration, policy, latest graded published-pick holdout metrics, and website-ready metrics exports; generated locally and ignored by Git. |
 | `analysis/run_comparisons/*` | Markdown report and metric trend PNGs for logged runs; generated locally and ignored by Git. |
 | `analysis/shap/*` | SHAP numpy dumps and summary plots from GPU explainability; generated locally and ignored by Git. |
 | C:\Code\mtb\data\prediction-csvs\current\*.csv | Published CSV copies for the local MattyTheBookie site when `--publish-mtb` is used. |
@@ -236,7 +241,7 @@ After every successful evaluation, the pipeline triggers:
 4. `python -m analysis.market_confidence_recalibration` compares current probabilities, no-vig Vegas, fixed market blending, empirical confidence-bin shrinkage, and disagreement-only shrinkage before any live model change; it also annotates `analysis/market_blend_policy.csv` when the 50/50 blend is an experiment candidate but not a live recommendation.
 5. The pipeline refreshes `src.predict.predict_upcoming` after market ROI/confidence artifacts are rebuilt so published CSVs include the current run's `market_moneyline_calibrated_*` and confidence-policy fields.
 6. `python -m analysis.market_disagreement_diagnostics` slices favorite-disagreement games into pre-bet research segments, writes blend/model-side candidate rows, and reconciles approved/blocked probability-edge segments into `analysis/market_edge_policy.csv`.
-7. `python -m analysis.model_metrics_export` writes `analysis/model_metrics_week_NN.csv` for MattyTheBookie About-page consumption, including a separate `live_published_holdout` section when `live_prediction_vs_actual_summary_week_NN.csv` exists.
+7. `python -m analysis.model_metrics_export` writes `analysis/model_metrics_week_NN.csv` for MattyTheBookie About-page consumption, including a separate `live_published_holdout` section when a finalized published-pick summary exists. When the active week is not finalized, the file uses the latest finalized holdout and publishes `live_published_source_week` so the website can avoid presenting it as current-week grading.
 8. `python -m src.analysis.compare_runs` regenerates `analysis/run_comparisons/run_report.md` plus AUC/Brier/LogLoss trend charts.
 9. `python -m src.analysis.shap_gpu` samples evaluated games, loads the booster and feature order from `models/winprob_gb.pkl`, and recomputes SHAP values/plots.
 10. `python -m src.analysis.update_readme_metrics` rewrites the "Model Performance" section above with the latest valid run from `predictions/evaluation/overall_metrics.csv`.

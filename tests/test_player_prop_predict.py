@@ -7,17 +7,31 @@ import pandas as pd
 
 from src.player_props.features import build_player_prop_features, build_player_prop_novelty_features
 from src.player_props.predict import (
+    _add_line_offered_novelty_candidates,
     _attach_edge_recommendations,
     _attach_prop_odds,
+    _clear_soft_bdl_injury_reviews_with_clean_availability,
     _prepare_nflverse_injuries,
     _read_frame_if_exists,
+    build_public_player_prop_board,
     build_novelty_prediction_candidates,
     build_prediction_candidates,
     main,
     predict_player_props,
     prepare_player_prop_odds,
 )
-from src.player_props.train import train_and_evaluate
+from src.player_props.train import MARKET_CONFIGS, select_feature_columns
+
+
+class _BaselineProjectionRegressor:
+    def __init__(self, fallback: float) -> None:
+        self.fallback = float(fallback)
+
+    def predict(self, values: pd.DataFrame) -> pd.Series:
+        for col in ["baseline_projection", "player_avg_prior", "player_season_avg_prior"]:
+            if col in values.columns:
+                return pd.to_numeric(values[col], errors="coerce").fillna(self.fallback)
+        return pd.Series(self.fallback, index=values.index, dtype="float64")
 
 
 def _labels() -> pd.DataFrame:
@@ -191,19 +205,35 @@ def _write_models(labels: pd.DataFrame, models_dir: Path, novelty_labels: pd.Dat
         if novelty_labels is not None and not novelty_labels.empty
         else pd.DataFrame()
     )
-    _, _, bundles = train_and_evaluate(
-        offense_features=offense_features,
-        defense_features=defense_features,
-        novelty_features=novelty_features,
-        model_type="ridge",
-        min_train_rows=2,
-        generated_at="2026-09-22T00:00:00+00:00",
-    )
-    for market, bundle in bundles.items():
-        family = str(bundle["market_family"])
-        target_dir = models_dir / family
-        target_dir.mkdir(parents=True, exist_ok=True)
-        joblib.dump(bundle, target_dir / f"{market}_model.pkl")
+    feature_frames = {
+        "offense": offense_features,
+        "defense": defense_features,
+        "novelty": novelty_features,
+    }
+    configs = {config.market: config for config in MARKET_CONFIGS}
+    for family, features in feature_frames.items():
+        if features.empty:
+            continue
+        for market, market_frame in features.groupby("market", sort=True):
+            config = configs[str(market)]
+            feature_cols = select_feature_columns(market_frame)
+            if not feature_cols:
+                continue
+            actual = pd.to_numeric(market_frame.get("actual_value"), errors="coerce")
+            fallback = float(actual.mean()) if actual.notna().any() else 0.5
+            bundle = {
+                "market": str(market),
+                "market_family": family,
+                "target_type": config.target_type,
+                "model_type": "test_bundle",
+                "generated_at": "2026-09-22T00:00:00+00:00",
+                "feature_cols": feature_cols,
+                "regressor": _BaselineProjectionRegressor(fallback),
+                "classifier": None,
+            }
+            target_dir = models_dir / family
+            target_dir.mkdir(parents=True, exist_ok=True)
+            joblib.dump(bundle, target_dir / f"{market}_model.pkl")
 
 
 def test_build_prediction_candidates_routes_markets_by_position(tmp_path):
@@ -297,6 +327,164 @@ def test_predict_player_props_writes_split_model_outputs(tmp_path):
     assert defense["prob_over"].notna().all()
     assert novelty.empty
     assert int(qb.iloc[0]["sample_size"]) == 4
+
+
+def test_build_public_player_prop_board_filters_unpublishable_rows():
+    rows = [
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "clean",
+            "player_name": "Clean Player",
+            "market": "qb_passing_yards",
+            "projection": 240.0,
+            "line": 225.5,
+            "line_type": "canonical",
+            "prop_quality_flag": "ok",
+            "roster_validation_flag": "ok",
+            "active_current_roster": True,
+            "injury_exclusion_flag": False,
+            "bettable_flag": True,
+            "edge_publish_status": "no_bet",
+            "edge_probability_edge": 0.01,
+        },
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "missing-line",
+            "player_name": "Missing Line",
+            "market": "rb_rushing_yards",
+            "projection": 60.0,
+            "line": pd.NA,
+            "line_type": pd.NA,
+            "prop_quality_flag": "ok",
+            "roster_validation_flag": "ok",
+            "active_current_roster": True,
+            "injury_exclusion_flag": False,
+            "bettable_flag": False,
+            "edge_publish_status": "unavailable",
+        },
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "fallback",
+            "player_name": "Fallback TD",
+            "market": "rb_rushing_tds",
+            "projection": 0.4,
+            "line": 0.5,
+            "line_type": "anytime_td_fallback",
+            "prop_quality_flag": "fallback_line",
+            "roster_validation_flag": "ok",
+            "active_current_roster": True,
+            "injury_exclusion_flag": False,
+            "bettable_flag": False,
+            "edge_publish_status": "research_only",
+        },
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "injured",
+            "player_name": "Injured Player",
+            "market": "wrte_receiving_yards",
+            "projection": 45.0,
+            "line": 41.5,
+            "line_type": "canonical",
+            "prop_quality_flag": "injury_exclusion",
+            "roster_validation_flag": "ok",
+            "active_current_roster": True,
+            "injury_exclusion_flag": True,
+            "bettable_flag": False,
+            "edge_publish_status": "unavailable",
+        },
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "mismatch",
+            "player_name": "Mismatch Player",
+            "market": "wrte_receiving_yards",
+            "projection": 45.0,
+            "line": 41.5,
+            "line_type": "canonical",
+            "prop_quality_flag": "roster_mismatch",
+            "roster_validation_flag": "team_mismatch",
+            "active_current_roster": False,
+            "injury_exclusion_flag": False,
+            "bettable_flag": False,
+            "edge_publish_status": "unavailable",
+        },
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "novelty",
+            "player_name": "Novelty Player",
+            "market": "first_td",
+            "projection": 0.1,
+            "line": 0.5,
+            "line_type": "milestone",
+            "prop_quality_flag": "ok",
+            "roster_validation_flag": "ok",
+            "active_current_roster": True,
+            "injury_exclusion_flag": False,
+            "bettable_flag": False,
+            "edge_publish_status": "research_only",
+        },
+        {
+            "season": 2026,
+            "week": 8,
+            "game_id": "2026_08_CAR_ATL",
+            "team": "ATL",
+            "player_id": "review",
+            "player_name": "Review Player",
+            "market": "rb_rushing_yards",
+            "projection": 72.0,
+            "line": 42.5,
+            "line_type": "canonical",
+            "prop_quality_flag": "injury_review",
+            "roster_validation_flag": "ok",
+            "active_current_roster": True,
+            "injury_exclusion_flag": False,
+            "bettable_flag": False,
+            "edge_publish_status": "review",
+            "edge_probability_edge": 0.99,
+        },
+    ]
+
+    public = build_public_player_prop_board([pd.DataFrame(rows)])
+
+    assert set(public["player_id"]) == {"clean", "novelty", "review"}
+    assert public["player_id"].tolist() == ["clean", "novelty", "review"]
+    clean = public[public["player_id"].eq("clean")].iloc[0]
+    novelty = public[public["player_id"].eq("novelty")].iloc[0]
+    review = public[public["player_id"].eq("review")].iloc[0]
+    assert clean["public_board_status"] == "no_bet"
+    assert bool(clean["public_bettable_flag"]) is True
+    assert bool(clean["public_pick_flag"]) is False
+    assert clean["public_pick_tier"] == "none"
+    assert "not a pick" in clean["public_pick_reason"].lower()
+    assert clean["model_signal_score"] >= 0
+    assert clean["model_signal_label"] in {"Low Signal", "Mild Lean", "Solid Lean", "Strong Model Signal"}
+    assert "Watchlist only" in clean["model_signal_reason"]
+    assert novelty["public_board_status"] == "research_only"
+    assert bool(novelty["public_bettable_flag"]) is False
+    assert bool(novelty["public_pick_flag"]) is False
+    assert "touchdown ladder" in novelty["model_signal_reason"]
+    assert review["public_board_status"] == "review"
+    assert bool(review["public_bettable_flag"]) is False
+    assert bool(review["public_pick_flag"]) is False
+    assert review["model_signal_label"] == "Review First"
+    assert review["public_sort_rank"] > novelty["public_sort_rank"]
 
 
 def test_predict_player_props_adds_line_offered_def_sack_candidates(tmp_path):
@@ -413,6 +601,321 @@ def test_predict_player_props_adds_line_offered_def_sack_candidates(tmp_path):
     assert int(edge["sample_size"]) == 4
     assert edge["roster_validation_flag"] == "ok"
     assert bool(edge["bettable_flag"]) is True
+
+
+def test_predict_player_props_adds_line_offered_offensive_candidates(tmp_path):
+    labels = pd.concat(
+        [
+            _labels(),
+            pd.DataFrame(
+                [
+                    {
+                        "season": season,
+                        "week": week,
+                        "game_id": f"{season}_{week:02d}_CAR_ATL",
+                        "team": "ATL",
+                        "opponent": "CAR",
+                        "player_id": "qb-2",
+                        "player_name": "QB Two",
+                        "position": "QB",
+                        "position_group": "QB",
+                        "market": "qb_passing_tds",
+                        "actual_value": value,
+                        "actual_over_zero": value > 0,
+                        "played_flag": True,
+                        "active_flag": True,
+                        "value_type": "count",
+                        "source": "test",
+                    }
+                    for (season, week), value in zip(
+                        [(2025, 1), (2025, 2), (2026, 1), (2026, 2)],
+                        [2.0, 1.0, 2.0, 1.0],
+                    )
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    models_dir = tmp_path / "models"
+    _write_models(labels, models_dir)
+    qb_path, offense_path, defense_path = _projection_sources(tmp_path / "predictions")
+    rosters_path = tmp_path / "rosters.parquet"
+    _write_rosters(rosters_path)
+    candidates = build_prediction_candidates(
+        labels=labels,
+        qb_path=qb_path,
+        offense_path=offense_path,
+        defense_path=defense_path,
+        rosters_path=rosters_path,
+    )
+    raw_odds = pd.DataFrame(
+        [
+            {
+                "home_team": "Atlanta Falcons",
+                "away_team": "Carolina Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_pass_tds",
+                "outcome_name": "Over",
+                "player_name": "QB Two",
+                "price": -110,
+                "point": 1.5,
+                "market_last_update": "2026-09-22T12:00:00Z",
+            },
+            {
+                "home_team": "Atlanta Falcons",
+                "away_team": "Carolina Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_pass_tds",
+                "outcome_name": "Under",
+                "player_name": "QB Two",
+                "price": -110,
+                "point": 1.5,
+                "market_last_update": "2026-09-22T12:00:00Z",
+            },
+        ]
+    )
+    odds = prepare_player_prop_odds(raw_odds, season=2026, week=3, vendor="draftkings")
+    player_identity = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "team": "ATL",
+                "player_id": "qb-2",
+                "alias_name": "QB Two",
+                "alias_confidence": 1.0,
+            }
+        ]
+    )
+    availability = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "player_id": "qb-2",
+                "player_name": "QB Two",
+                "team": "ATL",
+                "current_team": "ATL",
+                "position": "QB",
+                "position_group": "QB",
+                "active_roster_flag": True,
+                "practice_squad_flag": False,
+                "injured_reserve_flag": False,
+                "availability_source": "espn",
+                "availability_priority": 10,
+            }
+        ]
+    )
+
+    qb, _, _, _ = predict_player_props(
+        labels=labels,
+        candidates=candidates,
+        models_dir=models_dir,
+        odds=odds,
+        availability=availability,
+        player_identity=player_identity,
+        season=2026,
+        week=3,
+        generated_at="2026-09-22T00:00:00+00:00",
+    )
+
+    row = qb[qb["player_id"].eq("qb-2") & qb["market"].eq("qb_passing_tds")].iloc[0]
+    assert row["line"] == 1.5
+    assert row["sportsbook"] == "draftkings"
+    assert row["baseline_projection"] == 1.5
+    assert int(row["games_sampled"]) == 4
+    assert row["roster_validation_flag"] == "ok"
+    assert bool(row["bettable_flag"]) is True
+    assert row["public_board_status"] in {"line_available", "no_bet", "research_only"}
+
+
+def test_predict_player_props_adds_line_offered_novelty_candidates(tmp_path):
+    novelty_labels = pd.concat(
+        [
+            _novelty_labels(),
+            pd.DataFrame(
+                [
+                    {
+                        "season": season,
+                        "week": week,
+                        "game_id": f"{season}_{week:02d}_CAR_ATL",
+                        "team": "ATL",
+                        "opponent": "CAR",
+                        "player_id": "rb-2",
+                        "player_name": "RB Two",
+                        "position": "RB",
+                        "position_group": "RB",
+                        "market": "first_td",
+                        "actual_value": value,
+                        "actual_over_zero": value > 0,
+                        "played_flag": True,
+                        "active_flag": True,
+                        "value_type": "count",
+                        "source": "test",
+                    }
+                    for (season, week), value in zip(
+                        [(2025, 1), (2025, 2), (2026, 1), (2026, 2)],
+                        [0.0, 1.0, 0.0, 0.0],
+                    )
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    raw_odds = pd.DataFrame(
+        [
+            {
+                "home_team": "Atlanta Falcons",
+                "away_team": "Carolina Panthers",
+                "bookmaker_key": "draftkings",
+                "market_key": "player_1st_td",
+                "outcome_name": "First Touchdown Scorer",
+                "player_name": "RB Two",
+                "price": 1200,
+                "point": None,
+                "market_last_update": "2026-09-22T12:00:00Z",
+            }
+        ]
+    )
+    odds = prepare_player_prop_odds(raw_odds, season=2026, week=3, vendor="draftkings")
+    player_identity = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "team": "ATL",
+                "player_id": "rb-2",
+                "alias_name": "RB Two",
+                "alias_confidence": 1.0,
+            }
+        ]
+    )
+    availability = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "player_id": "rb-2",
+                "player_name": "RB Two",
+                "team": "ATL",
+                "current_team": "ATL",
+                "position": "RB",
+                "position_group": "RB",
+                "active_roster_flag": True,
+                "practice_squad_flag": False,
+                "injured_reserve_flag": False,
+                "availability_source": "espn",
+                "availability_priority": 10,
+            }
+        ]
+    )
+
+    novelty_candidates = _add_line_offered_novelty_candidates(
+        pd.DataFrame(),
+        labels=novelty_labels,
+        odds=odds,
+        player_identity=player_identity,
+        availability=availability,
+        season=2026,
+        week=3,
+    )
+
+    row = novelty_candidates[novelty_candidates["player_id"].eq("rb-2") & novelty_candidates["market"].eq("first_td")].iloc[0]
+    assert row["market_family"] == "novelty"
+    assert row["baseline_projection"] == 0.25
+    assert int(row["games_sampled"]) == 4
+    assert row["source_projection_col"] == "historical_first_td_avg"
+    assert row["position_group"] == "RB"
+
+
+def test_line_offered_candidates_treat_la_and_lar_as_same_team():
+    novelty_labels = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "game_id": "2025_01_LAC_LA",
+                "team": "LA",
+                "opponent": "LAC",
+                "player_id": "wr-la",
+                "player_name": "WR Rams",
+                "position": "WR",
+                "position_group": "WR",
+                "market": "first_td",
+                "actual_value": 0.0,
+                "actual_over_zero": False,
+                "played_flag": True,
+                "active_flag": True,
+                "value_type": "count",
+                "source": "test",
+            }
+        ]
+    )
+    odds = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_08_LAC_LA",
+                "market": "first_td",
+                "player_name_key": "w:rams",
+                "player_name_prefix_key": "wr:rams",
+                "line": 0.5,
+                "implied_probability": 0.10,
+                "sportsbook": "draftkings",
+                "over_odds": 900,
+                "under_odds": pd.NA,
+                "line_updated_at": "2026-10-20T12:00:00Z",
+            }
+        ]
+    )
+    player_identity = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 8,
+                "team": "LA",
+                "player_id": "wr-la",
+                "alias_name": "WR Rams",
+                "alias_name_key": "w:rams",
+                "alias_prefix_key": "wr:rams",
+                "alias_confidence": 1.0,
+            }
+        ]
+    )
+    availability = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 8,
+                "player_id": "wr-la",
+                "player_name": "WR Rams",
+                "team": "LAR",
+                "current_team": "LAR",
+                "position": "WR",
+                "position_group": "WR",
+                "active_roster_flag": True,
+                "practice_squad_flag": False,
+                "injured_reserve_flag": False,
+                "availability_source": "espn",
+                "availability_priority": 10,
+            }
+        ]
+    )
+
+    candidates = _add_line_offered_novelty_candidates(
+        pd.DataFrame(),
+        labels=novelty_labels,
+        odds=odds,
+        player_identity=player_identity,
+        availability=availability,
+        season=2026,
+        week=8,
+    )
+
+    assert len(candidates) == 1
+    row = candidates.iloc[0]
+    assert row["player_id"] == "wr-la"
+    assert row["team"] == "LA"
+    assert row["market"] == "first_td"
 
 
 def test_predict_player_props_marks_anytime_td_fallback_lines_unbettable(tmp_path):
@@ -1137,6 +1640,7 @@ def test_attach_edge_recommendations_uses_market_policy_threshold():
                 "edge_probability_edge": 0.12,
                 "edge_ev": 0.4,
                 "bettable_flag": True,
+                "line": 0.5,
             },
             {
                 "market": "anytime_td",
@@ -1145,6 +1649,16 @@ def test_attach_edge_recommendations_uses_market_policy_threshold():
                 "edge_probability_edge": 0.01,
                 "edge_ev": 0.1,
                 "bettable_flag": True,
+                "line": 0.5,
+            },
+            {
+                "market": "anytime_td",
+                "sportsbook": "draftkings",
+                "edge_side": "over",
+                "edge_probability_edge": 0.08,
+                "edge_ev": -0.01,
+                "bettable_flag": True,
+                "line": 0.5,
             },
             {
                 "market": "def_sacks",
@@ -1153,6 +1667,7 @@ def test_attach_edge_recommendations_uses_market_policy_threshold():
                 "edge_probability_edge": 0.20,
                 "edge_ev": 0.5,
                 "bettable_flag": True,
+                "line": 0.5,
             },
         ]
     )
@@ -1173,8 +1688,15 @@ def test_attach_edge_recommendations_uses_market_policy_threshold():
 
     attached = _attach_edge_recommendations(predictions, policy)
 
-    assert attached["edge_recommendation_flag"].tolist() == [True, False, False]
-    assert attached["edge_recommendation_tier"].tolist() == ["strong", "below_threshold", "research_only"]
+    assert attached["edge_recommendation_flag"].tolist() == [True, False, False, False]
+    assert attached["edge_recommendation_tier"].tolist() == [
+        "strong",
+        "below_threshold",
+        "no_positive_ev",
+        "research_only",
+    ]
+    assert attached.loc[2, "edge_publish_status"] == "no_bet"
+    assert "positive EV" in attached.loc[2, "edge_reason"]
     assert attached.loc[0, "edge_policy_threshold"] == 0.05
     assert attached.loc[0, "edge_policy_n_bets"] == 120
 
@@ -1676,6 +2198,96 @@ def test_prepare_nflverse_injuries_does_not_carry_prior_week_reports_forward():
     assert row["prop_quality_flag"] == "injury_review"
 
 
+def test_prepare_nflverse_injuries_ignores_non_injury_rest_reports():
+    injuries = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 8,
+                "gsis_id": "rb-1",
+                "team": "CIN",
+                "full_name": "RB One",
+                "report_status": None,
+                "practice_status": "Did Not Participate In Practice",
+                "report_primary_injury": None,
+                "practice_primary_injury": "Not injury related - resting player",
+            },
+            {
+                "season": 2026,
+                "week": 8,
+                "gsis_id": "te-1",
+                "team": "CIN",
+                "full_name": "TE One",
+                "report_status": None,
+                "practice_status": "Full Participation in Practice",
+                "report_primary_injury": None,
+                "practice_primary_injury": "Calf",
+            }
+        ]
+    )
+
+    prepared = _prepare_nflverse_injuries(injuries, season=2026, week=8)
+
+    assert len(prepared) == 2
+    for _, row in prepared.iterrows():
+        assert row["player_id"] in {"rb-1", "te-1"}
+        assert bool(row["injury_reported"]) is False
+        assert bool(row["injury_exclusion_flag"]) is False
+        assert row["prop_quality_flag"] == "ok"
+        assert pd.isna(row["injury_practice_status"])
+        assert pd.isna(row["injury_body_part"])
+
+
+def test_clean_availability_clears_soft_bdl_injury_review():
+    frame = pd.DataFrame(
+        [
+            {
+                "player_id": "rb-1",
+                "player_name": "RB One",
+                "injury_status": "Questionable",
+                "injury_practice_status": pd.NA,
+                "injury_body_part": pd.NA,
+                "injury_report_week": pd.NA,
+                "injury_source": "balldontlie",
+                "injury_last_updated": "2026-10-30T00:00:00Z",
+                "injury_reported": True,
+                "injury_exclusion_flag": False,
+                "prop_quality_flag": "injury_review",
+                "active_current_roster": True,
+                "roster_validation_flag": "ok",
+                "availability_status": pd.NA,
+            },
+            {
+                "player_id": "te-1",
+                "player_name": "TE One",
+                "injury_status": "Out",
+                "injury_practice_status": pd.NA,
+                "injury_body_part": pd.NA,
+                "injury_report_week": pd.NA,
+                "injury_source": "balldontlie",
+                "injury_last_updated": "2026-10-30T00:00:00Z",
+                "injury_reported": True,
+                "injury_exclusion_flag": True,
+                "prop_quality_flag": "injury_exclusion",
+                "active_current_roster": True,
+                "roster_validation_flag": "ok",
+                "availability_status": pd.NA,
+            },
+        ]
+    )
+
+    cleared = _clear_soft_bdl_injury_reviews_with_clean_availability(frame)
+
+    soft = cleared[cleared["player_id"].eq("rb-1")].iloc[0]
+    hard = cleared[cleared["player_id"].eq("te-1")].iloc[0]
+    assert bool(soft["injury_reported"]) is False
+    assert soft["prop_quality_flag"] == "ok"
+    assert pd.isna(soft["injury_status"])
+    assert bool(hard["injury_reported"]) is True
+    assert bool(hard["injury_exclusion_flag"]) is True
+    assert hard["prop_quality_flag"] == "injury_exclusion"
+
+
 def test_predict_player_props_blocks_confirmed_roster_mismatch(tmp_path):
     labels = _labels()
     models_dir = tmp_path / "models"
@@ -1775,6 +2387,8 @@ def test_player_prop_predict_cli_writes_outputs(tmp_path):
             str(prediction_dir / "player_props_defense.csv"),
             "--novelty-output",
             str(prediction_dir / "player_props_novelty.csv"),
+            "--public-output",
+            str(prediction_dir / "player_props_public.csv"),
         ]
     )
 
@@ -1797,3 +2411,16 @@ def test_player_prop_predict_cli_writes_outputs(tmp_path):
         "two_plus_tds",
         "three_plus_tds",
     }
+    public = pd.read_csv(prediction_dir / "player_props_public.csv")
+    assert {
+        "public_board_status",
+        "public_board_reason",
+        "public_bettable_flag",
+        "public_pick_flag",
+        "public_pick_tier",
+        "public_pick_reason",
+        "public_sort_rank",
+        "model_signal_score",
+        "model_signal_label",
+        "model_signal_reason",
+    }.issubset(public.columns)

@@ -40,6 +40,7 @@ CURRENT_CSV_ARTIFACTS = [
     CsvArtifact(Path("predictions/player_props_offense.csv"), Path("current/player_props_offense.csv")),
     CsvArtifact(Path("predictions/player_props_defense.csv"), Path("current/player_props_defense.csv")),
     CsvArtifact(Path("predictions/player_props_novelty.csv"), Path("current/player_props_novelty.csv")),
+    CsvArtifact(Path("predictions/player_props_public.csv"), Path("current/player_props_public.csv")),
 ]
 
 
@@ -152,6 +153,10 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(
         Path("predictions/evaluation/player_props/edge_recommendation_policy.csv"),
         Path("evaluation/player_props/edge_recommendation_policy.csv"),
+    ),
+    CsvArtifact(
+        Path("predictions/evaluation/player_props/edge_policy_diagnostics.csv"),
+        Path("evaluation/player_props/edge_policy_diagnostics.csv"),
     ),
     CsvArtifact(
         Path("predictions/evaluation/player_props/confidence_tier_metrics.csv"),
