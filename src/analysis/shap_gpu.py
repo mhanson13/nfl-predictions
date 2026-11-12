@@ -81,6 +81,10 @@ def _load_model() -> Tuple[xgb.Booster, Optional[List[str]]]:
             booster = model.get_booster()
             if booster is None:
                 raise ValueError("XGBoost booster unavailable inside winprob_gb.pkl (model not XGB-based).")
+            # Market-anchored models: trees see only the residual (non-line) features.
+            residual_features = getattr(model, "residual_features_", None)
+            if residual_features:
+                return booster, [str(col) for col in residual_features]
             return booster, feature_list or getattr(booster, "feature_names", None)
         raise ValueError(
             "Stored win probability model does not expose get_booster(); "

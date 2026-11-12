@@ -25,14 +25,12 @@ import joblib
 import numpy as np
 import pandas as pd
 from dateutil import tz
-from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 from src.utils.io import PROC_DIR, MODELS_DIR
 from src.utils.logging_config import setup_logging
 from src.models import train as train_module
+from src.models import win_model
+from src.evaluation import market_comparison
 from src.models.feature_columns import make_feature_diffs, select_feature_columns
 from src.predict.utils import apply_probability_caps, moneyline_to_prob
 from src.predict.volatility import (
@@ -94,6 +92,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--winprob-param-config", type=Path, default=None, help="Optional tuned win-probability parameter config for walk-forward folds.")
     parser.add_argument("--spread-param-config", type=Path, default=None, help="Optional tuned spread parameter config for walk-forward folds.")
     parser.add_argument("--skip-logit", action="store_true", help="Skip logistic companion model in walk-forward history scoring.")
+    parser.add_argument(
+        "--walk-forward-cadence",
+        choices=["week", "season"],
+        default="week",
+        help="Walk-forward refit cadence: 'week' refits before every scored week on all completed prior games "
+        "(expanding window); 'season' fits once per season on prior seasons only.",
+    )
+    parser.add_argument(
+        "--market-report",
+        type=Path,
+        default=market_comparison.DEFAULT_MARKET_REPORT_PATH,
+        help="Where to write walk-forward model-vs-no-vig-market metrics on identical games.",
+    )
 
     parser.add_argument(
 
@@ -234,78 +245,14 @@ def _fit_walk_forward_win_model(
     use_gpu: bool,
     skip_logit: bool,
 ) -> dict[str, object]:
-    if use_gpu and not _xgb_available():
-        raise RuntimeError("GPU walk-forward training requested but XGBoost is not installed.")
-    use_cols = [c for c in feature_cols if c in train_df.columns]
-    X = _prepare_matrix(train_df, use_cols)
-    y = train_df["home_win"].astype(int).to_numpy()
-    model_choice = str(param_config.get("model_type", "")).lower() if param_config else ""
-    use_xgb = _xgb_available() and model_choice not in {"hist", "hgb", "gb_hist"}
-    if use_xgb:
-        xgb_params: dict[str, object] = {
-            "n_estimators": 800,
-            "learning_rate": 0.05,
-            "max_depth": 6,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "reg_lambda": 1.0,
-            "reg_alpha": 0.0,
-            "random_state": 42,
-            "eval_metric": "logloss",
-            "verbosity": 0,
-            "use_label_encoder": False,
-        }
-        if param_config:
-            xgb_params.update(train_module._apply_prefixed_params(param_config, "xgb_"))
-        xgb_params.update(train_module.get_xgb_tree_config(use_gpu))
-        model = train_module.XGBClassifier(**xgb_params)
-        train_module._fit_xgb_with_fallback(model, X.values, y, use_gpu, "[predict_history][walk_forward][win_prob]")
-    else:
-        hgb_params: dict[str, object] = {
-            "random_state": 42,
-            "max_leaf_nodes": 31,
-            "learning_rate": 0.05,
-            "l2_regularization": 0.1,
-            "min_samples_leaf": 20,
-            "max_bins": 255,
-        }
-        if param_config:
-            hgb_params.update(train_module._apply_prefixed_params(param_config, "hgb_"))
-        model = HistGradientBoostingClassifier(**hgb_params)
-        model.fit(X.values, y)
-
-    logistic_model = None
-    logistic_features: list[str] = []
-    if not skip_logit:
-        logistic_candidates = [
-            "spread_line",
-            "home_moneyline",
-            "away_moneyline",
-            "total_line",
-            "inj_listed_total_diff",
-            "inj_out_diff",
-            "roster_injured_pct_diff",
-            "team_news_injury_kw7_diff",
-            "news_injury_kw7_diff",
-        ]
-        logistic_features = [c for c in logistic_candidates if c in train_df.columns]
-        if logistic_features:
-            logistic_model = Pipeline(
-                steps=[
-                    ("imputer", train_module._make_median_imputer()),
-                    ("scaler", StandardScaler()),
-                    ("clf", LogisticRegression(max_iter=1000, class_weight="balanced")),
-                ]
-            )
-            logistic_model.fit(train_df[logistic_features].astype(float).values, y)
-
-    return {
-        "model": model,
-        "features": use_cols,
-        "logistic_model": logistic_model,
-        "logistic_features": logistic_features,
-        "ensemble_weight": 1.0,
-    }
+    return win_model.fit_win_bundle(
+        train_df,
+        feature_cols,
+        param_config=param_config,
+        use_gpu=use_gpu,
+        skip_logit=skip_logit,
+        context="[predict_history][walk_forward][win_prob]",
+    )
 
 
 def _fit_walk_forward_spread_model(
@@ -315,78 +262,141 @@ def _fit_walk_forward_spread_model(
     param_config: dict[str, object] | None,
     use_gpu: bool,
 ) -> dict[str, object]:
-    if use_gpu and not _xgb_available():
-        raise RuntimeError("GPU walk-forward training requested but XGBoost is not installed.")
-    use_cols = [c for c in feature_cols if c in train_df.columns]
-    X_raw = _prepare_matrix(train_df, use_cols)
-    y = train_df["home_margin"].astype(float).to_numpy()
-    imputer = train_module._make_median_imputer()
-    X = imputer.fit_transform(X_raw.values)
-    model_choice = str(param_config.get("model_type", "")).lower() if param_config else ""
-    use_xgb = _xgb_available() and model_choice not in {"hist", "hgb", "gb_hist", "gb", "gbr", "gbdt", "huber"}
-    if use_xgb:
-        xgb_params: dict[str, object] = {
-            "n_estimators": 1000,
-            "learning_rate": 0.05,
-            "max_depth": 6,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "reg_lambda": 1.0,
-            "random_state": 42,
-            "objective": "reg:squarederror",
-            "verbosity": 0,
-        }
-        if param_config:
-            xgb_params.update(train_module._apply_prefixed_params(param_config, "xgb_"))
-        xgb_params.update(train_module.get_xgb_tree_config(use_gpu))
-        model = train_module.XGBRegressor(**xgb_params)
-        train_module._fit_xgb_with_fallback(model, X, y, use_gpu, "[predict_history][walk_forward][spread]")
-    else:
-        gbr_params: dict[str, object] = {
-            "loss": "huber",
-            "alpha": 0.9,
-            "learning_rate": 0.05,
-            "n_estimators": 600,
-            "max_depth": 4,
-            "min_samples_leaf": 20,
-            "max_features": "sqrt",
-            "subsample": 0.8,
-            "random_state": 42,
-        }
-        if param_config:
-            gbr_params.update(train_module._apply_prefixed_params(param_config, "gbr_"))
-        model = GradientBoostingRegressor(**gbr_params)
-        model.fit(X, y)
-    train_pred = model.predict(X)
-    return {
-        "model": model,
-        "features": use_cols,
-        "imputer": imputer,
-        "bias_correction": float((train_pred - y).mean()),
-    }
+    return win_model.fit_spread_bundle(
+        train_df,
+        feature_cols,
+        param_config=param_config,
+        use_gpu=use_gpu,
+        context="[predict_history][walk_forward][spread]",
+    )
 
 
 def _predict_walk_forward_win(bundle: dict[str, object], score_df: pd.DataFrame) -> np.ndarray:
-    features = list(bundle["features"])
-    model = bundle["model"]
-    X = _prepare_matrix(score_df, features)
-    proba = model.predict_proba(X.values)[:, 1]
-    logistic_model = bundle.get("logistic_model")
-    logistic_features = list(bundle.get("logistic_features") or [])
-    if logistic_model is not None and logistic_features:
-        log_proba = logistic_model.predict_proba(score_df[logistic_features].astype(float).values)[:, 1]
-        weight = float(bundle.get("ensemble_weight", 1.0))
-        proba = weight * proba + (1.0 - weight) * log_proba
-    return np.asarray(proba, dtype=float)
+    return win_model.predict_win_bundle(bundle, score_df)
 
 
 def _predict_walk_forward_spread(bundle: dict[str, object], score_df: pd.DataFrame) -> np.ndarray:
-    features = list(bundle["features"])
-    model = bundle["model"]
-    imputer = bundle.get("imputer")
-    X_raw = _prepare_matrix(score_df, features)
-    X = imputer.transform(X_raw.values) if imputer is not None else X_raw.values
-    return np.asarray(model.predict(X), dtype=float) - float(bundle.get("bias_correction", 0.0))
+    return win_model.predict_spread_bundle(bundle, score_df)
+
+
+_VOLATILITY_PREDICTION_COLUMNS = (
+    "home_win_prob",
+    "home_win_prob_model_raw",
+    "home_win_prob_calibrated",
+    "home_win_prob_capped",
+    "pred_home_margin",
+)
+
+
+def _volatility_scoring_input(features: pd.DataFrame, predictions: pd.DataFrame) -> pd.DataFrame:
+    """Attach pre-shrinkage model outputs to the feature rows, mirroring predict_upcoming.
+
+    Six volatility-classifier inputs are derived from the model's own predictions; scoring the bare
+    feature frame zero-fills them, which reads as maximum uncertainty and flags every game volatile.
+    """
+    volatility_input = features.copy()
+    for col in _VOLATILITY_PREDICTION_COLUMNS:
+        if col in predictions.columns:
+            volatility_input[col] = predictions[col].reindex(volatility_input.index)
+    return volatility_input
+
+
+def _walk_forward_cadence(args: argparse.Namespace) -> str:
+    cadence = str(getattr(args, "walk_forward_cadence", "week") or "week").lower()
+    return cadence if cadence in {"week", "season"} else "week"
+
+
+def _walk_forward_chunks(
+    feat_df: pd.DataFrame,
+    prior_train_df: pd.DataFrame,
+    score_df: pd.DataFrame,
+    *,
+    season: int,
+    cadence: str,
+) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
+    """Split one score season into (train_frame, score_frame) refit chunks.
+
+    ``season`` cadence fits once on prior seasons. ``week`` cadence refits before
+    every scored week on prior seasons plus completed earlier weeks of the same
+    season (an expanding window that mirrors live weekly retraining).
+    """
+    if cadence == "season":
+        return [(prior_train_df, score_df)]
+    season_values = pd.to_numeric(feat_df["season"], errors="coerce")
+    week_values = pd.to_numeric(feat_df["week"], errors="coerce")
+    completed = feat_df["home_margin"].notna()
+    if "home_win" in feat_df.columns:
+        completed &= feat_df["home_win"].notna()
+    score_weeks = pd.to_numeric(score_df["week"], errors="coerce")
+    chunks: list[tuple[pd.DataFrame, pd.DataFrame]] = []
+    for week in sorted(int(w) for w in score_weeks.dropna().unique()):
+        in_season_prior = feat_df.loc[completed & (season_values == int(season)) & (week_values < week)]
+        train_frame = pd.concat([prior_train_df, in_season_prior]) if not in_season_prior.empty else prior_train_df
+        chunks.append((train_frame, score_df.loc[score_weeks == week]))
+    return chunks
+
+
+def _score_walk_forward_season(
+    feat_df: pd.DataFrame,
+    prior_train_df: pd.DataFrame,
+    score_df: pd.DataFrame,
+    *,
+    season: int,
+    feature_cols: list[str],
+    win_params: dict[str, object] | None,
+    spread_params: dict[str, object] | None,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> pd.DataFrame | None:
+    """Fit/score each refit chunk of a season; return per-row raw predictions and train metadata."""
+    cadence = _walk_forward_cadence(args)
+    parts: list[pd.DataFrame] = []
+    for refit_id, (train_frame, chunk) in enumerate(
+        _walk_forward_chunks(feat_df, prior_train_df, score_df, season=season, cadence=cadence)
+    ):
+        if chunk.empty:
+            continue
+        n_classes = train_frame["home_win"].nunique(dropna=True) if "home_win" in train_frame.columns else 0
+        if len(train_frame) < int(args.min_train_games) or n_classes < 2:
+            logger.warning(
+                "Skipping walk-forward season %s chunk %s: train_rows=%s, classes=%s.",
+                season,
+                refit_id,
+                len(train_frame),
+                n_classes,
+            )
+            continue
+        win_bundle = _fit_walk_forward_win_model(
+            train_frame,
+            feature_cols,
+            param_config=win_params,
+            use_gpu=bool(args.use_gpu),
+            skip_logit=bool(args.skip_logit),
+        )
+        spread_bundle = _fit_walk_forward_spread_model(
+            train_frame,
+            feature_cols,
+            param_config=spread_params,
+            use_gpu=bool(args.use_gpu),
+        )
+        train_seasons = pd.to_numeric(train_frame["season"], errors="coerce")
+        parts.append(
+            pd.DataFrame(
+                {
+                    "raw_proba": _predict_walk_forward_win(win_bundle, chunk),
+                    "margin_pred": _predict_walk_forward_spread(spread_bundle, chunk),
+                    "train_start": int(train_seasons.min()),
+                    "train_end": int(train_seasons.max()),
+                    "train_rows": int(len(train_frame)),
+                    "refit_id": refit_id,
+                },
+                index=chunk.index,
+            )
+        )
+    if not parts:
+        return None
+    scored = pd.concat(parts)
+    return scored.loc[score_df.index[score_df.index.isin(scored.index)]]
 
 
 def _build_walk_forward_history(
@@ -424,35 +434,28 @@ def _build_walk_forward_history(
         if score_df.empty:
             logger.warning("No completed games to score for walk-forward season %s.", season)
             continue
-        if len(train_df) < int(args.min_train_games) or train_df["home_win"].nunique(dropna=True) < 2:
-            logger.warning(
-                "Skipping walk-forward season %s: train_rows=%s, classes=%s.",
-                season,
-                len(train_df),
-                train_df["home_win"].nunique(dropna=True),
-            )
+        scored = _score_walk_forward_season(
+            feat_df,
+            train_df,
+            score_df,
+            season=season,
+            feature_cols=feature_cols,
+            win_params=win_params,
+            spread_params=spread_params,
+            args=args,
+            logger=logger,
+        )
+        if scored is None:
             continue
-        win_bundle = _fit_walk_forward_win_model(
-            train_df,
-            feature_cols,
-            param_config=win_params,
-            use_gpu=bool(args.use_gpu),
-            skip_logit=bool(args.skip_logit),
-        )
-        spread_bundle = _fit_walk_forward_spread_model(
-            train_df,
-            feature_cols,
-            param_config=spread_params,
-            use_gpu=bool(args.use_gpu),
-        )
-        raw_proba = _predict_walk_forward_win(win_bundle, score_df)
+        score_df = score_df.loc[scored.index]
+        raw_proba = scored["raw_proba"].to_numpy(dtype=float)
         market_caps = None
         if "sched_implied_prob_home" in score_df.columns:
             market_caps = pd.to_numeric(score_df["sched_implied_prob_home"], errors="coerce")
         elif "home_moneyline" in score_df.columns:
             market_caps = moneyline_to_prob(score_df["home_moneyline"])
         capped_proba = apply_probability_caps(raw_proba, market_caps)
-        margin_pred = _predict_walk_forward_spread(spread_bundle, score_df)
+        margin_pred = scored["margin_pred"].to_numpy(dtype=float)
         base = score_df[out_cols].copy()
         base["home_win_prob_model_raw"] = raw_proba
         base["home_win_prob_raw"] = raw_proba
@@ -461,9 +464,9 @@ def _build_walk_forward_history(
         base["pred_home_margin"] = margin_pred
         base["pred_home_margin_raw"] = margin_pred
         base["prediction_source"] = "walk_forward_history"
-        base["walk_forward_train_start"] = int(train_df["season"].min())
-        base["walk_forward_train_end"] = int(train_df["season"].max())
-        base["walk_forward_train_rows"] = int(len(train_df))
+        base["walk_forward_train_start"] = scored["train_start"].astype(int)
+        base["walk_forward_train_end"] = scored["train_end"].astype(int)
+        base["walk_forward_train_rows"] = scored["train_rows"].astype(int)
         if "kickoff" in score_df.columns and score_df["kickoff"].notna().any():
             base["kickoff"] = score_df["kickoff"]
             base["kickoff_mt"] = _format_mountain_time(base["kickoff"])
@@ -475,7 +478,7 @@ def _build_walk_forward_history(
                 try:
                     artifact = load_volatility_artifact(artifact_path)
                     threshold = args.volatility_threshold if args.volatility_threshold is not None else artifact.threshold
-                    vol_prob, _ = score_volatility(score_df, artifact)
+                    vol_prob, _ = score_volatility(_volatility_scoring_input(score_df, base), artifact)
                     win_series = pd.Series(base["home_win_prob"], index=base.index, dtype=float)
                     margin_series = pd.Series(base["pred_home_margin"], index=base.index, dtype=float)
                     adj_prob, adj_margin, labels = apply_volatility_shrinkage(
@@ -497,11 +500,13 @@ def _build_walk_forward_history(
         base["home_confidence_pct"] = (base["home_win_prob"] * 100).round(1)
         frames.append(base)
         logger.info(
-            "Walk-forward season %s scored rows=%s using train seasons %s-%s.",
+            "Walk-forward season %s scored rows=%s (cadence=%s, refits=%s, train rows %s-%s).",
             season,
             len(base),
-            int(train_df["season"].min()),
-            int(train_df["season"].max()),
+            _walk_forward_cadence(args),
+            int(scored["refit_id"].nunique()),
+            int(scored["train_rows"].min()),
+            int(scored["train_rows"].max()),
         )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -534,6 +539,29 @@ def _clear_history_files(output_dir: Path, seasons: Iterable[int], logger: loggi
     return removed
 
 
+def _write_walk_forward_market_report(
+    base: pd.DataFrame,
+    features: pd.DataFrame,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> None:
+    """Write model-vs-no-vig-market metrics on identical walk-forward games (diagnostic only)."""
+    report_path = getattr(args, "market_report", None)
+    if report_path is None:
+        return
+    try:
+        report = market_comparison.compare_to_market(market_comparison.attach_market_probability(base, features))
+        written = market_comparison.write_market_report(report, Path(report_path))
+        if written is not None:
+            logger.info(
+                "Walk-forward vs market (identical games) -> %s\n%s",
+                written,
+                market_comparison.format_overall_summary(report),
+            )
+    except Exception as exc:  # diagnostics must never block history scoring
+        logger.warning("Walk-forward market comparison skipped: %s", exc)
+
+
 def main() -> None:
     """Entry point for generating historical predictions over completed games."""
     args = parse_args()
@@ -555,6 +583,7 @@ def main() -> None:
                 logger.info("Removed %s stale walk-forward history files before writing.", removed)
         written = _write_history_files(base, args.output_dir, args.overwrite, logger)
         logger.info("Walk-forward history predictions written for %s week files.", written)
+        _write_walk_forward_market_report(base, df, args, logger)
         return
 
     df = df[df["season"].isin(args.seasons)].copy()
@@ -630,7 +659,7 @@ def main() -> None:
             try:
                 artifact = load_volatility_artifact(artifact_path)
                 threshold = args.volatility_threshold if args.volatility_threshold is not None else artifact.threshold
-                vol_prob, _ = score_volatility(df, artifact)
+                vol_prob, _ = score_volatility(_volatility_scoring_input(df, base), artifact)
                 win_series = pd.Series(base["home_win_prob"], index=base.index, dtype=float)
                 margin_series = pd.Series(base["pred_home_margin"], index=base.index, dtype=float) if "pred_home_margin" in base else None
                 adj_prob, adj_margin, labels = apply_volatility_shrinkage(

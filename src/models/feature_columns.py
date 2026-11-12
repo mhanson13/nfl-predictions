@@ -41,6 +41,8 @@ PREGAME_DIFF_PREFIXES = (
     "rivalry_",
     "crowd_noise_",
     "fan_hostility_",
+    # Long-memory ratings built only from earlier weeks (src.features.team_strength).
+    "strength_",
 )
 ROLLING_PERFORMANCE_PREFIXES = (
     "pass_epa_",
@@ -51,6 +53,17 @@ ROLLING_PERFORMANCE_PREFIXES = (
     "pressures_",
     "sack_rate_",
 )
+# Sources stored as full-season team aggregates (constant within a team-season),
+# so even their rolling/lagged variants contain games not yet played. See
+# season-aggregate audit 2026-11: pressures_*_rolling3 equals the same-season
+# aggregate in ~96% of rows.
+SEASON_AGGREGATE_PREFIXES = (
+    "pressures_allowed_per_db",
+    "pressures_generated_per_db",
+    "epa_per_play",
+    "def_epa_per_play_allowed",
+)
+
 BDL_FEATURE_PREFIX = "bdl_"
 LAGGED_FEATURE_MARKERS = ("_rolling", "_prev", "_lag")
 
@@ -63,6 +76,8 @@ def is_bdl_feature_column(col: str) -> bool:
 def _is_safe_model_diff(col: str, *, include_bdl: bool = False) -> bool:
     lowname = col.lower()
     if any(p in lowname for p in LEAKAGE_PATTERNS):
+        return False
+    if lowname.startswith(SEASON_AGGREGATE_PREFIXES):
         return False
     if "_post" in lowname or "post_" in lowname:
         return False

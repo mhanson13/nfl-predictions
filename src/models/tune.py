@@ -43,6 +43,7 @@ from sklearn.ensemble import (
 from src.utils.io import PROC_DIR, read_df
 from src.utils.week_filter import filter_before_week
 from src.models import train as base_train
+from src.models import tune_walk_forward as wf
 from src.models.train import (
     _make_feature_diffs,
     _select_feature_columns,
@@ -100,6 +101,38 @@ def parse_args() -> argparse.Namespace:
         "--include-bdl-features",
         action="store_true",
         help="Include BallDontLie bdl_* team-form features while tuning. Defaults off pending repeatable ablation lift.",
+    )
+    parser.add_argument(
+        "--cv-scheme",
+        choices=["walk_forward", "kfold"],
+        default="walk_forward",
+        help="walk_forward (default): bounded search scored on season-blocked folds trained only on earlier seasons. "
+        "kfold: legacy random-split search (kept for comparison only).",
+    )
+    parser.add_argument(
+        "--validation-seasons",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Walk-forward validation seasons (default: most recent complete seasons, see --n-validation-seasons).",
+    )
+    parser.add_argument(
+        "--n-validation-seasons",
+        type=int,
+        default=wf.DEFAULT_N_VALIDATION_SEASONS,
+        help="Number of recent complete seasons used as walk-forward validation folds.",
+    )
+    parser.add_argument(
+        "--fingerprint-study",
+        action="store_true",
+        help="Suffix --study-name with the CV scheme and a feature-set fingerprint so stored trials from older "
+        "feature sets (or schemes) are never reused.",
+    )
+    parser.add_argument(
+        "--market-anchor",
+        action="store_true",
+        help="(walk_forward only) Tune a model that learns the residual over the market: no-vig log-odds "
+        "for win_prob (XGBoost base_margin), the closing spread for spread. Saved config sets market_anchor=true.",
     )
     parser.add_argument("--exclude-from-season", type=int, default=None, help="Exclude this season/week and later rows from tuning.")
     parser.add_argument("--exclude-from-week", type=int, default=None, help="Exclude this season/week and later rows from tuning.")
@@ -388,6 +421,54 @@ def spread_objective(
     raise ValueError(f"Unknown metric: {metric}")
 
 
+def _walk_forward_model_types(target: str) -> list[str]:
+    models = available_classifier_models() if target == "win_prob" else available_regressor_models()
+    return models
+
+
+def run_walk_forward_study(args: argparse.Namespace) -> tuple[optuna.study.Study, "wf.WalkForwardData", str]:
+    df = load_features(args.train_start_year, args.exclude_from_season, args.exclude_from_week)
+    metric = args.metric or ("logloss" if args.target == "win_prob" else "mae")
+    allowed = wf.CLASSIFIER_METRICS if args.target == "win_prob" else wf.REGRESSOR_METRICS
+    if metric not in allowed:
+        raise ValueError(f"Metric '{metric}' not supported for {args.target}. Options: {allowed}.")
+    data = wf.prepare_walk_forward_data(
+        df,
+        target=args.target,
+        validation_seasons=args.validation_seasons,
+        n_validation_seasons=args.n_validation_seasons,
+        include_bdl_features=args.include_bdl_features,
+        market_anchor=bool(getattr(args, "market_anchor", False)),
+    )
+    model_types = _walk_forward_model_types(args.target)
+    if data.market_anchor and args.target == "win_prob":
+        if "xgb" not in model_types:
+            raise RuntimeError("--market-anchor needs XGBoost (base_margin support), which is not installed.")
+        model_types = ["xgb"]
+    print(
+        f"[optuna][walk_forward] target={args.target} metric={metric} features={len(data.feature_names)} "
+        f"validation_seasons={data.validation_seasons} model_types={model_types} "
+        f"fingerprint={wf.feature_fingerprint(data.feature_names)}"
+    )
+    if args.target == "win_prob":
+        objective = lambda trial: wf.win_objective(trial, data, metric, model_types, args.use_gpu)
+    else:
+        objective = lambda trial: wf.spread_objective(trial, data, metric, model_types, args.use_gpu)
+    study_name = args.study_name
+    if study_name and args.fingerprint_study:
+        study_name = f"{study_name}__wf_v{wf.TUNING_SCHEMA_VERSION}__{wf.feature_fingerprint(data.feature_names)}"
+        print(f"[optuna][walk_forward] study name -> {study_name}")
+    study = optuna.create_study(
+        sampler=optuna.samplers.TPESampler(seed=args.random_state),
+        direction="minimize",
+        study_name=study_name,
+        storage=args.storage,
+        load_if_exists=args.load_if_exists,
+    )
+    study.optimize(objective, n_trials=args.trials, timeout=args.timeout)
+    return study, data, metric
+
+
 def run_study(args: argparse.Namespace) -> optuna.study.Study:
     df = load_features(args.train_start_year, args.exclude_from_season, args.exclude_from_week)
     metric = args.metric or ("logloss" if args.target == "win_prob" else "mae")
@@ -455,6 +536,22 @@ def main() -> None:
     if args.use_gpu and not getattr(base_train, "XGB_AVAILABLE", False):
         print("[optuna] GPU requested but XGBoost is not available; proceeding with CPU models.")
         args.use_gpu = False
+
+    if getattr(args, "cv_scheme", "walk_forward") == "walk_forward":
+        study, data, metric = run_walk_forward_study(args)
+        print_summary(study)
+        if args.save_best:
+            payload = wf.best_config_payload(
+                study,
+                data,
+                target=args.target,
+                metric=metric,
+                include_bdl_features=args.include_bdl_features,
+            )
+            args.save_best.parent.mkdir(parents=True, exist_ok=True)
+            args.save_best.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            print(f"[optuna] Best walk-forward params saved to {args.save_best}")
+        return
 
     study = run_study(args)
     print_summary(study)

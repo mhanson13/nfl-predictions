@@ -389,6 +389,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+WALK_FORWARD_TUNING_SCHEME = "walk_forward"
+
+
+def is_walk_forward_tuning_config(path: Path) -> bool:
+    """Return whether ``path`` is a tuning config produced by walk-forward tuning.
+
+    Older configs (random-split tuning against earlier, leakier feature sets) are
+    no longer auto-applied; production falls back to the conservative code
+    defaults in ``src.models.win_model`` until a walk-forward config exists.
+    """
+    if not path.exists():
+        return False
+    try:
+        import json
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return isinstance(payload, dict) and payload.get("tuning_scheme") == WALK_FORWARD_TUNING_SCHEME
+
+
 def build_years(start_year: int) -> list[int]:
     """Return list of seasons from `start_year` through the current year inclusive."""
     current_year = datetime.now().year
@@ -871,9 +892,17 @@ def build_sequential_jobs(
     winprob_config_path = tuning_dir / "winprob_best.json"
     spread_config_path = tuning_dir / "spread_best.json"
 
-    apply_winprob_config = enable_tuning or winprob_config_path.exists()
-
-    apply_spread_config = enable_tuning or spread_config_path.exists()
+    apply_winprob_config = enable_tuning or is_walk_forward_tuning_config(winprob_config_path)
+    apply_spread_config = enable_tuning or is_walk_forward_tuning_config(spread_config_path)
+    for label, cfg_path, applied in (
+        ("win_prob", winprob_config_path, apply_winprob_config),
+        ("spread", spread_config_path, apply_spread_config),
+    ):
+        if cfg_path.exists() and not applied:
+            print(
+                f"[pipeline] ignoring legacy {label} tuning config {cfg_path} (not walk-forward tuned); "
+                "using win_model defaults. Re-tune with --enable-tuning to replace it."
+            )
 
 
     jobs.append(
@@ -1012,6 +1041,10 @@ def build_sequential_jobs(
 
             tune_win_cmd.append("--load-if-exists")
 
+        tune_win_cmd.append("--fingerprint-study")
+        # The production win model is market-anchored; re-tuning must keep that recipe.
+        tune_win_cmd.append("--market-anchor")
+
         timeout_win = tuning_options.get("timeout_winprob")
 
         if timeout_win is not None:
@@ -1068,6 +1101,9 @@ def build_sequential_jobs(
         if load_existing:
 
             tune_spread_cmd.append("--load-if-exists")
+
+        tune_spread_cmd.append("--fingerprint-study")
+        tune_spread_cmd.append("--market-anchor")
 
         timeout_spread = tuning_options.get("timeout_spread")
 
