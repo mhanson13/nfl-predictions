@@ -2,7 +2,7 @@
 
 This file documents the data sources used by the NFL predictions pipeline, how each source is consumed, and whether the pipeline treats it as required or optional.
 
-The main pipeline entry point is:
+The weekly entry point is `python -m tools.weekly_run` ([docs/weekly_run.md](docs/weekly_run.md)), which resolves the week and phase and runs the pipeline with a debug log. The underlying pipeline command is:
 
 ```powershell
 python -m tools.run_pipeline --start-year 2017 --train-start-year 2017 --max-parallel-data 8 --data-start-delay 1 --use-async --prediction-week <week> --live-run --skip-tomorrow-weather --publish-mtb --mtb-repo-dir C:\Code\mtb

@@ -458,6 +458,36 @@ def test_attach_odds_spreads_includes_moneyline_columns():
     assert preds.loc[0, "odds_draftkings_away_moneyline"] == 110
 
 
+def test_attach_odds_spreads_matches_rams_schedule_abbreviation():
+    # Schedules use "LA" for the Rams; The Odds API names resolve to "LAR".
+    preds = pd.DataFrame([{"home_team": "ARI", "away_team": "LA"}, {"home_team": "LAR", "away_team": "SF"}])
+    def event(home, away, home_ml, away_ml):
+        return {
+            "home_team": home,
+            "away_team": away,
+            "commence_time": "2026-11-15T21:05:00Z",
+            "bookmakers": [
+                {
+                    "key": "fanduel",
+                    "markets": [
+                        {"key": "h2h", "outcomes": [{"name": home, "price": home_ml}, {"name": away, "price": away_ml}]},
+                        {"key": "spreads", "outcomes": [{"name": home, "point": 9.5, "price": -110}, {"name": away, "point": -9.5, "price": -110}]},
+                    ],
+                }
+            ],
+        }
+    odds = [
+        event("Arizona Cardinals", "Los Angeles Rams", 360, -450),
+        event("Los Angeles Rams", "San Francisco 49ers", -150, 130),
+    ]
+
+    _attach_odds_spreads(preds, odds)
+
+    assert preds["odds_fanduel_home_moneyline"].tolist() == [360, -150]
+    assert preds["odds_fanduel_away_moneyline"].tolist() == [-450, 130]
+    assert preds.loc[0, "odds_fanduel_away_spread"] == -9.5
+
+
 def test_attach_market_policy_fields_marks_moneyline_and_blocks_spread(tmp_path):
     policy_path = tmp_path / "market_edge_policy.csv"
     pd.DataFrame(
