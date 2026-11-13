@@ -100,3 +100,6 @@ volumes/
 
 # IDE / workspace files
 nfl-predictions.code-workspace
+
+# pipeline run logs (tools.weekly_run / run_pipeline --debug / refetch logs)
+logs/

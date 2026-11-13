@@ -540,7 +540,7 @@ def run_jobs_parallel(
         asyncio.run(_async_run_jobs_parallel(jobs, max_workers, launch_delay, env))
         return
 
-    optional_jobs = {"yahoo_static"}
+    optional_jobs = {"yahoo_static", "noaa_weather"}
     if max_workers <= 1 or len(jobs) <= 1:
         run_jobs_sequential(jobs, env, dry_run)
         return
@@ -571,7 +571,7 @@ async def _async_run_job(
     slot_index: int,
 ) -> None:
     """Run a single pipeline job asynchronously under a concurrency semaphore."""
-    optional_jobs = {"yahoo_static"}
+    optional_jobs = {"yahoo_static", "noaa_weather"}
     await asyncio.sleep(slot_index * launch_delay)
 
     async with semaphore:
