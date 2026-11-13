@@ -49,6 +49,7 @@ from src.features.drive_epa_features import build_drive_epa_features
 from src.features.pressure_features import build_pressure_features
 from src.features.qb_health import build_qb_health_features
 from src.features.redzone_features import build_redzone_features
+from src.features.injury_coverage import complete_injury_grid
 from src.features.volatility import engineer_volatility_inputs
 from src.data.weather_fallback import get_fallback_weather
 from src.utils.io import RAW_DIR, PROC_DIR, df_path_exists, write_df, read_df
@@ -5129,6 +5130,8 @@ def _augment_team_week_features(
 
             )
 
+            # Fill team-weeks with no report rows (0 listed) and weeks missing upstream (carry forward).
+            inj_agg = complete_injury_grid(inj_agg, out, agg_cols)
             inj_agg = _add_weekly_deltas(inj_agg, value_cols=agg_cols)
 
             inj_agg = inj_agg[inj_agg["season"].isin(seasons)].copy()

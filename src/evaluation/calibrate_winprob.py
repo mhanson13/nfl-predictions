@@ -24,10 +24,10 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from src.predict.calibration import SigmoidCalibrator
+from src.evaluation.calibration_selection import CANDIDATE_METHODS, apply_calibrator, fit_calibrator, select_calibration_method
 from src.utils.io import MODELS_DIR
 from src.utils.week_filter import filter_before_week
 
@@ -157,6 +157,7 @@ def main() -> None:
             f"{args.exclude_from_season} Week {args.exclude_from_week}"
         )
 
+    full_history = history.copy()
     if args.seasons:
         seasons = sorted(set(args.seasons))
     else:
@@ -176,59 +177,14 @@ def main() -> None:
     actual = actual[mask]
 
     original_preds = preds.copy()
+    # Live prediction applies the calibrator to the raw model probability, *before*
+    # caps and volatility shrinkage, so the calibrator is fit on raw probabilities too.
+    # (Earlier versions shrank by volatility first, i.e. fit on a different input
+    # distribution than the one it is applied to.)
     volatility_applied = False
     volatility_strength = float(args.volatility_strength)
     volatility_threshold = float(args.volatility_threshold) if args.volatility_threshold is not None else None
     volatility_meta: dict[str, float] = {}
-
-    if not args.disable_volatility and args.volatility_dataset.exists():
-        try:
-            vol_df = pd.read_csv(args.volatility_dataset)
-            if not {"game_id", "volatility_prob"}.issubset(vol_df.columns):
-                raise ValueError("volatility dataset must include game_id and volatility_prob")
-            if volatility_threshold is None:
-                threshold_values = (
-                    pd.to_numeric(vol_df.get("volatility_threshold"), errors="coerce").dropna()
-                    if "volatility_threshold" in vol_df.columns
-                    else pd.Series(dtype=float)
-                )
-                volatility_threshold = float(threshold_values.iloc[0]) if not threshold_values.empty else 0.55
-            vol_map = vol_df.set_index("game_id")["volatility_prob"]
-            history["volatility_prob"] = history["game_id"].map(vol_map)
-            vol_series = pd.Series(history["volatility_prob"], index=history.index).astype(float)
-            vol_series = vol_series.fillna(0.0)
-            vol_series = vol_series.loc[mask]
-            clip_strength = np.clip(volatility_strength, 0.0, 1.0)
-            adjust_mask = vol_series >= volatility_threshold
-            coverage = float(adjust_mask.mean())
-            min_coverage = float(np.clip(args.volatility_min_coverage, 0.0, 1.0))
-            max_coverage = float(np.clip(args.volatility_max_coverage, 0.0, 1.0))
-            if coverage < min_coverage or coverage > max_coverage:
-                print(
-                    "[calibrate] volatility adjustment skipped: "
-                    f"coverage={coverage:.2%} outside {min_coverage:.2%}-{max_coverage:.2%}"
-                )
-            elif adjust_mask.any() and clip_strength > 0:
-                shrink = 1.0 - clip_strength * vol_series
-                shrink = np.where(adjust_mask, shrink, 1.0)
-                preds = 0.5 + (preds - 0.5) * shrink
-                volatility_applied = True
-                volatility_meta = {
-                    "volatility_threshold": float(volatility_threshold),
-                    "volatility_strength": float(clip_strength),
-                    "volatility_coverage": coverage,
-                    "volatility_mean_prob": float(vol_series.mean()),
-                }
-                adj_brier = brier_score_loss(actual, preds)
-                adj_auc = roc_auc_score(actual, preds)
-                print(
-                    "[calibrate] volatility adjustment applied: "
-                    f"coverage={coverage:.2%} strength={clip_strength:.2f} "
-                    f"Brier(after adjust)={adj_brier:.4f} AUC(after adjust)={adj_auc:.3f}"
-                )
-        except Exception as exc:  # pragma: no cover - diagnostic only
-            print(f"[calibrate] volatility adjustment skipped: {exc}")
-
     if len(preds) < args.min_games:
         raise RuntimeError(f"Not enough samples for calibration: {len(preds)} < {args.min_games}")
 
@@ -239,33 +195,40 @@ def main() -> None:
     if args.debug:
         print(f"[calibrate] probability input column={probability_input_column}")
 
-    calibrated = preds.copy()
-    calibrator: IsotonicRegression | None = None
-    fallback_calibrator: SigmoidCalibrator | None = None
-    fallback_method: str | None = None
-    sigmoid_brier = before_brier
-    sigmoid_auc = before_auc
-    after_brier = before_brier
-    after_auc = before_auc
-    if args.apply_isotonic:
-        fallback_calibrator, sigmoid_calibrated = _fit_sigmoid_calibrator(preds, actual)
-        sigmoid_brier = brier_score_loss(actual, sigmoid_calibrated)
-        sigmoid_auc = roc_auc_score(actual, sigmoid_calibrated)
-        fallback_method = "sigmoid"
-        print(f"[calibrate] sigmoid Brier={sigmoid_brier:.4f} AUC={sigmoid_auc:.3f}")
-
-        calibrator = IsotonicRegression(out_of_bounds="clip")
-        calibrator.fit(preds, actual)
-        calibrated = calibrator.predict(preds)
-        after_brier = brier_score_loss(actual, calibrated)
-        after_auc = roc_auc_score(actual, calibrated)
-        print(f"[calibrate] isotonic Brier={after_brier:.4f} AUC={after_auc:.3f}")
-    else:
-        print("[calibrate] isotonic calibration skipped (apply_isotonic=False)")
+    methods = list(CANDIDATE_METHODS) if args.apply_isotonic else [m for m in CANDIDATE_METHODS if m != "isotonic"]
+    full_preds, _ = _select_probability_input(full_history)
+    full_margin = pd.to_numeric(full_history.get("home_margin"), errors="coerce")
+    full_actual = pd.Series(np.where(full_margin > 0, 1, np.where(full_margin < 0, 0, np.nan)), index=full_history.index)
+    if "actual_home_win" in full_history.columns:
+        full_actual = pd.to_numeric(full_history["actual_home_win"], errors="coerce")
+    selection = select_calibration_method(
+        full_preds,
+        full_actual,
+        full_history["season"],
+        season_window=max(1, len(seasons)),
+        methods=methods,
+    )
+    for name, score in selection.scores.items():
+        print(f"[calibrate] walk-forward {name:8s} Brier={score['brier']:.4f} LogLoss={score['logloss']:.4f}")
+    print(
+        f"[calibrate] selected method={selection.method} (out-of-sample seasons={selection.eval_seasons}, "
+        f"n={selection.n_games})"
+    )
+    calibrator = fit_calibrator(selection.method, preds, actual)
+    calibrated = pd.Series(apply_calibrator(calibrator, preds), index=preds.index)
+    after_brier = brier_score_loss(actual, calibrated)
+    after_auc = roc_auc_score(actual, calibrated)
+    # No separate fallback: the live path falls back to raw probabilities if calibration collapses ranking.
+    fallback_calibrator = None
+    fallback_method = None
+    sigmoid_brier = float(selection.scores.get("sigmoid", {}).get("brier", float("nan")))
+    sigmoid_auc = float("nan")
 
     artifact = {
         "calibrator": calibrator,
-        "method": "isotonic" if args.apply_isotonic else "none",
+        "method": selection.method,
+        "selection_scores": selection.scores,
+        "selection_eval_seasons": selection.eval_seasons,
         "sample_count": int(len(preds)),
         "seasons": seasons,
         "probability_input_column": probability_input_column,
@@ -306,7 +269,7 @@ def main() -> None:
         },
         {
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "stage": "calibrated" if args.apply_isotonic else "shrink_only",
+            "stage": f"calibrated_{selection.method}",
             "samples": int(len(preds)),
             "brier": float(after_brier),
             "auc": float(after_auc),

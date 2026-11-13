@@ -35,6 +35,7 @@ from src.models.feature_columns import make_feature_diffs, select_feature_column
 from src.predict.utils import apply_probability_caps, moneyline_to_prob
 from src.predict.volatility import (
     apply_shrinkage as apply_volatility_shrinkage,
+    market_shrink_anchors,
     load_volatility_artifact,
     score_volatility,
     DEFAULT_VOLATILITY_ARTIFACT,
@@ -488,6 +489,8 @@ def _build_walk_forward_history(
                         threshold=float(threshold),
                         prob_strength=float(args.volatility_strength),
                         margin_strength=float(args.volatility_margin_strength),
+                        prob_anchor=market_shrink_anchors(score_df, base.index)[0],
+                        margin_anchor=market_shrink_anchors(score_df, base.index)[1],
                     )
                     base["home_win_prob"] = adj_prob
                     base["pred_home_margin"] = adj_margin
@@ -669,6 +672,8 @@ def main() -> None:
                     threshold=float(threshold),
                     prob_strength=float(args.volatility_strength),
                     margin_strength=float(args.volatility_margin_strength),
+                    prob_anchor=market_shrink_anchors(df, base.index)[0],
+                    margin_anchor=market_shrink_anchors(df, base.index)[1],
                 )
                 base["home_win_prob"] = adj_prob
                 if adj_margin is not None:

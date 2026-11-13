@@ -591,7 +591,9 @@ class TestCalibrationWorkflow:
 
         artifact = joblib.load(output_path)
         assert artifact["sample_count"] == 8
-        assert artifact["volatility_used"] is True
+        # The calibrator is fit on raw probabilities (live applies it before volatility shrinkage).
+        assert artifact["volatility_used"] is False
+        assert artifact["method"] in {"none", "sigmoid", "isotonic"}
         assert Path("predictions/evaluation/overall_metrics.csv").exists()
         assert Path("analysis/reliability_curve.png").exists()
 
@@ -634,7 +636,7 @@ class TestCalibrationWorkflow:
         assert artifact["probability_input_column"] == "home_win_prob_raw"
         assert artifact["baseline_auc"] == pytest.approx(1.0)
 
-    def test_main_uses_threshold_from_volatility_dataset(self, tmp_path, monkeypatch):
+    def test_main_does_not_shrink_by_volatility_before_fitting(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(calibrate_module, "MODELS_DIR", tmp_path / "models")
         history_dir = tmp_path / "history"
@@ -680,8 +682,11 @@ class TestCalibrationWorkflow:
         calibrate_module.main()
 
         artifact = joblib.load(output_path)
-        assert artifact["volatility_used"] is True
-        assert artifact["volatility_metadata"]["volatility_threshold"] == pytest.approx(0.34)
+        assert artifact["volatility_used"] is False
+        assert artifact["volatility_metadata"] == {}
+        assert artifact["baseline_brier"] == pytest.approx(
+            np.mean((history["home_win_prob"] - history["actual_home_win"]) ** 2)
+        )
 
     def test_main_rejects_missing_history_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
