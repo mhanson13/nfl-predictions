@@ -32,6 +32,7 @@ from typing import Iterable, Optional, Sequence
 from src.analysis.compare_runs import main as compare_runs_main
 from src.analysis.shap_gpu import main as shap_gpu_main
 from src.analysis.update_readme_metrics import main as update_readme_main
+from src.evaluation.market_bias_monitor import main as market_bias_main
 from src.utils.secrets import get_secret
 from tools.publish_mtb_csvs import DEFAULT_MTB_CSV_DIR, DEFAULT_MTB_REPO_DIR
 
@@ -108,6 +109,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--start-year", type=int, default=2023, help="First season to include in data refresh.")
+    parser.add_argument(
+        "--season",
+        type=int,
+        default=None,
+        help="NFL season being predicted (default: current calendar year; set it for January playoff runs).",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable verbose logging in downstream scripts.")
     parser.add_argument(
         "--train-start-year",
@@ -410,9 +417,9 @@ def is_walk_forward_tuning_config(path: Path) -> bool:
     return isinstance(payload, dict) and payload.get("tuning_scheme") == WALK_FORWARD_TUNING_SCHEME
 
 
-def build_years(start_year: int) -> list[int]:
-    """Return list of seasons from `start_year` through the current year inclusive."""
-    current_year = datetime.now().year
+def build_years(start_year: int, end_year: int | None = None) -> list[int]:
+    """Return list of seasons from `start_year` through `end_year` (default: current year) inclusive."""
+    current_year = end_year or datetime.now().year
 
     if start_year > current_year:
 
@@ -1667,6 +1674,7 @@ def run_post_run_analysis() -> None:
     """Run post-training analysis hooks (leaderboards, SHAP, README refresh) in sequence."""
     # Order matters: leaderboard consumes latest metrics, SHAP saves plots used by README text.
     steps = [
+        ("market_bias_monitor", market_bias_main),
         ("compare_runs", compare_runs_main),
         ("shap_gpu", shap_gpu_main),
         ("update_readme_metrics", update_readme_main),
@@ -1742,9 +1750,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entrypoint for the multi-stage pipeline; returns process exit code."""
     args = parse_args(argv)
 
-    years = build_years(args.start_year)
+    # The NFL season spans two calendar years (playoffs run in January), so callers
+    # such as tools.weekly_run pass the season explicitly.
+    current_year = args.season or datetime.now().year
 
-    current_year = datetime.now().year
+    years = build_years(args.start_year, current_year)
 
     debug_flag = ["--debug"] if args.debug else []
     live_exclude = resolve_live_exclude(args.prediction_week, args.live_run, current_year)

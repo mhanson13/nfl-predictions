@@ -120,7 +120,14 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
    - Install dependencies with `pip install -r requirements.txt`.
    - Set API keys in `secrets.env` for BallDontLie, PropLine, Visual Crossing, The Odds API, Yahoo when approved, and any optional fallback feeds.
 
-2. **Full run**
+2. **Weekly run (recommended)**
+   ```powershell
+   python -m tools.weekly_run            # add --dry-run to see the plan only
+   ```
+   - Reads the schedule to pick the slate and the phase of the week (`early_week`, `pre_kickoff`, `in_progress`), builds the live `run_pipeline` command below with the right week/season/archive flags, and always writes a debug log to `logs/pipeline/<season>/output_wk<NN>_<phase>_<stamp>_debug.txt` (copied to `output_wk<N>_debug.txt`). Extra `run_pipeline` flags go after `--`. See [docs/weekly_run.md](docs/weekly_run.md).
+   - Every run prints the home-vs-market bias monitor; see [docs/market_bias_watch.md](docs/market_bias_watch.md).
+
+3. **Full run (manual)**
    ```powershell
    python -m tools.run_pipeline `
      --start-year 2017 `
@@ -150,7 +157,7 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
    - Sequential stages build features, train team and prop models, predict history/upcoming, evaluate, run market CLV/ROI/blend diagnostics, export website metrics, compare runs, generate SHAP artifacts, update this README, and publish to MTB when requested.
    - Native Windows stack-overflow exit codes (0xC0000409) are tolerated for predict_upcoming if the outputs were written (due to a PyArrow teardown bug).
 
-3. **Targeted steps**
+4. **Targeted steps**
    - Refresh BallDontLie live context: `python -m src.data.balldontlie --seasons 2026 --weeks 5 --feeds active_players games standings injuries stats season_stats team_stats team_season_stats --overwrite --debug`
    - Build player identity: `python -m src.data.player_identity --debug`
    - Build features only: `python -m src.features.build_features --season 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 --debug`
@@ -163,7 +170,7 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
    - Re-export About-page metrics after grading a finalized published week: `python -m analysis.model_metrics_export --season 2026 --week 5`
    - Publish current CSVs and diagnostics without rerunning models: `python -m tools.publish_mtb_csvs --repo-dir C:\Code\mtb --dest-dir data\prediction-csvs --season 2026 --week 5`
 
-4. **Fastparquet fallback**
+5. **Fastparquet fallback**
    - Whenever PyArrow reports "Repetition level histogram size mismatch," fallbacks automatically read with `engine="fastparquet"` and log the file path. No manual action is needed unless the raw parquet itself is corrupt.
 
 ## 7. Outputs

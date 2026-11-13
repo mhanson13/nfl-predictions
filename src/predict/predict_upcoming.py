@@ -947,7 +947,16 @@ def _normalize_team_name(name: Optional[str]) -> Optional[str]:
     Returns:
         Team abbreviation or None if not found
     """
-    return get_team_abbr_from_name(name)
+    abbr = get_team_abbr_from_name(name)
+    # Schedules (nflverse) use 'LA' for the Rams; the shared mapping returns 'LAR'.
+    return _schedule_team_abbr(abbr)
+
+
+def _schedule_team_abbr(abbr: Any) -> Optional[str]:
+    if abbr is None or (isinstance(abbr, float) and np.isnan(abbr)):
+        return None
+    value = str(abbr).strip().upper()
+    return "LA" if value == "LAR" else value
 
 
 
@@ -1694,9 +1703,9 @@ def _attach_odds_spreads(preds: pd.DataFrame, odds: Optional[list[dict]], debug:
 
                 continue
 
-            mask = (preds["home_team"].astype(str).str.upper() == home_abbr) & (
+            mask = (preds["home_team"].map(_schedule_team_abbr) == home_abbr) & (
 
-                preds["away_team"].astype(str).str.upper() == away_abbr
+                preds["away_team"].map(_schedule_team_abbr) == away_abbr
 
             )
 
