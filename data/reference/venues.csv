@@ -1,0 +1,61 @@
+stadium_id,venue_name,aliases,latitude,longitude,roof_type,city,country
+ATL00,Georgia Dome,Georgia Dome,33.7577,-84.4008,dome,Atlanta,USA
+ATL97,Mercedes-Benz Stadium,Mercedes-Benz Stadium,33.7554,-84.4009,retractable,Atlanta,USA
+BAL00,M&T Bank Stadium,M&T Bank Stadium|Ravens Stadium,39.2780,-76.6227,outdoor,Baltimore,USA
+BOS00,Gillette Stadium,Gillette Stadium,42.0909,-71.2643,outdoor,Foxborough,USA
+BRG00,Tiger Stadium (LSU),Tiger Stadium (LSU),30.4120,-91.1838,outdoor,Baton Rouge,USA
+BUF00,Highmark Stadium,Highmark Stadium|New Era Field|Ralph Wilson Stadium,42.7738,-78.7868,outdoor,Orchard Park,USA
+BUF01,Rogers Centre,Rogers Centre,43.6414,-79.3894,retractable,Toronto,Canada
+CAR00,Bank of America Stadium,Bank of America Stadium|Ericsson Stadium,35.2258,-80.8528,outdoor,Charlotte,USA
+CHI98,Soldier Field,Soldier Field,41.8623,-87.6167,outdoor,Chicago,USA
+CHI99,Memorial Stadium (Champaign),Memorial Stadium (Champaign),40.0992,-88.2360,outdoor,Champaign,USA
+CIN00,Paycor Stadium,Paul Brown Stadium|Paycor Stadium,39.0955,-84.5161,outdoor,Cincinnati,USA
+CLE00,Huntington Bank Field,Cleveland Browns Stadium|FirstEnergy Stadium|Huntington Bank Field,41.5061,-81.6995,outdoor,Cleveland,USA
+DAL00,AT&T Stadium,AT&T Stadium|Cowboys Stadium,32.7473,-97.0945,retractable,Arlington,USA
+DAL99,Texas Stadium,Texas Stadium,32.8399,-96.9110,outdoor,Irving,USA
+DEN00,Empower Field at Mile High,Empower Field at Mile High|Invesco Field at Mile High|Sports Authority Field at Mile High,39.7439,-105.0201,outdoor,Denver,USA
+DET00,Ford Field,Ford Field,42.3400,-83.0456,dome,Detroit,USA
+FRA00,Deutsche Bank Park,Deutsche Bank Park,50.0686,8.6455,retractable,Frankfurt,Germany
+GER00,Allianz Arena,Allianz Arena,48.2188,11.6247,outdoor,Munich,Germany
+GNB00,Lambeau Field,Lambeau Field,44.5013,-88.0622,outdoor,Green Bay,USA
+HOU00,NRG Stadium,NRG Stadium|Reliant Stadium,29.6847,-95.4107,retractable,Houston,USA
+IND00,Lucas Oil Stadium,Lucas Oil Stadium,39.7601,-86.1639,retractable,Indianapolis,USA
+IND99,RCA Dome,RCA Dome,39.7633,-86.1622,dome,Indianapolis,USA
+JAX00,EverBank Stadium,Alltel Stadium|EverBank Field|EverBank Stadium|Jacksonville Municipal Stadium|TIAA Bank Stadium,30.3239,-81.6373,outdoor,Jacksonville,USA
+KAN00,GEHA Field at Arrowhead Stadium,Arrowhead Stadium|GEHA Field at Arrowhead Stadium,39.0489,-94.4839,outdoor,Kansas City,USA
+LAX01,SoFi Stadium,SoFi Stadium,33.9535,-118.3392,dome,Inglewood,USA
+LAX97,StubHub Center,StubHub Center|Dignity Health Sports Park,33.8644,-118.2611,outdoor,Carson,USA
+LAX99,Los Angeles Memorial Coliseum,Los Angeles Memorial Coliseum,34.0141,-118.2879,outdoor,Los Angeles,USA
+LON00,Wembley Stadium,Wembley Stadium,51.5560,-0.2796,outdoor,London,UK
+LON01,Twickenham Stadium,Twickenham Stadium,51.4560,-0.3415,outdoor,London,UK
+LON02,Tottenham Hotspur Stadium,Tottenham Hotspur Stadium|Tottenham Stadium,51.6043,-0.0664,outdoor,London,UK
+MAD01,Santiago Bernabeu,Bernabeu|Santiago Bernabeu|Estadio Santiago Bernabeu,40.4531,-3.6883,retractable,Madrid,Spain
+MEL00,Melbourne Cricket Ground,Melbourne Cricket Ground,-37.8200,144.9834,outdoor,Melbourne,Australia
+MEX00,Estadio Azteca,Azteca Stadium|Estadio Azteca|Estadio Banorte,19.3029,-99.1505,outdoor,Mexico City,Mexico
+MIA00,Hard Rock Stadium,Dolphin Stadium|Hard Rock Stadium|Pro Player Stadium|Sun Life Stadium,25.9580,-80.2389,outdoor,Miami Gardens,USA
+MIN00,Hubert H. Humphrey Metrodome,Hubert H. Humphrey Metrodome|Mall of America Field,44.9737,-93.2581,dome,Minneapolis,USA
+MIN01,U.S. Bank Stadium,U.S. Bank Stadium,44.9737,-93.2575,dome,Minneapolis,USA
+MIN98,TCF Bank Stadium,TCF Bank Stadium|Huntington Bank Stadium,44.9765,-93.2245,outdoor,Minneapolis,USA
+MUN01,Allianz Arena (FC Bayern Munich Stadium),FC Bayern Munich Stadium,48.2188,11.6247,outdoor,Munich,Germany
+NAS00,Nissan Stadium,LP Field|Nissan Stadium|The Coliseum,36.1665,-86.7713,outdoor,Nashville,USA
+NOR00,Caesars Superdome,Caesars Superdome|Louisiana Superdome|Mercedes-Benz Superdome,29.9511,-90.0812,dome,New Orleans,USA
+NYC00,Giants Stadium,Giants Stadium,40.8124,-74.0768,outdoor,East Rutherford,USA
+NYC01,MetLife Stadium,MetLife Stadium|New Meadowlands Stadium,40.8135,-74.0745,outdoor,East Rutherford,USA
+OAK00,Oakland-Alameda County Coliseum,McAfee Coliseum|Network Associates Coliseum|O.co Coliseum|Oakland-Alameda County Coliseum|Ring Central Coliseum,37.7516,-122.2005,outdoor,Oakland,USA
+PAR00,Stade de France,Stade de France,48.9245,2.3602,outdoor,Saint-Denis,France
+PHI00,Lincoln Financial Field,Lincoln Financial Field,39.9008,-75.1675,outdoor,Philadelphia,USA
+PHI99,Veterans Stadium,Veterans Stadium,39.9070,-75.1710,outdoor,Philadelphia,USA
+PHO00,State Farm Stadium,State Farm Stadium|University of Phoenix Stadium,33.5276,-112.2626,retractable,Glendale,USA
+PHO99,Sun Devil Stadium,Sun Devil Stadium,33.4264,-111.9325,outdoor,Tempe,USA
+PIT00,Acrisure Stadium,Acrisure Stadium|Heinz Field,40.4468,-80.0158,outdoor,Pittsburgh,USA
+RIO00,Maracana Stadium,Maracana Stadium|Estadio do Maracana,-22.9122,-43.2302,outdoor,Rio de Janeiro,Brazil
+SAN00,Alamodome,Alamo Dome|Alamodome,29.4170,-98.4789,dome,San Antonio,USA
+SAO00,Neo Quimica Arena,Arena Corinthians|Neo Quimica Arena,-23.5453,-46.4742,outdoor,Sao Paulo,Brazil
+SDG00,Qualcomm Stadium,Qualcomm Stadium,32.7831,-117.1196,outdoor,San Diego,USA
+SEA00,Lumen Field,CenturyLink Field|Lumen Field|Qwest Field|Seahawks Stadium,47.5952,-122.3316,outdoor,Seattle,USA
+SFO00,Candlestick Park,3Com Park|Candlestick Park|Monster Park,37.7136,-122.3863,outdoor,San Francisco,USA
+SFO01,Levi's Stadium,Levi's Stadium,37.4030,-121.9700,outdoor,Santa Clara,USA
+STL00,Edward Jones Dome,Edward Jones Dome,38.6328,-90.1885,dome,St. Louis,USA
+TAM00,Raymond James Stadium,Raymond James Stadium,27.9759,-82.5033,outdoor,Tampa,USA
+VEG00,Allegiant Stadium,Allegiant Stadium,36.0909,-115.1833,dome,Paradise,USA
+WAS00,Northwest Stadium,FedExField|Northwest Stadium,38.9077,-76.8645,outdoor,Landover,USA

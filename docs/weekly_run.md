@@ -13,6 +13,24 @@ python -m tools.weekly_run --week 11 --phase early_week # override what was reso
 python -m tools.weekly_run --no-publish        # skip MattyTheBookie publishing
 ```
 
+## Running `run_pipeline` directly
+
+`python -m tools.run_pipeline ... --debug` now writes the same debug log by
+itself, so no `*>` redirect is needed. The file is `output_wk<N>_debug.txt`,
+where `<N>` is the NFL week being predicted:
+- regular season: 1-18;
+- postseason, as numbered by nflverse: 19 = Wild Card, 20 = Divisional,
+  21 = Conference, 22 = Super Bowl.
+
+A timestamped copy is kept under `logs/pipeline/<season>/`.
+
+- `--prediction-week auto --live-run` resolves the season and week from the
+  schedule. Before, this combination raised an error.
+- `--debug-log <path>` writes the log to a path of your choice.
+- `--debug-log none` turns the log off.
+- `tools.weekly_run` uses the same logger, so the pipeline it starts does not
+  log twice.
+
 ## How the week is resolved
 
 `src/utils/nfl_calendar.py` reads `data/raw/nfl_schedules.parquet`. Kickoff
@@ -39,7 +57,7 @@ plus `--publish-mtb --mtb-repo-dir C:\Code\mtb`.
 ## The debug log (always written)
 
 The log goes to `logs/pipeline/<season>/output_wk<NN>_<phase>_<YYYYmmdd-HHMM>_debug.txt`.
-After the run it is copied to `output_wk<N>_debug.txt` in the repo root. Both
+It is also written live to `output_wk<N>_debug.txt` in the repo root, where `<N>` is the NFL week. Both
 locations are gitignored.
 
 - **Header:**

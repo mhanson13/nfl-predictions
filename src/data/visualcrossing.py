@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 from urllib.parse import quote
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -60,77 +61,26 @@ DEFAULT_ELEMENTS = ",".join(
 )
 
 
-def _resolve_game_times(schedule: pd.DataFrame, team_meta: pd.DataFrame) -> pd.DataFrame:
+def _resolve_game_times(schedule: pd.DataFrame, team_meta: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Attach the actual venue's coordinates and the UTC kickoff to each game.
+
+    ``home_lat``/``home_lon`` are the coordinates of the venue the game is played
+    at (see ``src.utils.venues``), not the home team's current stadium, and
+    ``start_utc`` is ``gameday`` + ``gametime`` read as US/Eastern. ``team_meta``
+    is accepted for backwards compatibility and unused.
+    """
+    from src.utils.venues import resolve_game_venues
+
     df = schedule.copy()
     df["season"] = pd.to_numeric(df.get("season"), errors="coerce").astype("Int64")
     df = df.dropna(subset=["season"])
     df["season"] = df["season"].astype(int)
-
-    for col in ["gameday", "game_start", "gameDate", "game_date", "start_date"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce", utc=False)
-
-    if "gametime" in df.columns:
-        df["gametime"] = df["gametime"].astype(str)
-
-    team_meta = team_meta[["team_abbr", "latitude", "longitude", "timezone_offset_hours"]].copy()
-    team_meta["team_abbr"] = team_meta["team_abbr"].astype(str).str.upper()
-    df = df.merge(
-        team_meta.rename(
-            columns={
-                "team_abbr": "home_team",
-                "latitude": "home_lat",
-                "longitude": "home_lon",
-                "timezone_offset_hours": "home_tz",
-            }
-        ),
-        on="home_team",
-        how="left",
-    )
-
-    def compute_start(row: pd.Series) -> datetime:
-        for col in ("game_start", "start_date", "gameDate", "game_date"):
-            val = row.get(col)
-            if pd.notna(val):
-                dt = pd.to_datetime(val, errors="coerce", utc=True)
-                if pd.notna(dt):
-                    return dt.to_pydatetime()
-
-        date_val = row.get("gameday")
-        if pd.isna(date_val):
-            return datetime(row["season"], 9, 1, 18, 0, tzinfo=timezone.utc)
-
-        date_val = pd.to_datetime(date_val, errors="coerce")
-        if pd.isna(date_val):
-            return datetime(row["season"], 9, 1, 18, 0, tzinfo=timezone.utc)
-
-        time_str = str(row.get("gametime") or "18:00")
-        try:
-            time_part = pd.to_datetime(time_str, format="%I:%M %p", errors="coerce")
-        except Exception:
-            time_part = pd.NaT
-
-        if pd.notna(time_part):
-            hour = int(time_part.hour)
-            minute = int(time_part.minute)
-        else:
-            hour = 18
-            minute = 0
-
-        tz_offset = row.get("home_tz")
-        try:
-            tz_hours = float(tz_offset)
-        except Exception:
-            tz_hours = -5.0
-        try:
-            tzinfo = timezone(timedelta(hours=tz_hours))
-        except Exception:
-            tzinfo = timezone.utc
-
-        local_dt = datetime(date_val.year, date_val.month, date_val.day, hour, minute, tzinfo=tzinfo)
-        return local_dt.astimezone(timezone.utc)
-
-    df["start_utc"] = df.apply(compute_start, axis=1)
+    df = resolve_game_venues(df)
+    df["home_lat"] = df["venue_lat"]
+    df["home_lon"] = df["venue_lon"]
+    fallback = pd.to_datetime(df["season"].astype(str) + "-09-01 18:00", utc=True)
+    start = df["kickoff_utc"].fillna(fallback)
+    df["start_utc"] = [ts.to_pydatetime() for ts in start]
     return df
 
 
@@ -386,6 +336,89 @@ def _fetch_visualcrossing(
         return None
 
 
+FORECAST_HORIZON_DAYS = 15  # Visual Crossing returns statistical normals beyond ~15 days
+GAME_DURATION = timedelta(hours=4)
+FINAL_DATA_SOURCES = {"obs"}  # values that are observations and never need refreshing
+
+
+def select_refresh_games(
+    existing: pd.DataFrame,
+    schedule: pd.DataFrame,
+    *,
+    now: Optional[datetime] = None,
+    horizon_days: float = FORECAST_HORIZON_DAYS,
+) -> tuple[set[str], set[str], set[str]]:
+    """Classify schedule games for a refresh run.
+
+    Returns ``(stale_played, upcoming_in_horizon, beyond_horizon)``:
+
+    * stale_played - cached, kickoff more than 4h ago, but the cached row is not an
+      observation (a forecast or normal pulled before the game) -> refetch for obs;
+    * upcoming_in_horizon - kickoff in the future within ``horizon_days`` -> refetch
+      every run so the forecast is current;
+    * beyond_horizon - kickoff further out -> do not fetch (would be climatology).
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    kick = schedule[["game_id", "start_utc"]].copy()
+    kick["game_id"] = kick["game_id"].astype(str)
+    kick["start_utc"] = pd.to_datetime(kick["start_utc"], utc=True, errors="coerce")
+    kick = kick.dropna(subset=["start_utc"]).drop_duplicates("game_id")
+    played = kick["start_utc"] + GAME_DURATION <= now
+    future = kick["start_utc"] > now
+    in_horizon = kick["start_utc"] <= now + timedelta(days=horizon_days)
+    upcoming = set(kick.loc[future & in_horizon, "game_id"])
+    beyond = set(kick.loc[future & ~in_horizon, "game_id"])
+
+    stale: set[str] = set()
+    if existing is not None and not existing.empty and "game_id" in existing.columns:
+        source = existing.get("vx_data_source")
+        if source is None:
+            source = pd.Series(None, index=existing.index)
+        not_obs = ~source.astype(str).str.lower().isin(FINAL_DATA_SOURCES)
+        cached_not_obs = set(existing.loc[not_obs, "game_id"].astype(str))
+        stale = cached_not_obs & set(kick.loc[played, "game_id"])
+    return stale, upcoming, beyond
+
+
+def select_location_time_fixes(
+    existing: pd.DataFrame,
+    schedule: pd.DataFrame,
+    *,
+    max_km: float = 5.0,
+    max_hours: float = 1.0,
+) -> tuple[set[str], set[str]]:
+    """Cached rows fetched at the wrong place or time.
+
+    Returns ``(moved, misaligned)``: rows whose fetched coordinates are more than
+    ``max_km`` from the actual venue, and rows whose stored kickoff differs from
+    the actual kickoff by ``max_hours`` or more (older fetches parsed the 24h
+    ``gametime`` incorrectly and centred the window on 18:00 home-standard time).
+    """
+    from src.utils.venues import haversine_km
+
+    if existing is None or existing.empty or "game_id" not in existing.columns:
+        return set(), set()
+    cols = ["game_id", "home_lat", "home_lon", "start_utc"]
+    sched = schedule[[c for c in cols if c in schedule.columns]].drop_duplicates("game_id").copy()
+    sched["game_id"] = sched["game_id"].astype(str)
+    cached = existing.drop_duplicates("game_id", keep="last").copy()
+    cached["game_id"] = cached["game_id"].astype(str)
+    merged = cached.merge(sched, on="game_id", how="inner", suffixes=("_cached", ""))
+    moved: set[str] = set()
+    if {"vx_latitude", "vx_longitude", "home_lat", "home_lon"}.issubset(merged.columns):
+        dist = haversine_km(merged["vx_latitude"], merged["vx_longitude"], merged["home_lat"], merged["home_lon"])
+        moved = set(merged.loc[np.nan_to_num(dist, nan=0.0) > max_km, "game_id"])
+    misaligned: set[str] = set()
+    if {"start_utc_cached", "start_utc"}.issubset(merged.columns):
+        stored = pd.to_datetime(merged["start_utc_cached"], utc=True, errors="coerce")
+        actual = pd.to_datetime(merged["start_utc"], utc=True, errors="coerce")
+        gap = (stored - actual).abs().dt.total_seconds() / 3600.0
+        misaligned = set(merged.loc[gap >= max_hours, "game_id"])
+    return moved, misaligned
+
+
 def build_visualcrossing_weather(
     seasons: Iterable[int],
     *,
@@ -394,6 +427,10 @@ def build_visualcrossing_weather(
     window_hours: float,
     only_missing: bool,
     max_games: Optional[int] = None,
+    refresh: bool = True,
+    horizon_days: float = FORECAST_HORIZON_DAYS,
+    now: Optional[datetime] = None,
+    refetch_misaligned: bool = False,
 ) -> pd.DataFrame:
     api_key = get_secret("VISUAL_CROSSING_API_KEY")
     if not api_key:
@@ -434,6 +471,34 @@ def build_visualcrossing_weather(
         if "game_id" in existing_df.columns:
             existing_games = set(existing_df["game_id"].astype(str))
 
+    refresh_games: set[str] = set()
+    skip_games: set[str] = set()
+    if refresh:
+        stale, upcoming, beyond = select_refresh_games(existing_df, schedule, now=now, horizon_days=horizon_days)
+        moved, misaligned = select_location_time_fixes(existing_df, schedule)
+        refresh_games = stale | upcoming | moved
+        if refetch_misaligned:
+            refresh_games |= misaligned
+        refresh_games -= beyond
+        skip_games = beyond
+        print(
+            f"[visualcrossing] venue/time audit: {len(moved)} cached games fetched away from the actual venue -> refetch; "
+            f"{len(misaligned)} cached games centred on the wrong kickoff time -> "
+            + ("refetch" if refetch_misaligned else "kept (pass --refetch-misaligned-kickoff to refetch)")
+        )
+        print(
+            f"[visualcrossing] refresh: {len(stale)} played games still holding forecasts -> refetch observations; "
+            f"{len(upcoming)} upcoming games within {horizon_days:g} days -> refresh forecast; "
+            f"{len(beyond)} games beyond the forecast horizon skipped"
+        )
+        # Rows for games beyond the horizon are climatology, not forecasts: drop them.
+        if not existing_df.empty and beyond:
+            dropped = existing_df["game_id"].astype(str).isin(beyond)
+            if dropped.any():
+                print(f"[visualcrossing] removing {int(dropped.sum())} cached rows beyond the forecast horizon")
+                existing_df = existing_df.loc[~dropped].copy()
+                existing_games -= beyond
+
     if only_missing:
         missing_games = set(schedule["game_id"].astype(str))
         noaa_path = PROC_DIR / "noaa_weather.parquet"
@@ -463,6 +528,8 @@ def build_visualcrossing_weather(
                     missing_games.difference_update(set(noaa_df["game_id"]))
         if existing_df is not None and not existing_df.empty and "game_id" in existing_df.columns:
             missing_games.difference_update(set(existing_df["game_id"].astype(str)))
+        missing_games |= refresh_games & set(schedule["game_id"].astype(str))
+        missing_games -= skip_games
         if not missing_games:
             print("[visualcrossing] all requested games already covered by NOAA/VisualCrossing cache; nothing to fetch.")
             if not existing_df.empty:
@@ -484,7 +551,9 @@ def build_visualcrossing_weather(
             break
 
         game_id = str(row["game_id"])
-        if game_id in existing_games:
+        if game_id in skip_games:
+            continue
+        if game_id in existing_games and game_id not in refresh_games:
             continue
         lat = row.get("home_lat")
         lon = row.get("home_lon")
@@ -533,6 +602,9 @@ def build_visualcrossing_weather(
             "vx_latitude": payload.get("latitude"),
             "vx_longitude": payload.get("longitude"),
             "vx_data_source": agg.get("weather_source_detail"),
+            "vx_fetched_at": datetime.now(timezone.utc),
+            "venue_id": row.get("venue_id"),
+            "venue_name": row.get("venue_name"),
         }
         record.update(agg)
         record["game_uid"] = _make_uid(season, week, home_team, away_team)
@@ -575,6 +647,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite", action="store_true", help="Refetch all games and ignore existing cache.")
     parser.add_argument("--only-missing", action="store_true", help="Only request games without NOAA or existing Visual Crossing coverage.")
     parser.add_argument("--max-games", type=int, help="Optional limit on number of games to fetch (for testing).")
+    parser.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="Do not refetch played games that still hold forecasts or upcoming forecasts (old behaviour).",
+    )
+    parser.add_argument(
+        "--refetch-misaligned-kickoff",
+        action="store_true",
+        help="Also refetch cached games whose weather window was centred on the wrong kickoff time (one-time backfill).",
+    )
+    parser.add_argument(
+        "--forecast-horizon-days",
+        type=float,
+        default=FORECAST_HORIZON_DAYS,
+        help="Refresh upcoming games within this many days; games further out are not fetched (climatology).",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging.")
     return parser
 
@@ -605,6 +693,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         window_hours=float(args.window_hours),
         only_missing=args.only_missing,
         max_games=args.max_games,
+        refresh=not args.no_refresh,
+        horizon_days=float(args.forecast_horizon_days),
+        refetch_misaligned=args.refetch_misaligned_kickoff,
     )
 
 

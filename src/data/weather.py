@@ -1184,6 +1184,20 @@ def build_game_weather(
     sched["_venue_lat"] = lats
     sched["_venue_lon"] = lons
 
+    # The venue the game is actually played at (international/relocated games) wins
+    # over feed coordinates and the home team's stadium.
+    try:
+        from src.utils.venues import resolve_game_venues
+
+        resolved = resolve_game_venues(sched)
+        has_venue = resolved["venue_lat"].notna() & resolved["venue_lon"].notna()
+        sched.loc[has_venue, "_venue_lat"] = resolved.loc[has_venue, "venue_lat"]
+        sched.loc[has_venue, "_venue_lon"] = resolved.loc[has_venue, "venue_lon"]
+        sched["_venue_roof"] = resolved["venue_roof"]
+        sched["_venue_name"] = resolved["venue_name"]
+    except Exception as exc:
+        print(f"[weather] venue resolution failed ({exc}); using home-team stadium coordinates")
+
 
 
     # Fallback to team stadium mapping
@@ -1334,7 +1348,10 @@ def build_game_weather(
 
         roof = None
 
-        if isinstance(home_t, str) and home_t in STADIUMS:
+        venue_roof = r.get("_venue_roof")
+        if isinstance(venue_roof, str) and venue_roof.strip():
+            roof = "dome" if venue_roof in ("dome", "closed") else "outdoor"
+        elif isinstance(home_t, str) and home_t in STADIUMS:
 
             roof = STADIUMS[home_t].get("roof")
 

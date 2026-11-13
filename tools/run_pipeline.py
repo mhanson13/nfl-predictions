@@ -32,6 +32,7 @@ from typing import Iterable, Optional, Sequence
 from src.analysis.compare_runs import main as compare_runs_main
 from src.analysis.shap_gpu import main as shap_gpu_main
 from src.analysis.update_readme_metrics import main as update_readme_main
+from src.data.xweather import get_xweather_credentials
 from src.evaluation.market_bias_monitor import main as market_bias_main
 from src.utils.secrets import get_secret
 from tools.publish_mtb_csvs import DEFAULT_MTB_CSV_DIR, DEFAULT_MTB_REPO_DIR
@@ -113,7 +114,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--season",
         type=int,
         default=None,
-        help="NFL season being predicted (default: current calendar year; set it for January playoff runs).",
+        help="NFL season being predicted (default: resolved from the schedule for auto weeks, else the calendar year).",
+    )
+    parser.add_argument(
+        "--debug-log",
+        type=str,
+        default="auto",
+        help=(
+            "With --debug, tee all output to a log. 'auto' writes output_wk<N>_debug.txt (N = NFL week being "
+            "predicted) plus logs/pipeline/<season>/output_wk<NN>_<phase>_<stamp>_debug.txt; a path writes there; "
+            "'none' disables."
+        ),
     )
     parser.add_argument("--debug", action="store_true", help="Enable verbose logging in downstream scripts.")
     parser.add_argument(
@@ -927,6 +938,20 @@ def build_sequential_jobs(
             Job(
                 "visualcrossing_weather",
                 ["python", "-m", "src.data.visualcrossing", "--seasons", *season_args, "--only-missing", *debug],
+            )
+        )
+    try:
+        trial_week = int(prediction_week)
+    except (TypeError, ValueError):
+        trial_week = None
+    if trial_week is not None and all(get_xweather_credentials()):
+        # Xweather trial: snapshot each source's forecast for this slate (~1 request per outdoor game);
+        # snapshots are scored against observations once the games are played. Never fails the run.
+        jobs.append(
+            Job(
+                "xweather_trial",
+                ["python", "-m", "src.evaluation.weather_source_trial", "--live",
+                 "--season", str(current_year), "--week", str(trial_week), "--max-requests", "40"],
             )
         )
     jobs.append(
@@ -1746,9 +1771,83 @@ def build_mtb_import_job(*, repo_dir: Path, overwrite_archive: bool = False) -> 
 
 
 
+def resolve_auto_week(args: argparse.Namespace, now: datetime | None = None) -> str:
+    """For live runs with ``--prediction-week auto``, take season/week from the schedule.
+
+    Returns the resolved phase ("manual" when the week was given explicitly).
+    """
+    if str(args.prediction_week).lower() != "auto" or not args.live_run:
+        return "manual"
+    from src.utils.nfl_calendar import load_week_context
+
+    try:
+        ctx = load_week_context(now=now)
+    except Exception as exc:
+        raise ValueError(f"--prediction-week auto could not read the schedule ({exc}); pass a week number") from exc
+    if ctx.week is None:
+        raise ValueError("--prediction-week auto: no upcoming games on the local schedule; pass a week number")
+    args.prediction_week = str(ctx.week)
+    args.season = args.season or ctx.season
+    print(f"[pipeline] Resolved --prediction-week auto -> season {args.season} week {ctx.week} ({ctx.phase})")
+    return ctx.phase
+
+
+def rerun_with_debug_log(args: argparse.Namespace, argv: Sequence[str], phase: str) -> int:
+    """Re-run this pipeline as a child process with all output teed to the debug log."""
+    from src.utils.nfl_calendar import DEFAULT_SCHEDULE_PATH
+    from src.utils.run_log import RULE, debug_log_paths, preflight, run_logged
+
+    try:
+        week: int | None = int(args.prediction_week)
+    except (TypeError, ValueError):
+        week = None
+    season = args.season or datetime.now().year
+    if phase == "manual" and week is not None:
+        try:
+            from src.utils.nfl_calendar import load_week_context
+
+            ctx = load_week_context()
+            if (ctx.season, ctx.week) == (season, week):
+                phase = ctx.phase
+        except Exception:
+            pass
+    if str(args.debug_log).lower() == "auto":
+        log_paths = list(debug_log_paths(season, week, phase if week is not None else "auto_week"))
+    else:
+        log_paths = [Path(args.debug_log)]
+    command = [PYTHON_EXECUTABLE, "-u", "-m", "tools.run_pipeline", *argv]
+    if "--prediction-week" not in argv and week is not None:
+        command += ["--prediction-week", str(week)]
+    if "--season" not in argv:
+        command += ["--season", str(season)]
+    header = "\n".join(
+        [RULE, "NFL pipeline run (tools.run_pipeline --debug)", RULE,
+         f"started     : {datetime.now().isoformat(timespec='seconds')}",
+         f"slate       : season {season} week {week if week is not None else 'auto'} ({phase})",
+         *preflight(DEFAULT_SCHEDULE_PATH),
+         "command     : " + " ".join(command),
+         RULE, ""]
+    )
+    rc = run_logged(command, header, log_paths)
+    print(f"[pipeline] debug log: {', '.join(str(p) for p in log_paths)}")
+    return rc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entrypoint for the multi-stage pipeline; returns process exit code."""
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(raw_argv)
+    phase = resolve_auto_week(args)
+
+    from src.utils.run_log import CHILD_ENV_FLAG
+
+    if (
+        args.debug
+        and str(args.debug_log).lower() != "none"
+        and not args.dry_run
+        and os.environ.get(CHILD_ENV_FLAG) != "1"
+    ):
+        return rerun_with_debug_log(args, raw_argv, phase)
 
     # The NFL season spans two calendar years (playoffs run in January), so callers
     # such as tools.weekly_run pass the season explicitly.
