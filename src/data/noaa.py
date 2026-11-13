@@ -214,89 +214,26 @@ def _aggregate_observations(observations: List[dict]) -> Dict[str, Optional[floa
     return result
 
 
-def _resolve_game_times(schedule: pd.DataFrame, team_meta: pd.DataFrame) -> pd.DataFrame:
+def _resolve_game_times(schedule: pd.DataFrame, team_meta: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Attach the actual venue's coordinates and the UTC kickoff to each game.
+
+    ``home_lat``/``home_lon`` are the coordinates of the venue the game is played
+    at (see ``src.utils.venues``), not the home team's current stadium, and
+    ``start_utc`` is ``gameday`` + ``gametime`` read as US/Eastern. ``team_meta``
+    is accepted for backwards compatibility and unused.
+    """
+    from src.utils.venues import resolve_game_venues
+
     df = schedule.copy()
-    season_source: pd.Series[Any]
-    if "season" in df.columns:
-        season_source = df["season"]
-    else:
-        season_source = pd.Series(pd.NA, index=df.index, dtype="Int64")
-    df["season"] = pd.to_numeric(season_source, errors="coerce").astype("Int64")
+    df["season"] = pd.to_numeric(df.get("season"), errors="coerce").astype("Int64")
     df = df.dropna(subset=["season"])
     df["season"] = df["season"].astype(int)
-
-    for col in ["gameday", "game_start", "gameDate", "game_date", "start_date"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce", utc=False)
-
-    if "gametime" in df.columns:
-        df["gametime"] = df["gametime"].astype(str)
-
-    team_meta = team_meta[["team_abbr", "latitude", "longitude", "timezone_offset_hours"]].copy()
-    team_meta["team_abbr"] = team_meta["team_abbr"].astype(str).str.upper()
-    df = df.merge(
-        team_meta.rename(columns={"team_abbr": "home_team", "latitude": "home_lat", "longitude": "home_lon", "timezone_offset_hours": "home_tz"}),
-        on="home_team",
-        how="left",
-    )
-
-    def compute_start(row: pd.Series) -> datetime:
-        season_year = int(row["season"])
-        fallback_start = datetime(season_year, 9, 1, 18, 0, tzinfo=None)
-
-        for col in ("game_start", "start_date", "gameDate", "game_date"):
-            val = row.get(col)
-            if val is None:
-                continue
-            dt = pd.to_datetime(val, errors="coerce", utc=True)
-            if pd.notna(dt):
-                return dt.to_pydatetime()
-
-        date_val_raw = row.get("gameday")
-        if date_val_raw is None or pd.isna(date_val_raw):
-            return fallback_start
-
-        date_val = pd.to_datetime(date_val_raw, errors="coerce")
-        if pd.isna(date_val):
-            return fallback_start
-
-        time_str = str(row.get("gametime") or "18:00")
-        try:
-            time_part = pd.to_datetime(time_str, format="%I:%M %p", errors="coerce")
-        except Exception:
-            time_part = pd.NaT
-
-        if pd.notna(time_part):
-            hour = int(time_part.hour)
-            minute = int(time_part.minute)
-        else:
-            hour = 18
-            minute = 0
-
-        local_naive = datetime(date_val.year, date_val.month, date_val.day, hour, minute)
-        tz_offset = row.get("home_tz")
-        if tz_offset is None:
-            tz_hours = -5.0
-        else:
-            try:
-                tz_hours = float(tz_offset)
-            except (TypeError, ValueError):
-                tz_hours = -5.0
-        try:
-            tzinfo = timezone(timedelta(hours=tz_hours))
-        except Exception:
-            tzinfo = timezone.utc
-        local_dt = datetime(
-            date_val.year,
-            date_val.month,
-            date_val.day,
-            hour,
-            minute,
-            tzinfo=tzinfo,
-        )
-        return local_dt.astimezone(timezone.utc)
-
-    df["start_utc"] = df.apply(compute_start, axis=1)
+    df = resolve_game_venues(df)
+    df["home_lat"] = df["venue_lat"]
+    df["home_lon"] = df["venue_lon"]
+    fallback = pd.to_datetime(df["season"].astype(str) + "-09-01 18:00", utc=True)
+    start = df["kickoff_utc"].fillna(fallback)
+    df["start_utc"] = [ts.to_pydatetime() for ts in start]
     return df
 
 

@@ -55,6 +55,7 @@ from src.data.weather_fallback import get_fallback_weather
 from src.utils.io import RAW_DIR, PROC_DIR, df_path_exists, write_df, read_df
 from src.utils.logging_config import setup_logging
 from src.utils.teams import normalize_team_abbr, TEAM_NAME_TO_ABBR
+from src.utils.venues import apply_venue_roof
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -974,6 +975,15 @@ def _normalize_schedule_columns(sched: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+
+    # Correct roof labels from the venue actually played at (e.g. open-air
+    # international stadiums nflverse marks as dome); retractable roofs keep
+    # the per-game open/closed value.
+    if "roof" in s.columns and "gameday" in s.columns:
+        try:
+            s = apply_venue_roof(s)
+        except Exception as exc:  # reference table missing -> keep schedule labels
+            print(f"[features] venue roof correction skipped ({exc})")
 
     if "roof_is_dome" not in s.columns and "roof" in s.columns:
         roof = s["roof"].astype("string").str.lower().str.strip()
