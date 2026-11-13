@@ -89,6 +89,22 @@ def score_volatility(
     return pd.Series(prob, index=df.index, name="volatility_prob"), frame.enriched
 
 
+def market_shrink_anchors(frame: pd.DataFrame, index: pd.Index) -> tuple[pd.Series, pd.Series]:
+    """No-vig market home probability and closing-spread home margin to shrink volatile games toward.
+
+    Missing lines are NaN; `apply_shrinkage` then falls back to 0.5 / 0.0.
+    """
+    def col(name: str) -> pd.Series:
+        if name not in frame.columns:
+            return pd.Series(np.nan, index=index, dtype=float)
+        return pd.to_numeric(frame[name], errors="coerce").reindex(index).astype(float)
+
+    home, away = col("sched_implied_prob_home"), col("sched_implied_prob_away")
+    valid = (home > 0) & (away > 0)
+    prob = (home / (home + away)).where(valid)
+    return prob, col("sched_spread_close_home")
+
+
 def apply_shrinkage(
     base_probs: pd.Series,
     base_margin: Optional[pd.Series],
@@ -97,18 +113,32 @@ def apply_shrinkage(
     threshold: float,
     prob_strength: float,
     margin_strength: float = 0.0,
+    prob_anchor: Optional[pd.Series] = None,
+    margin_anchor: Optional[pd.Series] = None,
 ) -> tuple[pd.Series, Optional[pd.Series], pd.Series]:
+    """Shrink volatile games toward an anchor (the market when given, else 0.5 / a 0-point margin).
+
+    With a market-anchored model, shrinking toward 0.5 pulls predictions *away*
+    from the line; shrinking toward the line keeps volatile games no more
+    confident than the market.
+    """
     probs = base_probs.copy()
     margin = base_margin.copy() if base_margin is not None else None
     vol = volatility_prob.fillna(0.0).astype(float)
     clip_prob = float(np.clip(prob_strength, 0.0, 1.0))
     clip_margin = float(np.clip(margin_strength, 0.0, 1.0))
     mask = vol >= threshold
+    p_center = pd.Series(0.5, index=probs.index, dtype=float)
+    if prob_anchor is not None:
+        p_center = pd.to_numeric(prob_anchor, errors="coerce").reindex(probs.index).fillna(0.5).astype(float)
     if clip_prob > 0:
         shrink = 1.0 - clip_prob * vol
-        probs.loc[mask] = 0.5 + (probs.loc[mask] - 0.5) * shrink.loc[mask]
+        probs.loc[mask] = p_center.loc[mask] + (probs.loc[mask] - p_center.loc[mask]) * shrink.loc[mask]
     if margin is not None and clip_margin > 0:
+        m_center = pd.Series(0.0, index=margin.index, dtype=float)
+        if margin_anchor is not None:
+            m_center = pd.to_numeric(margin_anchor, errors="coerce").reindex(margin.index).fillna(0.0).astype(float)
         shrink_margin = 1.0 - clip_margin * vol
-        margin.loc[mask] = margin.loc[mask] * shrink_margin.loc[mask]
+        margin.loc[mask] = m_center.loc[mask] + (margin.loc[mask] - m_center.loc[mask]) * shrink_margin.loc[mask]
     labels = (vol >= threshold).astype(int)
     return probs, margin, labels

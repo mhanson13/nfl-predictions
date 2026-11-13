@@ -34,6 +34,7 @@ from src.predict.utils import apply_probability_caps, moneyline_to_prob
 from src.predict.volatility import (
     DEFAULT_VOLATILITY_ARTIFACT,
     apply_shrinkage as apply_volatility_shrinkage,
+    market_shrink_anchors,
     load_volatility_artifact,
     score_volatility,
 )
@@ -4455,6 +4456,8 @@ def main():
                     prob_strength=float(args.volatility_strength),
 
                     margin_strength=float(args.volatility_margin_strength),
+                    prob_anchor=market_shrink_anchors(this_week_nodup, preds.index)[0],
+                    margin_anchor=market_shrink_anchors(this_week_nodup, preds.index)[1],
 
                 )
 
@@ -4491,6 +4494,8 @@ def main():
                             threshold=float(threshold),
                             prob_strength=float(args.volatility_strength),
                             margin_strength=0.0,
+                            prob_anchor=market_shrink_anchors(this_week_nodup, preds.index)[0],
+                            margin_anchor=market_shrink_anchors(this_week_nodup, preds.index)[1],
                         )
                         restored_adj_prob = _coerce_probability_series(restored_adj_prob, preds.index)
                         adj_prob = restored_adj_prob if _has_probability_signal(restored_adj_prob) else restored_prob

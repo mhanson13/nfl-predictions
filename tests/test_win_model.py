@@ -181,3 +181,20 @@ def test_anchored_spread_predicts_line_plus_residual():
     pred = win_model.predict_spread_bundle(bundle, df.iloc[400:])
     resid = pred - df["sched_spread_close_home"].iloc[400:].to_numpy()
     assert np.corrcoef(resid, df["edge_diff"].iloc[400:])[0, 1] > 0.8
+
+
+def test_volatility_shrink_moves_toward_market_anchor():
+    from src.predict.volatility import apply_shrinkage, market_shrink_anchors
+
+    frame = pd.DataFrame(
+        {"sched_implied_prob_home": [0.80, np.nan], "sched_implied_prob_away": [0.25, np.nan], "sched_spread_close_home": [7.0, np.nan]}
+    )
+    p_anchor, m_anchor = market_shrink_anchors(frame, frame.index)
+    probs, margin, labels = apply_shrinkage(
+        pd.Series([0.85, 0.70]), pd.Series([9.0, 4.0]), pd.Series([1.0, 1.0]),
+        threshold=0.5, prob_strength=1.0, margin_strength=1.0, prob_anchor=p_anchor, margin_anchor=m_anchor,
+    )
+    assert probs.iloc[0] == pytest.approx(0.80 / 1.05)  # fully shrunk onto the no-vig market
+    assert probs.iloc[1] == pytest.approx(0.5)  # no line -> legacy 0.5 anchor
+    assert margin.iloc[0] == pytest.approx(7.0) and margin.iloc[1] == pytest.approx(0.0)
+    assert labels.tolist() == [1, 1]
