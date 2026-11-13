@@ -8,6 +8,9 @@ Madrid, Paris, Melbourne, Rio) and one-off moves all differ.
 
 Resolution order per game (``venue_source`` records which applied):
 
+0. ``override``   - ``venue_overrides.csv`` by game_id, for games nflverse
+                    files under the wrong stadium (e.g. the 2025 international
+                    games carry the home team's US stadium);
 1. ``name``       - the schedule's ``stadium`` name matches a venue alias
                     (wins over the id: nflverse has at least one London game
                     tagged with Jacksonville's stadium_id);
@@ -33,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 VENUES_PATH = Path("data/reference/venues.csv")
+OVERRIDES_PATH = Path("data/reference/venue_overrides.csv")
 TEAM_LOCATIONS_PATH = Path("data/reference/team_locations.csv")
 EASTERN = ZoneInfo("America/New_York")
 # historical / alternate home-team codes -> team_locations.csv code
@@ -51,6 +55,14 @@ def load_venues(path: str = str(VENUES_PATH)) -> pd.DataFrame:
     venues = pd.read_csv(path, dtype={"stadium_id": str})
     venues["roof_type"] = venues["roof_type"].str.lower().str.strip()
     return venues
+
+
+@lru_cache(maxsize=4)
+def load_overrides(path: str = str(OVERRIDES_PATH)) -> dict[str, str]:
+    if not Path(path).exists():
+        return {}
+    frame = pd.read_csv(path, dtype=str)
+    return dict(zip(frame["game_id"].str.strip(), frame["stadium_id"].str.strip()))
 
 
 def _alias_map(venues: pd.DataFrame) -> dict[str, str]:
@@ -87,8 +99,15 @@ def resolve_game_venues(schedule: pd.DataFrame, venues: pd.DataFrame | None = No
     home = out.get("home_team", pd.Series("", index=out.index)).astype(str).str.upper().str.strip()
     hist_id = home.map(HISTORICAL_HOME_VENUE)
 
-    venue_id = pd.Series(name_id, index=out.index, dtype="object")
-    source = pd.Series(np.where(venue_id.notna(), "name", None), index=out.index, dtype="object")
+    overrides = load_overrides()
+    override_id = out.get("game_id", pd.Series("", index=out.index)).astype(str).map(overrides)
+    override_id = override_id.where(override_id.isin(by_id.index))
+
+    venue_id = pd.Series(override_id, index=out.index, dtype="object")
+    source = pd.Series(np.where(venue_id.notna(), "override", None), index=out.index, dtype="object")
+    use_name = venue_id.isna() & pd.Series(name_id, index=out.index).notna()
+    venue_id[use_name] = pd.Series(name_id, index=out.index)[use_name]
+    source[use_name] = "name"
     use_id = venue_id.isna() & sched_id.notna()
     venue_id[use_id] = sched_id[use_id]
     source[use_id] = "stadium_id"
@@ -141,3 +160,84 @@ def haversine_km(lat1, lon1, lat2, lon2) -> np.ndarray:
     lat1, lon1, lat2, lon2 = (np.radians(np.asarray(x, dtype=float)) for x in (lat1, lon1, lat2, lon2))
     a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
     return 6371.0 * 2 * np.arcsin(np.sqrt(a))
+
+
+# Home time zone of each franchise (including historical codes) for body-clock shifts.
+TEAM_TIMEZONES = {
+    "ARI": "America/Phoenix", "ATL": "America/New_York", "BAL": "America/New_York", "BUF": "America/New_York",
+    "CAR": "America/New_York", "CHI": "America/Chicago", "CIN": "America/New_York", "CLE": "America/New_York",
+    "DAL": "America/Chicago", "DEN": "America/Denver", "DET": "America/Detroit", "GB": "America/Chicago",
+    "HOU": "America/Chicago", "IND": "America/Indiana/Indianapolis", "JAX": "America/New_York",
+    "KC": "America/Chicago", "LA": "America/Los_Angeles", "LAR": "America/Los_Angeles", "LAC": "America/Los_Angeles",
+    "LV": "America/Los_Angeles", "OAK": "America/Los_Angeles", "MIA": "America/New_York", "MIN": "America/Chicago",
+    "NE": "America/New_York", "NO": "America/Chicago", "NYG": "America/New_York", "NYJ": "America/New_York",
+    "PHI": "America/New_York", "PIT": "America/New_York", "SD": "America/Los_Angeles", "SEA": "America/Los_Angeles",
+    "SF": "America/Los_Angeles", "STL": "America/Chicago", "TB": "America/New_York", "TEN": "America/Chicago",
+    "WAS": "America/New_York",
+}
+
+
+def _utc_offset_hours(tz_name: object, when: pd.Timestamp) -> float:
+    if not isinstance(tz_name, str) or pd.isna(when):
+        return np.nan
+    return ZoneInfo(tz_name).utcoffset(when.to_pydatetime().replace(tzinfo=None)).total_seconds() / 3600.0
+
+
+def travel_context(schedule: pd.DataFrame) -> pd.DataFrame:
+    """Per-game travel from each team's home base to the venue actually played at.
+
+    Returns one row per ``game_id`` with venue coordinates, ``is_international_game``,
+    ``is_neutral_site_game``, ``travel_km_home``/``travel_km_away`` (great-circle km
+    from the team's home base) and ``travel_tz_shift_home``/``travel_tz_shift_away``
+    (absolute hours between the team's home clock and the venue clock at kickoff,
+    daylight-saving aware). Paired ``_home``/``_away`` columns become ``*_diff``
+    model features.
+    """
+    resolved = resolve_game_venues(schedule)
+    venues = load_venues().set_index("stadium_id")
+    teams = pd.read_csv(TEAM_LOCATIONS_PATH)
+    teams["team_abbr"] = teams["team_abbr"].astype(str).str.upper()
+    base = teams.set_index("team_abbr")[["latitude", "longitude"]]
+    # historical franchises' home base = their home venue then
+    for code, venue_id in HISTORICAL_HOME_VENUE.items():
+        if venue_id in venues.index:
+            base.loc[code] = venues.loc[venue_id, ["latitude", "longitude"]].to_numpy()
+    out = pd.DataFrame({"game_id": resolved["game_id"].astype(str)})
+    out["venue_lat"] = resolved["venue_lat"].to_numpy()
+    out["venue_lon"] = resolved["venue_lon"].to_numpy()
+    out["venue_id"] = resolved["venue_id"].to_numpy()
+    country = resolved["venue_country"].fillna("USA")
+    out["is_international_game"] = (~country.isin(["USA"])).astype(int).to_numpy()
+    location = resolved.get("location", pd.Series("", index=resolved.index)).astype(str).str.lower()
+    out["is_neutral_site_game"] = location.eq("neutral").astype(int).to_numpy()
+    venue_tz = resolved["venue_id"].map(venues["timezone"])
+    kick = resolved.get("kickoff_utc", pd.Series(pd.NaT, index=resolved.index))
+    for side in ("home", "away"):
+        team = resolved[f"{side}_team"].astype(str).str.upper().str.strip()
+        key = team.map(lambda t: t if t in base.index else TEAM_ALIASES.get(t, t))
+        lat = key.map(base["latitude"])
+        lon = key.map(base["longitude"])
+        out[f"travel_km_{side}"] = haversine_km(lat, lon, resolved["venue_lat"], resolved["venue_lon"])
+        team_off = [_utc_offset_hours(TEAM_TIMEZONES.get(t), k) for t, k in zip(team, kick)]
+        venue_off = [_utc_offset_hours(z, k) for z, k in zip(venue_tz, kick)]
+        out[f"travel_tz_shift_{side}"] = np.abs(np.asarray(venue_off, float) - np.asarray(team_off, float))
+    return out.drop_duplicates("game_id")
+
+
+def audit_neutral_venues(schedule: pd.DataFrame) -> pd.DataFrame:
+    """Neutral-site regular-season games that resolve to the home team's usual
+    stadium - usually an international game nflverse filed under the home team's
+    US stadium. Add those to ``venue_overrides.csv``."""
+    resolved = resolve_game_venues(schedule)
+    if "location" not in resolved.columns:
+        return resolved.iloc[0:0]
+    neutral = resolved["location"].astype(str).str.lower().eq("neutral")
+    regular = resolved.get("game_type", pd.Series("REG", index=resolved.index)).astype(str).eq("REG")
+    not_overridden = resolved["venue_source"].ne("override")
+    usual = resolved[~neutral].groupby(["season", "home_team"])["venue_id"].agg(
+        lambda x: x.mode().iloc[0] if len(x.dropna()) else None
+    )
+    home_usual = np.asarray([usual.get((s, t)) for s, t in zip(resolved["season"], resolved["home_team"])], dtype=object)
+    suspicious = neutral & regular & not_overridden & (resolved["venue_id"].to_numpy(dtype=object) == home_usual)
+    cols = [c for c in ("game_id", "gameday", "gametime", "stadium", "venue_id") if c in resolved.columns]
+    return resolved.loc[suspicious, cols]

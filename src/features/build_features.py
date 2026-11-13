@@ -55,7 +55,7 @@ from src.data.weather_fallback import get_fallback_weather
 from src.utils.io import RAW_DIR, PROC_DIR, df_path_exists, write_df, read_df
 from src.utils.logging_config import setup_logging
 from src.utils.teams import normalize_team_abbr, TEAM_NAME_TO_ABBR
-from src.utils.venues import apply_venue_roof
+from src.utils.venues import apply_venue_roof, audit_neutral_venues, travel_context
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -3745,6 +3745,25 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 
+def _load_venue_travel_context() -> Optional[pd.DataFrame]:
+    """Per-game venue + travel context from the raw schedule (see src.utils.venues)."""
+    try:
+        sched = read_df(RAW_DIR / "nfl_schedules.parquet")
+        ctx = travel_context(sched)
+    except Exception as exc:
+        print(f"[travel] venue travel context unavailable ({exc}); using home-team locations")
+        return None
+    suspicious = audit_neutral_venues(sched)
+    if not suspicious.empty:
+        print(
+            f"[travel] Warning: {len(suspicious)} neutral-site games resolve to the home team's own stadium "
+            f"(likely international games filed under a US stadium; add to data/reference/venue_overrides.csv): "
+            f"{suspicious['game_id'].tolist()[:10]}"
+        )
+    ctx["game_id"] = ctx["game_id"].astype(str)
+    return ctx
+
+
 def _add_travel_features(feats: pd.DataFrame) -> pd.DataFrame:
 
     locs = load_team_locations()
@@ -3803,7 +3822,14 @@ def _add_travel_features(feats: pd.DataFrame) -> pd.DataFrame:
 
     enriched = enriched.merge(home_loc, on="home_team", how="left")
 
-    enriched = enriched.merge(away_loc, on="away_team", how="left")
+    enriched = enriched.merge(away_loc, on="away_team", how="left")
+    # Travel is measured to the venue actually played at (international and
+    # relocated games), with daylight-saving-aware clock shifts per team.
+    venue_ctx = _load_venue_travel_context()
+    if venue_ctx is not None and "game_id" in enriched.columns:
+        enriched = enriched.drop(
+            columns=[c for c in venue_ctx.columns if c != "game_id" and c in enriched.columns]
+        ).merge(venue_ctx, on="game_id", how="left")
 
 
 

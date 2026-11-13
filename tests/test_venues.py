@@ -97,3 +97,52 @@ def test_visualcrossing_resolver_uses_venue_and_eastern_kickoff():
     out = vx._resolve_game_times(sched).iloc[0]
     assert round(out["home_lat"], 2) == 50.07  # Frankfurt, not Foxborough
     assert out["start_utc"] == datetime(2023, 11, 12, 14, 30, tzinfo=timezone.utc)
+
+
+def test_overrides_fix_international_games_filed_under_us_stadiums():
+    from src.utils.venues import audit_neutral_venues
+
+    sched = _sched(
+        [
+            ("2025_06_DEN_NYJ", 2025, 6, "2025-10-12", "09:30", "NYJ", "DEN", "NYC01", "MetLife Stadium", "outdoors", "Neutral"),
+            ("2025_02_TB_NYJ", 2025, 2, "2025-09-14", "13:00", "NYJ", "TB", "NYC01", "MetLife Stadium", "outdoors", "Home"),
+        ]
+    )
+    out = resolve_game_venues(sched).set_index("game_id")
+    assert out.loc["2025_06_DEN_NYJ", "venue_id"] == "LON02" and out.loc["2025_06_DEN_NYJ", "venue_source"] == "override"
+    assert audit_neutral_venues(sched).empty
+
+
+def test_audit_flags_neutral_game_at_home_teams_own_stadium(monkeypatch):
+    import src.utils.venues as venues_mod
+
+    monkeypatch.setattr(venues_mod, "load_overrides", lambda path=None: {})
+    sched = _sched(
+        [
+            ("2030_05_A_NYJ", 2030, 5, "2030-10-06", "09:30", "NYJ", "MIA", "NYC01", "MetLife Stadium", "outdoors", "Neutral"),
+            ("2030_02_B_NYJ", 2030, 2, "2030-09-15", "13:00", "NYJ", "BUF", "NYC01", "MetLife Stadium", "outdoors", "Home"),
+            ("2030_22_SB", 2031, 22, "2031-02-09", "18:30", "NYJ", "KC", "NYC01", "MetLife Stadium", "outdoors", "Neutral"),
+        ]
+    )
+    sched.loc[2, "season"] = 2030
+    sched["game_type"] = ["REG", "REG", "SB"]
+    flagged = venues_mod.audit_neutral_venues(sched)
+    assert flagged["game_id"].tolist() == ["2030_05_A_NYJ"]  # Super Bowl at a home stadium is legitimate
+
+
+def test_travel_context_measures_both_teams_to_the_actual_venue():
+    from src.utils.venues import travel_context
+
+    sched = _sched(
+        [
+            ("2023_10_IND_NE", 2023, 10, "2023-11-12", "09:30", "NE", "IND", "FRA00", "Deutsche Bank Park", "outdoors", "Neutral"),
+            ("2024_06_ATL_CAR", 2024, 6, "2024-10-13", "13:00", "CAR", "ATL", "CAR00", "Bank of America Stadium", "outdoors", "Home"),
+        ]
+    )
+    ctx = travel_context(sched).set_index("game_id")
+    fra = ctx.loc["2023_10_IND_NE"]
+    assert fra["is_international_game"] == 1 and fra["is_neutral_site_game"] == 1
+    assert 5800 < fra["travel_km_home"] < 6100 and 6900 < fra["travel_km_away"] < 7200
+    assert fra["travel_tz_shift_home"] == 6.0 and fra["travel_tz_shift_away"] == 6.0  # EST -> CET in November
+    car = ctx.loc["2024_06_ATL_CAR"]
+    assert car["travel_km_home"] < 1 and 300 < car["travel_km_away"] < 400 and car["travel_tz_shift_away"] == 0.0

@@ -159,7 +159,7 @@ Xweather archive compared with Visual Crossing observations, kickoff +/-3h:
 
 All weather sources now resolve **where and when the game is actually played**.
 The shared code is `src/utils/venues.py`, backed by
-`data/reference/venues.csv`: 61 venues keyed by nflverse `stadium_id`, with
+`data/reference/venues.csv`: 60 venues keyed by nflverse `stadium_id`, with
 aliases, coordinates and roof type.
 
 **Location**
@@ -201,6 +201,26 @@ time never reuses an old response. The history comparison requests Xweather
 at exactly the place and time Visual Crossing stored, so it stays
 like-for-like. Its results above remain valid.
 
-**Not changed yet:** travel features (`away_travel_distance_km`,
-`timezone_diff_hours`) still use team home locations. For international
-games both teams actually travel.
+## International travel (2026-11-13)
+
+`src.utils.venues.travel_context` computes, per game, the distance from each
+team's home base to the venue actually played at (`travel_km_home/away`). It
+also computes each team's body-clock shift (`travel_tz_shift_home/away`), which
+is daylight-saving aware, using the venue's IANA time zone. Flags
+`is_international_game` and `is_neutral_site_game` are added too.
+`build_features._add_travel_features` merges this context by game_id. The
+existing `home/away_travel_distance_km` columns are now also measured to the
+real venue. Before, a London game counted as 0 km for the home team.
+
+**New model features:** the paired columns become `travel_km_diff` and
+`travel_tz_shift_diff`. They pass the model's feature filter and enter the next
+training and walk-forward run. Judge them there, against the market.
+
+**nflverse mislabels:** all seven 2025 international games are filed under
+the home team's US stadium (São Paulo, Dublin, London ×3, Berlin, Madrid).
+They are corrected in `data/reference/venue_overrides.csv`. Croke Park and the
+Berlin Olympiastadion were added to `venues.csv`.
+
+**Audit:** `audit_neutral_venues` runs on every feature build and warns about
+any neutral-site regular-season game that resolves to the home team's own
+stadium. It caught exactly these seven, with no false positives.
