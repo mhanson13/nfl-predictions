@@ -285,6 +285,7 @@ def build_noaa_weather(
             existing_games = set(existing_df["game_id"])
 
     rows: List[Dict[str, object]] = []
+    skipped_international = 0
     station_cache = _load_station_cache()
     session = requests.Session()
 
@@ -300,7 +301,17 @@ def build_noaa_weather(
         lat = float(lat)
         lon = float(lon)
 
-        stations = _nearest_stations(session, lat, lon, station_cache, sleep)
+        # weather.gov only covers the US: international venues (London, Munich, ...) have no NOAA stations.
+        country = row.get("venue_country")
+        if isinstance(country, str) and country.strip() and country.strip().upper() != "USA":
+            skipped_international += 1
+            continue
+
+        try:
+            stations = _nearest_stations(session, lat, lon, station_cache, sleep)
+        except Exception as exc:
+            print(f"[noaa] station lookup failed for {game_id} ({lat:.4f},{lon:.4f}): {exc}")
+            continue
         if not stations:
             continue
 
@@ -406,6 +417,8 @@ def build_noaa_weather(
         print(f"[noaa] schema validation: {report}")
 
     write_df(combined, OBS_CACHE_PATH)
+    if skipped_international:
+        print(f"[noaa] skipped {skipped_international} games at non-US venues (no NOAA coverage)")
     print(f"[noaa] saved {len(combined)} rows -> {OBS_CACHE_PATH}")
     return combined
 
