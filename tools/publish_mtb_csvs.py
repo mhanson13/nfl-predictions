@@ -28,6 +28,8 @@ class CsvArtifact:
     destination: Path
     required: bool = False
     week_archive: bool = False
+    # Never fails --strict when absent (e.g. no live picks recorded yet).
+    never_required: bool = False
 
 
 CURRENT_CSV_ARTIFACTS = [
@@ -332,6 +334,18 @@ def build_artifact_plan(
             for artifact in CURRENT_CSV_ARTIFACTS
         )
 
+    if season is not None:
+        # Per-game picks of record (src.evaluation.picks_of_record). Locked rows never
+        # change after their deadline, so these are always copied, not archived.
+        for name in (f"picks_of_record_{season}.csv", f"picks_ledger_{season}.csv"):
+            artifacts.append(
+                CsvArtifact(
+                    Path("predictions") / "picks_of_record" / name,
+                    Path("picks_of_record") / name,
+                    never_required=True,
+                )
+            )
+
     return artifacts
 
 
@@ -428,7 +442,7 @@ def publish_csvs(
         source_path = source_root / artifact.source
         destination_path = destination_root / artifact.destination
         if not source_path.exists():
-            if strict or artifact.required:
+            if artifact.required or (strict and not artifact.never_required):
                 missing.append(artifact.source)
             else:
                 print(f"[publish_mtb] Skipping missing optional CSV: {artifact.source}")

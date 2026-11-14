@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -1755,6 +1755,35 @@ def build_mtb_publish_job(
     return Job("publish_mtb_csvs", command)
 
 
+def build_picks_of_record_job(
+    *,
+    live_run: bool,
+    season: int,
+    prediction_week: str,
+    run_started_at: datetime,
+) -> Job | None:
+    """Append this live run's not-yet-started games to the picks-of-record ledger."""
+    if not live_run:
+        return None
+    try:
+        week = int(prediction_week)
+    except (TypeError, ValueError):
+        return None
+    command = [
+        "python",
+        "-m",
+        "src.evaluation.picks_of_record",
+        "--record",
+        "--season",
+        str(season),
+        "--week",
+        str(week),
+        "--run-started-at",
+        run_started_at.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+    ]
+    return Job("picks_of_record", command)
+
+
 def build_mtb_import_job(*, repo_dir: Path, overwrite_archive: bool = False) -> Job:
     """Build the local MattyTheBookie JSON import command."""
     command = [
@@ -1852,6 +1881,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The NFL season spans two calendar years (playoffs run in January), so callers
     # such as tools.weekly_run pass the season explicitly.
     current_year = args.season or datetime.now().year
+    run_started_at = datetime.now(timezone.utc)
 
     years = build_years(args.start_year, current_year)
 
@@ -2112,6 +2142,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         live_exclude=live_exclude,
         propline_bookmakers=args.propline_bookmakers,
     )
+    picks_job = build_picks_of_record_job(
+        live_run=args.live_run,
+        season=current_year,
+        prediction_week=args.prediction_week,
+        run_started_at=run_started_at,
+    )
+    if picks_job is not None:
+        sequential_jobs.append(picks_job)
     if args.publish_mtb:
         sequential_jobs.append(
             build_mtb_publish_job(
