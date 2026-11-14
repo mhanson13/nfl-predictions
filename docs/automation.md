@@ -14,7 +14,7 @@ run, and sends an alert.
 | `src/evaluation/picks_of_record.py` | Pipeline job: per-game ledger + picks of record (`predictions/picks_of_record/`). |
 | MTB `scripts/publish_site.py` | Import, lint/typecheck/test/build, commit, push, GKE deploy. Only after a successful run. |
 | `tools/review_run.py` + `tools/review_prompt.md` | Facts from the log/ledger + read-only Claude review → `logs/reviews/<season>/<slot>_review.md`. |
-| `src/utils/alerts.py` | Alert to `logs/alerts/` always; email via SendGrid when configured. |
+| `src/utils/alerts.py` | Alert to `logs/alerts/` always; email via Bird SMTP (or SendGrid) when configured. |
 
 ## Timing
 
@@ -52,7 +52,8 @@ pwsh -File tools\install_dispatcher_task.ps1 -Uninstall    # stop automation
   or delete the slot from `logs/dispatcher/state.json` to let the dispatcher retry.
 - The task runs only while you are logged on (keeps git/gh/npm credentials working).
   Leave the PC signed in (locking the screen is fine); it may sleep — the task wakes it.
-- Email: set `SENDGRID_API_KEY`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO` in `secrets.env`.
-  Until then alerts are only written to `logs/alerts/`.
+- Email: set `BIRD_ACCESS_KEY` (Bird API key with the emails scope; it is the SMTP password for
+  us1.smtp.bird.com:587, STARTTLS), `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO` in `secrets.env`.
+  `SENDGRID_API_KEY` works as a fallback provider. Until then alerts are only written to `logs/alerts/`.
 - Review agent: uses the Claude Code CLI (`$CLAUDE_BIN`, PATH, or the VS Code extension
   binary). Without it the review contains the extracted facts only.
