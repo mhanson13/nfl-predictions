@@ -3,7 +3,11 @@
 Every live run appends one row per not-yet-started game to an append-only ledger
 (``predictions/picks_of_record/picks_ledger_<season>.csv``). A game's pick of
 record is the latest ledger row recorded at least ``lead`` before its kickoff
-(default 2h, leaving time to publish). Rows are never rewritten, rows recorded
+(default 2h, leaving time to publish); if no row made the deadline, the first row
+recorded after it (``late``). This mirrors MTB's week archive
+(mtb/lib/picks-of-record.ts), so the graded pick is the pick the site showed. A
+row's ``recorded_at`` is the predictions file's write time -- the same timestamp
+MTB uses when it imports the run. Rows are never rewritten, rows recorded
 at/after kickoff are never written, and resolution only looks at rows recorded
 before the lock deadline, so a locked pick cannot change after the fact.
 
@@ -49,6 +53,12 @@ PICK_COLUMNS = [
     "market_home_moneyline",
     "market_away_moneyline",
     "market_public_recommendation",
+    # Grading context (src.evaluation.live_results) for the pick as published.
+    "market_away_spread",
+    "market_away_implied_prob_novig",
+    "market_spread_edge_points",
+    "market_spread_selected_side",
+    "volatility_label",
 ]
 # Inputs that legitimately change between a game's first and last pick.
 PICK_TIME_MARKERS = (
@@ -166,7 +176,7 @@ def resolve_records(
     """One row per game: the pick of record and its lock status.
 
     status: ``locked`` (lock deadline passed; latest row recorded by the deadline),
-    ``late`` (no row by the deadline, latest row before kickoff), ``provisional``
+    ``late`` (no row by the deadline; the first row after it, as MTB shows), ``provisional``
     (deadline not reached yet), ``missed`` is implied by absence.
     """
     if ledger.empty:
@@ -186,7 +196,7 @@ def resolve_records(
         elif not on_time.empty:
             pick, status = on_time.iloc[-1], "locked"
         else:
-            pick, status = rows.iloc[-1], "late"
+            pick, status = rows.iloc[0], "late"
         rec = pick.drop(labels=["kickoff_ts", "recorded_ts"]).to_dict()
         rec["status"] = status
         rec["lock_deadline_utc"] = deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -252,13 +262,15 @@ def _read_schedule(path: Path) -> Optional[pd.DataFrame]:
 def record(season: int, week: Optional[int], run_started_at: datetime, *, now: Optional[datetime] = None,
            predictions_path: Path = PREDICTIONS_PATH, features_path: Path = FEATURES_PATH,
            out_dir: Path = OUT_DIR, slot: Optional[str] = None) -> int:
-    now = now or datetime.now(timezone.utc)
     mtime = datetime.fromtimestamp(predictions_path.stat().st_mtime, tz=timezone.utc)
     if mtime < run_started_at:
         raise RuntimeError(
             f"{predictions_path} was written at {mtime:%Y-%m-%dT%H:%M:%SZ}, before this run started "
             f"({run_started_at:%Y-%m-%dT%H:%M:%SZ}); refusing to record stale predictions."
         )
+    # Stamp rows with when the predictions were produced (file write time), the same
+    # timestamp MTB's import uses, so both sides lock the same run.
+    recorded_at = now or mtime
     preds = pd.read_csv(predictions_path)
     preds = preds[preds["season"] == season]
     if week is not None:
@@ -270,7 +282,7 @@ def record(season: int, week: Optional[int], run_started_at: datetime, *, now: O
         print(f"[picks_of_record] feature fingerprint unavailable: {exc}")
     rows = build_ledger_rows(
         preds,
-        recorded_at=now,
+        recorded_at=recorded_at,
         run_id=run_started_at.strftime("%Y%m%dT%H%M%SZ"),
         slot=slot or os.environ.get(SLOT_ENV, "manual"),
         git_sha=_git_sha(),

@@ -254,3 +254,133 @@ def test_build_and_write_live_results_writes_weekly_and_cumulative_without_mutat
     assert summary["moneyline_clv_tracked"].iloc[0] == 1
     assert summary["avg_moneyline_clv_prob_delta"].iloc[0] == pytest.approx(0.03)
     assert summary["positive_moneyline_clv_rate"].iloc[0] == pytest.approx(1.0)
+
+
+# ---- picks of record, cumulative replacement, completed-week grading ----
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from src.evaluation import live_results as lr  # noqa: E402
+from src.evaluation import picks_of_record as por  # noqa: E402
+
+KICK_DEN = datetime(2026, 10, 25, 20, 25, tzinfo=timezone.utc)
+
+
+def _ledger_preds(prob_den: float) -> pd.DataFrame:
+    rows = pd.DataFrame(_prediction_rows())
+    rows["kickoff"] = [(KICK_DEN - timedelta(hours=3)).isoformat(), KICK_DEN.isoformat()]
+    rows["market_home_spread"] = -rows["market_home_margin"]
+    rows.loc[rows["game_id"] == "2026_07_KC_DEN", "home_win_prob"] = prob_den
+    rows["home_pick"] = np.where(rows["home_win_prob"] >= 0.5, rows["home_team"], rows["away_team"])
+    rows["market_home_implied_prob_novig"] = 0.5
+    return rows.drop(columns=["market_spread_selected_side"])
+
+
+def _write_ledger(picks_dir: Path, entries: list[tuple[pd.DataFrame, datetime, str]]) -> None:
+    path = por.ledger_path(2026, picks_dir)
+    for preds, at, run_id in entries:
+        rows = por.build_ledger_rows(preds, recorded_at=at, run_id=run_id, slot=run_id, git_sha="t")
+        por.append_ledger(rows, path)
+
+
+def test_week_with_ledger_grades_locked_pick_not_first_snapshot(tmp_path: Path):
+    # MTB archive = first snapshot of the week: DEN 0.62 (pick DEN, who lost).
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root)
+    picks_dir = tmp_path / "picks"
+    _write_ledger(
+        picks_dir,
+        [
+            (_ledger_preds(0.62), KICK_DEN - timedelta(days=3), "thu"),
+            (_ledger_preds(0.45), KICK_DEN - timedelta(hours=3), "sun"),     # locked pick: KC
+            (_ledger_preds(0.70), KICK_DEN - timedelta(minutes=90), "late"),  # inside lock window
+        ],
+    )
+    features_path = tmp_path / "features.parquet"
+    _write_actuals(features_path)
+
+    artifacts = build_and_write_live_results(
+        season=2026, week=7, features_path=features_path, output_dir=tmp_path / "eval",
+        market_clv_detail_path=tmp_path / "none.csv", mtb_csv_root=mtb_root, picks_dir=picks_dir,
+        now=KICK_DEN + timedelta(days=1),
+    )
+    detail = pd.read_csv(artifacts.detail_path).set_index("game_id")
+    den = detail.loc["2026_07_KC_DEN"]
+    assert den["prediction_source_type"] == "picks_of_record"
+    assert den["pick_status"] == "locked" and den["pick_slot"] == "sun"
+    assert den["home_win_prob"] == pytest.approx(0.45)
+    assert den["model_pick_team"] == "KC" and den["su_result"] == "win"
+    # Spread side derived from the locked pick: margin 3.0 vs market 2.5 -> home.
+    assert den["market_spread_selected_side"] == "home"
+    assert set(detail["prediction_source_type"]) == {"picks_of_record"}
+
+
+def test_games_without_pick_of_record_fall_back_to_mtb_archive(tmp_path: Path):
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root)
+    picks_dir = tmp_path / "picks"
+    only_den = _ledger_preds(0.45)
+    _write_ledger(picks_dir, [(only_den[only_den["game_id"] == "2026_07_KC_DEN"], KICK_DEN - timedelta(hours=3), "sun")])
+    source = load_prediction_source(season=2026, week=7, mtb_csv_root=mtb_root, picks_dir=picks_dir,
+                                    now=KICK_DEN + timedelta(days=1))
+    by_game = source.frame.set_index("game_id")["prediction_source_type"].to_dict()
+    assert by_game == {"2026_07_KC_DEN": "picks_of_record", "2026_07_BUF_NYJ": "mtb_archive"}
+
+
+def test_cumulative_keeps_all_weeks_and_rerun_replaces_week(tmp_path: Path):
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root)
+    wk8 = [dict(r, week=8, game_id=r["game_id"].replace("_07_", "_08_")) for r in _prediction_rows()]
+    path8 = mtb_root / "seasons" / "2026" / "week_08" / "predictions.csv"
+    path8.parent.mkdir(parents=True)
+    pd.DataFrame(wk8).to_csv(path8, index=False)
+    schedule = pd.DataFrame(
+        _actual_rows() + [dict(r, week=8, game_id=r["game_id"].replace("_07_", "_08_")) for r in _actual_rows()]
+    )
+    out = tmp_path / "eval"
+    kwargs = dict(output_dir=out, mtb_csv_root=mtb_root, market_clv_detail_path=tmp_path / "none.csv",
+                  picks_dir=tmp_path / "no_picks", predictions_log_dir=tmp_path / "no_log")
+    grades =lr.grade_completed_weeks(season=2026, schedule=schedule, **kwargs)
+    assert [(g.week, g.status, g.games) for g in grades] == [(7, "graded", 2), (8, "graded", 2)]
+    # Re-grade week 7 from a different source: rows replaced, not duplicated.
+    lr.grade_week(season=2026, week=7, schedule=schedule, prediction_file=_write_mtb_archive(tmp_path / "x"), **kwargs)
+    cumulative = pd.read_csv(out / lr.CUMULATIVE_DETAIL_NAME)
+    assert len(cumulative) == 4 and cumulative.groupby("week").size().to_dict() == {7: 2, 8: 2}
+    assert set(cumulative.loc[cumulative["week"] == 7, "prediction_source_type"]) == {"explicit_file"}
+    summary = pd.read_csv(out / lr.CUMULATIVE_SUMMARY_NAME)
+    assert sorted(summary["week"]) == [7, 8]
+    record = lr.season_record(out, 2026)
+    assert record["games"] == 4 and record["su_wins"] + record["su_losses"] == 4
+
+
+def test_incomplete_week_is_not_graded(tmp_path: Path):
+    schedule = pd.DataFrame(_actual_rows())
+    schedule.loc[1, ["home_score", "away_score"]] = np.nan
+    grade = lr.grade_week(season=2026, week=7, schedule=schedule, output_dir=tmp_path)
+    assert grade.status == "not_final" and "1/2" in grade.detail
+    assert not (tmp_path / lr.CUMULATIVE_DETAIL_NAME).exists()
+
+
+def test_cli_require_complete_exit_code(tmp_path: Path):
+    schedule_path = tmp_path / "sched.parquet"
+    schedule = pd.DataFrame(_actual_rows())
+    schedule.loc[0, "home_score"] = np.nan
+    schedule.to_parquet(schedule_path, index=False)
+    rc = lr.main(["--season", "2026", "--week", "7", "--require-complete", "--schedule-path", str(schedule_path),
+                  "--output-dir", str(tmp_path / "eval"), "--report-json", str(tmp_path / "r.json")])
+    assert rc == lr.EXIT_NOT_FINAL and "not graded" in (tmp_path / "r.json").read_text()
+
+
+def test_published_override_beats_mtb_archive(tmp_path: Path):
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root)
+    log_dir = tmp_path / "log"
+    override = lr.published_override_csv_path(log_dir, 2026, 7)
+    override.parent.mkdir(parents=True)
+    rows = pd.DataFrame(_prediction_rows())
+    rows["home_win_prob"] = [0.55, 0.30]
+    rows.to_csv(override, index=False)
+    source = load_prediction_source(season=2026, week=7, mtb_csv_root=mtb_root, predictions_log_dir=log_dir,
+                                    picks_dir=tmp_path / "no_picks")
+    assert source.source_type == "published_override"
+    assert source.frame.set_index("game_id")["home_win_prob"].to_dict() == {"2026_07_BUF_NYJ": 0.55, "2026_07_KC_DEN": 0.30}

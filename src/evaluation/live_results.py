@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
+from src.evaluation import picks_of_record as por
 from src.evaluation.evaluate_predictions import _classification_metrics
 from src.utils.io import read_df
 
@@ -18,8 +19,20 @@ from src.utils.io import read_df
 DEFAULT_MTB_CSV_ROOT = Path("..") / "mtb" / "data" / "prediction-csvs"
 DEFAULT_PREDICTIONS_LOG_DIR = Path("predictions_log")
 DEFAULT_FEATURES_PATH = Path("data/processed/matchup_features.parquet")
+DEFAULT_SCHEDULE_PATH = Path("data/raw/nfl_schedules.parquet")
 DEFAULT_OUTPUT_DIR = Path("predictions/evaluation")
 DEFAULT_MARKET_CLV_DETAIL_PATH = Path("analysis/market_clv_detail.csv")
+DEFAULT_PICKS_DIR = por.OUT_DIR
+
+# Which published pick is graded, per game. ``picks_of_record`` is the per-game pick
+# MTB shows from week 10 on (latest run >= 2h before kickoff; see picks_of_record.py);
+# games without one fall back to the first existing snapshot in the remaining order.
+# ``published_override`` is a hand-built file of what the site actually showed, for a
+# week whose MTB archive CSV differs from the published page (2026 week 8).
+DEFAULT_SOURCE_ORDER = ("picks_of_record", "published_override", "mtb_archive", "locked_log")
+SOURCE_TYPES = ("picks_of_record", "published_override", "mtb_archive", "locked_log")
+GRADABLE_PICK_STATUSES = ("locked", "late")
+EXIT_NOT_FINAL = 3  # CLI exit code: the week's games are not all final yet
 
 WEEKLY_DETAIL_TEMPLATE = "live_prediction_vs_actual_week_{week:02d}.csv"
 WEEKLY_SUMMARY_TEMPLATE = "live_prediction_vs_actual_summary_week_{week:02d}.csv"
@@ -129,6 +142,14 @@ PREDICTION_CONTEXT_COLUMNS = [
     "market_spread_policy_recommendation_flag",
     "decision_explanation",
     "decision_narrative",
+    # Per-row provenance (set when a week mixes picks of record with a snapshot).
+    "prediction_source_type",
+    "prediction_source_file",
+    "prediction_source_last_modified_utc",
+    "pick_status",
+    "pick_recorded_at",
+    "pick_run_id",
+    "pick_slot",
 ]
 
 NUMERIC_PREDICTION_COLUMNS = [
@@ -195,7 +216,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--season", type=int, required=True)
-    parser.add_argument("--week", type=int, required=True)
+    parser.add_argument("--week", type=int, default=None)
+    parser.add_argument(
+        "--completed-weeks",
+        action="store_true",
+        help="Grade every week of the season whose games are all final (backfill).",
+    )
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help=f"Grade a week only when all its games are final (exit {EXIT_NOT_FINAL} otherwise).",
+    )
+    parser.add_argument(
+        "--refresh-scores",
+        action="store_true",
+        help="Fetch the season schedule/scores from nflverse in memory (raw data is not rewritten).",
+    )
+    parser.add_argument("--schedule-path", type=Path, default=DEFAULT_SCHEDULE_PATH)
+    parser.add_argument("--picks-dir", type=Path, default=DEFAULT_PICKS_DIR)
+    parser.add_argument("--report-json", type=Path, default=None, help="Write the grading report as JSON.")
     parser.add_argument("--features-path", type=Path, default=DEFAULT_FEATURES_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--market-clv-detail", type=Path, default=DEFAULT_MARKET_CLV_DETAIL_PATH)
@@ -210,9 +249,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--source-order",
         nargs="+",
-        default=["mtb_archive", "locked_log"],
-        choices=["mtb_archive", "locked_log"],
-        help="Prediction snapshot lookup order when --prediction-file is not supplied.",
+        default=list(DEFAULT_SOURCE_ORDER),
+        choices=list(SOURCE_TYPES),
+        help=(
+            "Prediction lookup order when --prediction-file is not supplied. picks_of_record is "
+            "per game; other games use the first existing snapshot."
+        ),
     )
     parser.add_argument(
         "--allow-empty",
@@ -220,7 +262,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Write empty artifacts instead of failing when no finalized games can be joined.",
     )
     parser.add_argument("--debug", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.week is None and not args.completed_weeks:
+        parser.error("pass --week N or --completed-weeks")
+    return args
 
 
 def archived_prediction_csv_path(mtb_csv_root: Path, season: int, week: int) -> Path:
@@ -229,6 +274,10 @@ def archived_prediction_csv_path(mtb_csv_root: Path, season: int, week: int) -> 
 
 def locked_prediction_csv_path(predictions_log_dir: Path, season: int, week: int) -> Path:
     return predictions_log_dir / str(season) / f"week_{week:02d}_predictions.csv"
+
+
+def published_override_csv_path(predictions_log_dir: Path, season: int, week: int) -> Path:
+    return predictions_log_dir / str(season) / f"week_{week:02d}_published_override.csv"
 
 
 def _last_modified_utc(path: Path) -> str:
@@ -248,6 +297,61 @@ def _read_prediction_source(path: Path, source_type: str, season: int, week: int
     )
 
 
+def load_picks_of_record_frame(
+    *,
+    season: int,
+    week: int,
+    picks_dir: Path = DEFAULT_PICKS_DIR,
+    now: datetime | None = None,
+) -> pd.DataFrame:
+    """Resolved picks of record (locked, else late) for one week, as a prediction frame.
+
+    Resolves straight from the append-only ledger so a stale picks_of_record CSV can't
+    be graded. Returns an empty frame when the season has no ledger or the week has no
+    gradable picks.
+    """
+    path = por.ledger_path(season, picks_dir)
+    if not path.exists():
+        return pd.DataFrame()
+    records = por.resolve_records(pd.read_csv(path), now=now or datetime.now(timezone.utc))
+    if records.empty:
+        return records
+    records = records[
+        (pd.to_numeric(records["season"], errors="coerce") == season)
+        & (pd.to_numeric(records["week"], errors="coerce") == week)
+        & records["status"].isin(GRADABLE_PICK_STATUSES)
+    ].copy()
+    if records.empty:
+        return records
+
+    frame = records.rename(
+        columns={
+            "kickoff_utc": "kickoff",
+            "status": "pick_status",
+            "recorded_at": "pick_recorded_at",
+            "run_id": "pick_run_id",
+            "slot": "pick_slot",
+        }
+    )
+    # Spread side exactly as predict_upcoming derives it, for ledger rows that predate
+    # these columns.
+    spread = pd.to_numeric(frame.get("market_home_spread"), errors="coerce")
+    frame["market_home_margin"] = -spread
+    margin = pd.to_numeric(frame.get("pred_home_margin"), errors="coerce")
+    edge = pd.to_numeric(frame.get("market_spread_edge_points"), errors="coerce")
+    frame["market_spread_edge_points"] = edge.fillna(margin - frame["market_home_margin"])
+    derived_side = pd.Series(
+        np.where(frame["market_spread_edge_points"] >= 0.0, "home", "away"), index=frame.index, dtype="object"
+    )
+    derived_side[frame["market_spread_edge_points"].isna()] = "unavailable"
+    side = frame["market_spread_selected_side"] if "market_spread_selected_side" in frame else None
+    frame["market_spread_selected_side"] = derived_side if side is None else side.fillna(derived_side)
+    frame["prediction_source_type"] = "picks_of_record"
+    frame["prediction_source_file"] = str(path.resolve())
+    frame["prediction_source_last_modified_utc"] = frame["pick_recorded_at"]
+    return frame
+
+
 def load_prediction_source(
     *,
     season: int,
@@ -255,23 +359,61 @@ def load_prediction_source(
     mtb_csv_root: Path = DEFAULT_MTB_CSV_ROOT,
     predictions_log_dir: Path = DEFAULT_PREDICTIONS_LOG_DIR,
     prediction_file: Path | None = None,
-    source_order: Iterable[str] = ("mtb_archive", "locked_log"),
+    source_order: Iterable[str] = DEFAULT_SOURCE_ORDER,
+    picks_dir: Path = DEFAULT_PICKS_DIR,
+    now: datetime | None = None,
 ) -> PredictionSource:
+    """The published pick to grade for each game of the week.
+
+    With ``picks_of_record`` in ``source_order``, every game that has a locked (or late)
+    pick of record is graded on it -- that is what MTB shows -- and the remaining games
+    use the first existing snapshot among the other sources (normally the MTB archive,
+    which is the week's first published snapshot).
+    """
     if prediction_file is not None:
         return _read_prediction_source(prediction_file, "explicit_file", season, week)
 
+    order = list(source_order)
     candidates = {
+        "published_override": published_override_csv_path(predictions_log_dir, season, week),
         "mtb_archive": archived_prediction_csv_path(mtb_csv_root, season, week),
         "locked_log": locked_prediction_csv_path(predictions_log_dir, season, week),
     }
+    picks = pd.DataFrame()
+    if "picks_of_record" in order:
+        picks = load_picks_of_record_frame(season=season, week=week, picks_dir=picks_dir, now=now)
+
+    snapshot: PredictionSource | None = None
     missing: list[str] = []
-    for source_type in source_order:
+    for source_type in order:
+        if source_type == "picks_of_record":
+            if picks.empty:
+                missing.append(f"picks_of_record={por.ledger_path(season, picks_dir)}")
+            continue
         path = candidates[source_type]
         if path.exists():
-            return _read_prediction_source(path, source_type, season, week)
+            snapshot = _read_prediction_source(path, source_type, season, week)
+            break
         missing.append(f"{source_type}={path}")
-    raise FileNotFoundError(
-        "No immutable prediction snapshot found. Checked: " + "; ".join(missing)
+
+    if picks.empty:
+        if snapshot is None:
+            raise FileNotFoundError("No immutable prediction snapshot found. Checked: " + "; ".join(missing))
+        return snapshot
+
+    frame = prepare_prediction_frame(picks, season=season, week=week)
+    if snapshot is not None:
+        rest = snapshot.frame[~snapshot.frame["game_id"].isin(frame["game_id"])].copy()
+        rest["prediction_source_type"] = snapshot.source_type
+        rest["prediction_source_file"] = str(snapshot.path)
+        rest["prediction_source_last_modified_utc"] = snapshot.last_modified_utc
+        frame = pd.concat([frame, rest], ignore_index=True)
+    ledger = por.ledger_path(season, picks_dir)
+    return PredictionSource(
+        source_type="picks_of_record",
+        path=ledger.resolve(),
+        frame=frame,
+        last_modified_utc=_last_modified_utc(ledger),
     )
 
 
@@ -316,7 +458,46 @@ def load_finalized_actuals(features_path: Path, *, season: int, week: int) -> pd
         "away_score",
         "home_margin",
     ]
-    actuals = read_df(features_path, columns=cols)
+    return finalize_actuals(read_df(features_path, columns=cols), season=season, week=week)
+
+
+def actuals_from_schedule(schedule: pd.DataFrame, *, season: int, week: int) -> pd.DataFrame:
+    """Final scores from an nflverse schedule frame (same shape as load_finalized_actuals)."""
+    cols = ["season", "week", "game_id", "home_team", "away_team", "home_score", "away_score"]
+    frame = schedule[[c for c in cols if c in schedule.columns]].copy()
+    frame["home_margin"] = pd.to_numeric(frame["home_score"], errors="coerce") - pd.to_numeric(
+        frame["away_score"], errors="coerce"
+    )
+    return finalize_actuals(frame, season=season, week=week)
+
+
+def week_completion(schedule: pd.DataFrame, *, season: int, week: int) -> tuple[int, int]:
+    """(final games, scheduled games) for one week of the schedule."""
+    sched = schedule[
+        (pd.to_numeric(schedule["season"], errors="coerce") == season)
+        & (pd.to_numeric(schedule["week"], errors="coerce") == week)
+    ].drop_duplicates("game_id")
+    final = sched["home_score"].notna() & sched["away_score"].notna()
+    return int(final.sum()), int(len(sched))
+
+
+def load_schedule(*, season: int, schedule_path: Path = DEFAULT_SCHEDULE_PATH, refresh: bool = False) -> pd.DataFrame:
+    """Season schedule with scores; ``refresh`` fetches nflverse in memory (falls back to disk)."""
+    if refresh:
+        try:
+            from src.data.nflverse import fetch_schedules
+
+            fresh = fetch_schedules([season])
+            if fresh is not None and not fresh.empty:
+                print(f"[live_results] fetched fresh nflverse schedule ({len(fresh)} rows)")
+                return fresh
+        except Exception as exc:  # network: fall back to the cached schedule
+            print(f"[live_results] schedule refresh failed ({exc.__class__.__name__}: {exc}); using {schedule_path}")
+    return read_df(schedule_path)
+
+
+def finalize_actuals(actuals: pd.DataFrame, *, season: int, week: int) -> pd.DataFrame:
+    actuals = actuals.copy()
     actuals["season"] = pd.to_numeric(actuals["season"], errors="coerce")
     actuals["week"] = pd.to_numeric(actuals["week"], errors="coerce")
     actuals = actuals[(actuals["season"] == season) & (actuals["week"] == week)].copy()
@@ -378,9 +559,12 @@ def build_prediction_vs_actual(
     if merged.empty:
         return _empty_detail_frame(pred.columns)
 
-    merged["prediction_source_type"] = predictions.source_type
-    merged["prediction_source_file"] = str(predictions.path)
-    merged["prediction_source_last_modified_utc"] = predictions.last_modified_utc
+    for col, value in (
+        ("prediction_source_type", predictions.source_type),
+        ("prediction_source_file", str(predictions.path)),
+        ("prediction_source_last_modified_utc", predictions.last_modified_utc),
+    ):
+        merged[col] = merged[col].fillna(value) if col in merged.columns else value
     merged["graded_at_utc"] = datetime.now(timezone.utc).isoformat()
 
     merged["home_win_prob"] = pd.to_numeric(merged["home_win_prob"], errors="coerce").clip(0.0, 1.0)
@@ -564,16 +748,8 @@ def write_artifacts(
     else:
         segments_output = None
 
-    _write_cumulative(
-        detail,
-        cumulative_detail_path,
-        keys=["season", "week", "game_id", "prediction_source_type"],
-    )
-    _write_cumulative(
-        summary.assign(season=season, week=week),
-        cumulative_summary_path,
-        keys=["season", "week", "scope", "segment_column", "segment_value"],
-    )
+    _write_cumulative(detail, cumulative_detail_path, season=season, week=week)
+    _write_cumulative(summary.assign(season=season, week=week), cumulative_summary_path, season=season, week=week)
 
     return LiveResultArtifacts(
         detail_path=detail_path,
@@ -594,8 +770,11 @@ def build_and_write_live_results(
     mtb_csv_root: Path = DEFAULT_MTB_CSV_ROOT,
     predictions_log_dir: Path = DEFAULT_PREDICTIONS_LOG_DIR,
     prediction_file: Path | None = None,
-    source_order: Iterable[str] = ("mtb_archive", "locked_log"),
+    source_order: Iterable[str] = DEFAULT_SOURCE_ORDER,
     allow_empty: bool = False,
+    picks_dir: Path = DEFAULT_PICKS_DIR,
+    actuals: pd.DataFrame | None = None,
+    now: datetime | None = None,
 ) -> LiveResultArtifacts:
     prediction_source = load_prediction_source(
         season=season,
@@ -604,8 +783,11 @@ def build_and_write_live_results(
         predictions_log_dir=predictions_log_dir,
         prediction_file=prediction_file,
         source_order=source_order,
+        picks_dir=picks_dir,
+        now=now,
     )
-    actuals = load_finalized_actuals(features_path, season=season, week=week)
+    if actuals is None:
+        actuals = load_finalized_actuals(features_path, season=season, week=week)
     clv_detail = load_market_clv_detail(market_clv_detail_path, season=season, week=week)
     detail = build_prediction_vs_actual(prediction_source, actuals, clv_detail=clv_detail)
     if detail.empty and not allow_empty:
@@ -623,6 +805,108 @@ def build_and_write_live_results(
         season=season,
         week=week,
     )
+
+
+@dataclass
+class WeekGrade:
+    season: int
+    week: int
+    status: str  # graded | not_final | no_picks | error
+    detail: str
+    games: int = 0
+    su_wins: int = 0
+    su_losses: int = 0
+    sources: dict | None = None
+
+    def line(self) -> str:
+        if self.status == "graded":
+            src = ", ".join(f"{k}={v}" for k, v in sorted((self.sources or {}).items()))
+            return f"week {self.week:2d}: graded {self.games} games, SU {self.su_wins}-{self.su_losses} ({src})"
+        return f"week {self.week:2d}: not graded -- {self.detail}"
+
+
+def grade_week(
+    *,
+    season: int,
+    week: int,
+    schedule: pd.DataFrame,
+    require_complete: bool = True,
+    **kwargs,
+) -> WeekGrade:
+    """Grade one week from final schedule scores; never raises."""
+    final, scheduled = week_completion(schedule, season=season, week=week)
+    if scheduled == 0:
+        return WeekGrade(season, week, "not_final", "no games on the schedule")
+    if final == 0 or (require_complete and final < scheduled):
+        return WeekGrade(season, week, "not_final", f"{final}/{scheduled} games final")
+    try:
+        artifacts = build_and_write_live_results(
+            season=season,
+            week=week,
+            actuals=actuals_from_schedule(schedule, season=season, week=week),
+            **kwargs,
+        )
+    except FileNotFoundError as exc:
+        return WeekGrade(season, week, "no_picks", f"no published picks found ({exc})")
+    except Exception as exc:
+        return WeekGrade(season, week, "error", f"{exc.__class__.__name__}: {exc}")
+    detail = pd.read_csv(artifacts.detail_path)
+    result = detail["su_result"].astype(str)
+    published = int(len(detail))
+    note = f"{published}/{scheduled} games had a published pick" if published < scheduled else "all games"
+    return WeekGrade(
+        season,
+        week,
+        "graded",
+        note,
+        games=published,
+        su_wins=int(result.eq("win").sum()),
+        su_losses=int(result.eq("loss").sum()),
+        sources=detail["prediction_source_type"].value_counts().to_dict(),
+    )
+
+
+def grade_completed_weeks(*, season: int, schedule: pd.DataFrame, **kwargs) -> list[WeekGrade]:
+    """Grade every week of the season whose games are all final."""
+    sched = schedule[pd.to_numeric(schedule["season"], errors="coerce") == season]
+    weeks = sorted(int(w) for w in pd.to_numeric(sched["week"], errors="coerce").dropna().unique())
+    grades = []
+    for week in weeks:
+        final, scheduled = week_completion(sched, season=season, week=week)
+        if final == 0:
+            continue  # not played yet
+        grades.append(grade_week(season=season, week=week, schedule=sched, require_complete=True, **kwargs))
+    return grades
+
+
+def season_record(output_dir: Path, season: int) -> dict[str, object]:
+    """Straight-up record across every graded week in the cumulative detail file."""
+    path = output_dir / CUMULATIVE_DETAIL_NAME
+    if not path.exists():
+        return {"weeks": [], "games": 0, "su_wins": 0, "su_losses": 0, "su_pushes": 0}
+    detail = pd.read_csv(path)
+    detail = detail[pd.to_numeric(detail["season"], errors="coerce") == season]
+    result = detail["su_result"].astype(str)
+    return {
+        "weeks": sorted(int(w) for w in detail["week"].unique()),
+        "games": int(len(detail)),
+        "su_wins": int(result.eq("win").sum()),
+        "su_losses": int(result.eq("loss").sum()),
+        "su_pushes": int(result.eq("push").sum()),
+    }
+
+
+def format_report(grades: Sequence[WeekGrade], record: dict[str, object], season: int) -> str:
+    lines = [g.line() for g in grades]
+    w, l, p = record["su_wins"], record["su_losses"], record["su_pushes"]
+    games = w + l
+    pct = f" ({w / games:.1%})" if games else ""
+    push = f"-{p}" if p else ""
+    lines.append(
+        f"{season} season straight-up: {w}-{l}{push}{pct} over {record['games']} graded games, "
+        f"weeks {record['weeks']}"
+    )
+    return "\n".join(lines)
 
 
 def _add_moneyline_grades(frame: pd.DataFrame) -> None:
@@ -815,17 +1099,24 @@ def _summary_record(
     return record
 
 
-def _write_cumulative(frame: pd.DataFrame, path: Path, *, keys: list[str]) -> None:
-    if path.exists():
+def _write_cumulative(frame: pd.DataFrame, path: Path, *, season: int, week: int) -> None:
+    """Replace this season/week's rows in a cumulative file; keep every other graded week."""
+    parts = []
+    if path.exists() and path.stat().st_size > 0:
         existing = pd.read_csv(path)
-        combined = pd.concat([existing, frame], ignore_index=True)
-    else:
-        combined = frame.copy()
-    if not combined.empty and set(keys).issubset(combined.columns):
-        combined = combined.drop_duplicates(subset=keys, keep="last")
-        sort_cols = [col for col in ["season", "week", "game_id", "scope", "segment_column"] if col in combined.columns]
-        if sort_cols:
-            combined = combined.sort_values(sort_cols)
+        if {"season", "week"}.issubset(existing.columns):
+            same_week = (pd.to_numeric(existing["season"], errors="coerce") == season) & (
+                pd.to_numeric(existing["week"], errors="coerce") == week
+            )
+            existing = existing[~same_week]
+        if not existing.empty:
+            parts.append(existing)
+    if not frame.empty:
+        parts.append(frame)
+    combined = pd.concat(parts, ignore_index=True) if parts else frame.copy()
+    sort_cols = [col for col in ["season", "week", "game_id", "scope", "segment_column"] if col in combined.columns]
+    if sort_cols and not combined.empty:
+        combined = combined.sort_values(sort_cols, kind="stable")
     combined.to_csv(path, index=False)
 
 
@@ -961,6 +1252,8 @@ def _order_detail_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.completed_weeks or args.require_complete or args.refresh_scores:
+        return _main_graded(args)
     artifacts = build_and_write_live_results(
         season=args.season,
         week=args.week,
@@ -980,6 +1273,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[live_results] wrote cumulative summary -> {artifacts.cumulative_summary_path.resolve()}")
         if artifacts.segments_path is not None:
             print(f"[live_results] wrote segments -> {artifacts.segments_path.resolve()}")
+    return 0
+
+
+def _main_graded(args: argparse.Namespace) -> int:
+    """Schedule-driven grading: one week (--require-complete) or every completed week."""
+    import json
+
+    schedule = load_schedule(season=args.season, schedule_path=args.schedule_path, refresh=args.refresh_scores)
+    kwargs = dict(
+        output_dir=args.output_dir,
+        market_clv_detail_path=args.market_clv_detail,
+        mtb_csv_root=args.mtb_csv_root,
+        predictions_log_dir=args.predictions_log_dir,
+        source_order=args.source_order,
+        picks_dir=args.picks_dir,
+    )
+    if args.completed_weeks:
+        grades = grade_completed_weeks(season=args.season, schedule=schedule, **kwargs)
+    else:
+        grades = [
+            grade_week(
+                season=args.season,
+                week=args.week,
+                schedule=schedule,
+                require_complete=args.require_complete,
+                **kwargs,
+            )
+        ]
+    record = season_record(args.output_dir, args.season)
+    report = format_report(grades, record, args.season)
+    for line in report.splitlines():
+        print(f"[live_results] {line}")
+    if args.report_json:
+        args.report_json.parent.mkdir(parents=True, exist_ok=True)
+        args.report_json.write_text(
+            json.dumps(
+                {"grades": [g.__dict__ for g in grades], "season_record": record, "report": report}, indent=1
+            ),
+            encoding="utf-8",
+        )
+    statuses = {g.status for g in grades}
+    if "error" in statuses:
+        return 1
+    if not args.completed_weeks and statuses == {"not_final"}:
+        return EXIT_NOT_FINAL
+    if not args.completed_weeks and "no_picks" in statuses:
+        return 1
     return 0
 
 

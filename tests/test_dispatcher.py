@@ -1,4 +1,5 @@
 import argparse
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -176,3 +177,68 @@ def test_review_without_agent_writes_facts(tmp_path):
     review_run.main(["--slot", "2026_x", "--status", "failed", "--out", str(out), "--no-agent"])
     text = out.read_text(encoding="utf-8")
     assert "FAILED" in text and "not run" in text
+
+
+# ---- grading completed weeks ----
+
+def _grade_args(tmp_path, **kw):
+    return _args(tmp_path, **kw)
+
+
+def test_grading_due_after_last_game_until_window_closes():
+    slots = d.build_slots(_schedule())  # week 10 ends with MNF 2026-11-17 01:15 UTC
+    mnf = _utc("2026-11-17T01:15:00")
+    assert d.due_grading(slots, {}, mnf + timedelta(hours=7)) is None
+    assert d.due_grading(slots, {}, mnf + d.GRADE_DELAY) == (2026, 10)
+    key = d.grade_key(2026, 10)
+    recent = {key: {"status": "pending", "last_attempt": (mnf + d.GRADE_DELAY).isoformat()}}
+    assert d.due_grading(slots, recent, mnf + d.GRADE_DELAY + timedelta(minutes=30)) is None  # hourly recheck
+    assert d.due_grading(slots, recent, mnf + d.GRADE_DELAY + timedelta(hours=1)) == (2026, 10)
+    assert d.due_grading(slots, {key: {"status": "success"}}, mnf + timedelta(hours=10)) is None
+    assert d.due_grading(slots, {key: {"failures": d.GRADE_MAX_FAILURES}}, mnf + timedelta(hours=10)) is None
+    assert d.due_grading(slots, {}, mnf + d.GRADE_WINDOW + timedelta(minutes=1)) is None
+
+
+def test_grading_waits_for_final_scores_then_publishes(tmp_path, monkeypatch):
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    now = _utc("2026-11-17T10:00:00")
+    calls, alerts_sent = [], []
+
+    def runner(rc_grade):
+        def run(cmd, **kw):
+            calls.append([str(c) for c in cmd])
+            if "src.evaluation.live_results" in cmd:
+                report = Path(cmd[cmd.index("--report-json") + 1])
+                lines = ["week 10: graded 14 games, SU 9-5", "2026 season straight-up: 80-50"]
+                report.write_text(json.dumps({"report": "\n".join(lines)}))
+                return rc_grade
+            return 0
+        return run
+
+    state = {}
+    alert = lambda *a, **kw: alerts_sent.append(a)
+    rec = d.handle_grading(2026, 10, _grade_args(tmp_path), state, now, runner=runner(d.GRADE_EXIT_NOT_FINAL), alert=alert)
+    assert rec["status"] == "pending" and not alerts_sent
+    assert not any("tools.publish_mtb_csvs" in c for c in calls)  # nothing published before final
+
+    calls.clear()
+    rec = d.handle_grading(2026, 10, _grade_args(tmp_path), state, now, runner=runner(0), alert=alert)
+    assert rec["status"] == "success" and len(alerts_sent) == 1
+    flat = [" ".join(c) for c in calls]
+    assert "src.evaluation.picks_of_record --resolve" in flat[0]  # resolve before grading
+    assert any("tools.publish_mtb_csvs" in c and "--results-only" in c for c in flat)
+    assert any("scripts/publish_site.py" in c for c in flat)
+    assert "SU 9-5" in rec["report"]
+    assert "80-50" in d.grading_summary(state)
+
+
+def test_grading_failure_alerts_once_and_skips_publish(tmp_path, monkeypatch):
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    alerts_sent, calls = [], []
+    state = {}
+    for _ in range(2):
+        rec = d.handle_grading(2026, 10, _grade_args(tmp_path), state, _utc("2026-11-17T10:00:00"),
+                               runner=lambda cmd, **kw: calls.append(cmd) or (1 if "src.evaluation.live_results" in cmd else 0),
+                               alert=lambda *a, **kw: alerts_sent.append(a))
+    assert rec["status"] == "failed" and rec["failures"] == 2 and len(alerts_sent) == 1
+    assert not any("tools.publish_mtb_csvs" in c for c in calls)

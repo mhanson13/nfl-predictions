@@ -2,23 +2,23 @@
 
 ## Model Performance
 
-The latest validated win-probability evaluation run is **winprob_model (run_454)** from 2026-11-13. It logged AUC=0.722, Brier=0.211, LogLoss=0.610, Accuracy=0.667, F1=0.711, MAE=9.83, and RMSE=12.74. Compared to the earliest current-schema baseline (winprob_model / run_212), AUC changed by +0.014 and Brier changed by -0.008 (lower Brier is better).
+The latest validated win-probability evaluation run is **winprob_model (run_460)** from 2026-11-14. It logged AUC=0.723, Brier=0.211, LogLoss=0.610, Accuracy=0.664, F1=0.709, MAE=9.83, and RMSE=12.73. Compared to the earliest current-schema baseline (winprob_model / run_212), AUC changed by +0.014 and Brier changed by -0.008 (lower Brier is better).
 
 ### Metrics Snapshot
 | Metric | Value |
 |--------|-------|
-| Accuracy | 0.667 |
-| AUC | 0.722 |
+| Accuracy | 0.664 |
+| AUC | 0.723 |
 | Brier | 0.211 |
 | LogLoss | 0.610 |
 | MAE | 9.83 |
-| RMSE | 12.74 |
+| RMSE | 12.73 |
 | n | 2354 |
 
 ### Why it matters
-- **AUC ~0.722** - ranking quality for winners vs. losers.
+- **AUC ~0.723** - ranking quality for winners vs. losers.
 - **Brier ~0.211** - probability calibration/error for game winners.
-- **F1 ~0.711** - balance between precision and recall on home-win calls.
+- **F1 ~0.709** - balance between precision and recall on home-win calls.
 
 ### Explainability (GPU SHAP)
 We compute GPU-accelerated TreeSHAP values (`analysis/shap/*.png`) to confirm which engineered signals (QB availability deltas, passing EPA trends, opponent-adjusted efficiency, red-zone execution, and pressure metrics) drove these gains.
