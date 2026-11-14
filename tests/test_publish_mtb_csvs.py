@@ -314,3 +314,26 @@ def test_publish_csvs_skips_partial_week_archive_by_default(tmp_path):
 
     assert (destination_root / "current" / "predictions.csv").exists()
     assert not (destination_root / "seasons" / "2026" / "week_07" / "predictions.csv").exists()
+
+
+def test_results_only_publishes_every_graded_week_and_cumulative(tmp_path):
+    source_root = tmp_path / "nfl-predictions"
+    mtb_repo = tmp_path / "mtb"
+    mtb_repo.mkdir()
+    evaluation = source_root / "predictions" / "evaluation"
+    for name in ("live_prediction_vs_actual.csv", "live_prediction_vs_actual_summary.csv"):
+        _write_csv(evaluation / name)
+    for week in (2, 6, 9):
+        for stem in ("", "summary_", "segments_"):
+            _write_csv(evaluation / f"live_prediction_vs_actual_{stem}week_{week:02d}.csv")
+    _write_csv(source_root / "predictions" / "picks_of_record" / "picks_of_record_2026.csv")
+    _write_csv(source_root / "predictions" / "predictions.csv")  # must NOT be published
+
+    published = publish_csvs(source_root=source_root, repo_dir=mtb_repo, season=2026, results_only=True)
+
+    names = sorted(p.destination.relative_to(mtb_repo / "data" / "prediction-csvs").as_posix() for p in published)
+    assert len(names) == 2 + 9 + 1
+    assert "evaluation/live_prediction_vs_actual_week_02.csv" in names
+    assert "evaluation/live_prediction_vs_actual_segments_week_09.csv" in names
+    assert "picks_of_record/picks_of_record_2026.csv" in names
+    assert not any(n.startswith(("current/", "seasons/")) for n in names)

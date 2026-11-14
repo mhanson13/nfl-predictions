@@ -20,6 +20,14 @@ For a slot it:
   3. runs the review agent (``tools.review_run``),
   4. sends one alert (``src.utils.alerts``) with the outcome and the review.
 
+Grading: once a week's last game is final (from ``GRADE_DELAY`` after its last
+kickoff -- Tuesday early morning for a Monday night game), it resolves the picks
+of record, grades the week against final scores (``src.evaluation.live_results``,
+the pick MTB showed), copies the results to MTB (``tools.publish_mtb_csvs
+--results-only``) and publishes the site, then alerts with the record. Until the
+scores are final it re-checks hourly; game-day slots always run first. Game-day
+alerts also carry the latest grading outcome.
+
 State lives in ``logs/dispatcher/state.json``; a lock file prevents overlap.
 """
 
@@ -50,6 +58,11 @@ MAX_ATTEMPTS = 2
 STALE_LOCK = timedelta(hours=4)
 SLOT_ENV = "NFL_RUN_SLOT"
 EARLY_CUTOFF_HOUR_ET = 12  # games before noon ET (London/Dublin/Berlin) get their own slot
+GRADE_DELAY = timedelta(hours=8)        # after a week's last kickoff (MNF 8:15 pm ET -> Tue ~4 am ET)
+GRADE_RECHECK = timedelta(hours=1)      # scores not final yet / retry after an error
+GRADE_WINDOW = timedelta(hours=60)      # stop trying after this; older weeks are a manual backfill
+GRADE_MAX_FAILURES = 4
+GRADE_EXIT_NOT_FINAL = 3                # src.evaluation.live_results EXIT_NOT_FINAL
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,141 @@ def due_slot(
             continue
         return slot
     return None
+
+
+def grade_key(season: int, week: int) -> str:
+    return f"grade_{season}_wk{week:02d}"
+
+
+def week_last_kickoffs(slots: Sequence[Slot]) -> dict[tuple[int, int], datetime]:
+    ends: dict[tuple[int, int], datetime] = {}
+    for s in slots:
+        key = (s.season, s.week)
+        ends[key] = max(ends.get(key, s.last_kickoff), s.last_kickoff)
+    return ends
+
+
+def due_grading(
+    slots: Sequence[Slot],
+    state: dict,
+    now: datetime,
+    *,
+    delay: timedelta = GRADE_DELAY,
+    recheck: timedelta = GRADE_RECHECK,
+    window: timedelta = GRADE_WINDOW,
+    max_failures: int = GRADE_MAX_FAILURES,
+) -> Optional[tuple[int, int]]:
+    """The (season, week) to grade now, or None.
+
+    A week becomes due ``delay`` after its last kickoff and stays due for ``window``
+    (older weeks are left to a manual backfill), re-checking every ``recheck`` until
+    it is graded or has failed ``max_failures`` times.
+    """
+    for (season, week), last in sorted(week_last_kickoffs(slots).items(), key=lambda kv: kv[1]):
+        if not (last + delay <= now <= last + window):
+            continue
+        rec = state.get(grade_key(season, week), {})
+        if rec.get("status") == "success" or int(rec.get("failures", 0)) >= max_failures:
+            continue
+        last_try = rec.get("last_attempt")
+        if last_try and now - datetime.fromisoformat(last_try) < recheck:
+            continue
+        return season, week
+    return None
+
+
+def run_grading(season: int, week: int, args: argparse.Namespace, *, runner: Optional[Callable] = None) -> dict:
+    """Resolve picks of record, grade the week, copy results to MTB, publish the site."""
+    runner = runner or _run
+    py = sys.executable
+    report_path = STATE_DIR / f"{grade_key(season, week)}.json"
+    report_path.unlink(missing_ok=True)
+    log = (STATE_DIR / f"{grade_key(season, week)}.txt").resolve()
+    result: dict = {"season": season, "week": week}
+
+    runner([py, "-m", "src.evaluation.picks_of_record", "--resolve", "--season", str(season)],
+           timeout=10 * 60, log=log)
+    rc = runner([py, "-m", "src.evaluation.live_results", "--season", str(season), "--week", str(week),
+                 "--require-complete", "--refresh-scores", "--report-json", str(report_path),
+                 "--mtb-csv-root", str(Path(args.mtb_repo_dir) / "data" / "prediction-csvs")],
+                timeout=20 * 60, log=log)
+    result["grade_rc"] = rc
+    try:
+        result["report"] = json.loads(report_path.read_text(encoding="utf-8")).get("report", "")
+    except Exception:
+        result["report"] = ""
+    if rc == GRADE_EXIT_NOT_FINAL:
+        result["status"] = "pending"
+        return result
+    if rc != 0:
+        result["status"] = "failed"
+        return result
+
+    publish_rc = None
+    if not args.no_publish:
+        publish_rc = runner([py, "-m", "tools.publish_mtb_csvs", "--repo-dir", str(args.mtb_repo_dir),
+                             "--season", str(season), "--results-only"], timeout=10 * 60, log=log)
+        if publish_rc == 0 and not args.no_site_deploy:
+            site_log = (STATE_DIR / f"{grade_key(season, week)}_publish.txt").resolve()
+            publish_rc = runner(
+                [py, "scripts/publish_site.py", "--commit-message",
+                 f"Publish graded results {season} week {week}"],
+                cwd=args.mtb_repo_dir, timeout=args.publish_timeout_min * 60, log=site_log,
+            )
+            result["publish_log"] = str(site_log)
+    result["publish_rc"] = publish_rc
+    result["status"] = "success" if publish_rc in (None, 0) else "failed"
+    return result
+
+
+def grading_summary(state: dict) -> Optional[str]:
+    """One line on the most recent grading attempt, for game-day alerts."""
+    recs = [(k, v) for k, v in state.items() if k.startswith("grade_") and isinstance(v, dict)]
+    if not recs:
+        return None
+    key, rec = max(recs, key=lambda kv: kv[1].get("last_attempt", ""))
+    last = (rec.get("report") or "").strip().splitlines()
+    tail = f" -- {last[-1]}" if last else ""
+    return f"Results grading {key}: {rec.get('status')} (at {rec.get('last_attempt')}){tail}"
+
+
+def send_grading_alert(season: int, week: int, result: dict, *, final: bool) -> None:
+    from src.utils.alerts import send_alert
+
+    status = result["status"]
+    label = "RESULTS" if status == "success" else "RESULTS FAILED"
+    lines = [
+        f"Week: {season} week {week}",
+        f"Grade exit: {result.get('grade_rc')}   MTB publish exit: {result.get('publish_rc')}",
+        f"Log: {STATE_DIR / (grade_key(season, week) + '.txt')}",
+    ]
+    if result.get("publish_log"):
+        lines.append(f"Publish log: {result['publish_log']}")
+    if status != "success":
+        lines.append("Results were not published. " + (
+            "Giving up; grade by hand (docs/automation.md)." if final else "Will retry within the hour."))
+    body = "\n".join(lines)
+    if result.get("report"):
+        body += "\n\n" + result["report"]
+    send_alert(f"[NFL pipeline] {label}: {season} week {week}", body)
+
+
+def handle_grading(season: int, week: int, args: argparse.Namespace, state: dict, now: datetime, *,
+                   runner: Optional[Callable] = None, alert: Optional[Callable] = None) -> dict:
+    """Run one grading attempt, update its state record, alert on success / first and last failure."""
+    rec = state.setdefault(grade_key(season, week), {})
+    rec["last_attempt"] = now.isoformat(timespec="seconds")
+    rec["attempts"] = int(rec.get("attempts", 0)) + 1
+    result = run_grading(season, week, args, runner=runner)
+    rec.update({k: v for k, v in result.items() if k not in ("season", "week")})
+    if result["status"] == "failed":
+        rec["failures"] = int(rec.get("failures", 0)) + 1
+    final = int(rec.get("failures", 0)) >= GRADE_MAX_FAILURES
+    if result["status"] == "pending":
+        print(f"[dispatcher] {grade_key(season, week)}: scores not final yet; re-checking later")
+    elif alert is not None and (result["status"] == "success" or rec.get("failures") == 1 or final):
+        alert(season, week, result, final=final)
+    return rec
 
 
 def acquire_lock(now: datetime, path: Path = LOCK_PATH) -> bool:
@@ -251,6 +399,9 @@ def send_slot_alert(slot: Slot, result: dict, review_path: Optional[Path]) -> No
         lines.append(f"Publish log: {result['publish_log']}")
     if result["status"] != "success":
         lines.append("Nothing was published after the failure; the last good picks stay live.")
+    grading = grading_summary(load_state())
+    if grading:
+        lines.append(grading)
     body = "\n".join(lines)
     if review_path and Path(review_path).exists():
         body += "\n\n---- Review ----\n\n" + Path(review_path).read_text(encoding="utf-8")
@@ -272,6 +423,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-alert", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="Show slots and what would run now.")
     p.add_argument("--now", help="Override current time (ISO, for testing).")
+    p.add_argument("--no-grading", action="store_true", help="Skip grading completed weeks.")
     return p.parse_args(argv)
 
 
@@ -293,14 +445,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{s.slot_id:28s} first kick {s.first_kickoff.astimezone(EASTERN):%a %m-%d %H:%M} ET  "
                   f"window opens {open_at:%a %H:%M} ET  games={len(s.game_ids)}  state={state.get(s.slot_id, {})}")
         print(f"[dispatcher] due now: {slot.slot_id if slot else 'nothing'}")
+        grade = None if args.no_grading else due_grading(slots, state, now)
+        print(f"[dispatcher] grading due: {grade_key(*grade) if grade else 'nothing'}")
         return 0
-    if slot is None:
+    grade = None if (slot is not None or args.no_grading) else due_grading(slots, state, now)
+    if slot is None and grade is None:
         return 0
     if not acquire_lock(now):
         print("[dispatcher] another run holds the lock; skipping")
         return 0
     keep_awake(True)
     try:
+        if slot is None:  # game-day slots always take priority over grading
+            rec = handle_grading(*grade, args, state, now,
+                                 alert=None if args.no_alert else send_grading_alert)
+            save_state(state)
+            print(f"[dispatcher] {grade_key(*grade)}: {rec['status']}")
+            return 0 if rec["status"] in ("success", "pending") else 1
         rec = state.setdefault(slot.slot_id, {})
         rec["attempts"] = int(rec.get("attempts", 0)) + 1
         rec["status"] = "running"

@@ -29,6 +29,28 @@ run, and sends an alert.
 - Each game's **pick of record** = latest ledger row recorded ≥ 2h before *its* kickoff.
   Thursday's game is locked by the Thursday run, Sunday's games by the Sunday run, etc.
 
+## Grading results
+
+- From **8h after a week's last kickoff** (Tue ~04:15 ET after Monday night), each
+  dispatcher tick with no game-day slot due checks the week. Until every game is final
+  (nflverse schedule, fetched in memory) it re-checks hourly, for up to 60h.
+- Then it runs `picks_of_record --resolve`, grades the week
+  (`src.evaluation.live_results --require-complete --refresh-scores`), copies results to
+  MTB (`tools.publish_mtb_csvs --results-only`: every graded week's
+  `live_prediction_vs_actual[_summary|_segments]_week_NN.csv`, the cumulative files and
+  picks of record) and runs MTB `scripts/publish_site.py`. The alert carries the week's
+  record and the season record; game-day alerts repeat the latest grading line.
+- **Which pick is graded:** each game's pick of record (locked, else the first `late`
+  row -- the same rule MTB's week archive uses); games without one fall back to the MTB
+  archive CSV (the week's first published snapshot). Weeks 2-9 have no ledger, so they
+  grade the archive CSV.
+- Cumulative `live_prediction_vs_actual.csv` / `_summary.csv` hold every graded week;
+  re-grading a week replaces that week's rows.
+- Backfill / regrade by hand:
+  `python -m src.evaluation.live_results --season 2026 --completed-weeks` then
+  `python -m tools.publish_mtb_csvs --season 2026 --results-only`. State key:
+  `grade_<season>_wkNN` in `logs/dispatcher/state.json` (delete it to retry).
+
 ## Leakage guards
 
 - Training excludes the whole current week (`--live-run`), so later-in-week runs never

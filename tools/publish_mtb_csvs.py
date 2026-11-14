@@ -46,6 +46,49 @@ CURRENT_CSV_ARTIFACTS = [
 ]
 
 
+# Graded live results (src.evaluation.live_results). The cumulative files hold every
+# graded week; the per-week files are published for every graded week, not only the
+# current prediction week, so MTB can show results for the whole season.
+LIVE_RESULTS_SOURCE_DIR = Path("predictions/evaluation")
+LIVE_RESULTS_WEEKLY_PATTERNS = (
+    "live_prediction_vs_actual_week_[0-9][0-9].csv",
+    "live_prediction_vs_actual_summary_week_[0-9][0-9].csv",
+    "live_prediction_vs_actual_segments_week_[0-9][0-9].csv",
+)
+LIVE_RESULTS_CUMULATIVE_ARTIFACTS = [
+    CsvArtifact(
+        LIVE_RESULTS_SOURCE_DIR / "live_prediction_vs_actual.csv",
+        Path("evaluation/live_prediction_vs_actual.csv"),
+    ),
+    CsvArtifact(
+        LIVE_RESULTS_SOURCE_DIR / "live_prediction_vs_actual_summary.csv",
+        Path("evaluation/live_prediction_vs_actual_summary.csv"),
+    ),
+]
+
+
+def live_results_artifacts(source_root: Path, *, include_cumulative: bool = True) -> list[CsvArtifact]:
+    """Cumulative + every per-week graded results file that exists under source_root."""
+    artifacts = list(LIVE_RESULTS_CUMULATIVE_ARTIFACTS) if include_cumulative else []
+    for pattern in LIVE_RESULTS_WEEKLY_PATTERNS:
+        for path in sorted((source_root / LIVE_RESULTS_SOURCE_DIR).glob(pattern)):
+            artifacts.append(CsvArtifact(LIVE_RESULTS_SOURCE_DIR / path.name, Path("evaluation") / path.name))
+    return artifacts
+
+
+def picks_of_record_artifacts(season: int) -> list[CsvArtifact]:
+    # Per-game picks of record (src.evaluation.picks_of_record). Locked rows never
+    # change after their deadline, so these are always copied, not archived.
+    return [
+        CsvArtifact(
+            Path("predictions") / "picks_of_record" / name,
+            Path("picks_of_record") / name,
+            never_required=True,
+        )
+        for name in (f"picks_of_record_{season}.csv", f"picks_ledger_{season}.csv")
+    ]
+
+
 DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(Path("predictions/evaluation/overall_metrics.csv"), Path("evaluation/overall_metrics.csv")),
     CsvArtifact(Path("predictions/evaluation/weekly_metrics.csv"), Path("evaluation/weekly_metrics.csv")),
@@ -68,14 +111,7 @@ DIAGNOSTIC_CSV_ARTIFACTS = [
         Path("predictions/evaluation/merged_predictions_actuals.csv"),
         Path("evaluation/merged_predictions_actuals.csv"),
     ),
-    CsvArtifact(
-        Path("predictions/evaluation/live_prediction_vs_actual.csv"),
-        Path("evaluation/live_prediction_vs_actual.csv"),
-    ),
-    CsvArtifact(
-        Path("predictions/evaluation/live_prediction_vs_actual_summary.csv"),
-        Path("evaluation/live_prediction_vs_actual_summary.csv"),
-    ),
+    *LIVE_RESULTS_CUMULATIVE_ARTIFACTS,
     CsvArtifact(Path("analysis/market_roi_moneyline.csv"), Path("analysis/market_roi_moneyline.csv")),
     CsvArtifact(Path("analysis/market_roi_spread.csv"), Path("analysis/market_roi_spread.csv")),
     CsvArtifact(Path("analysis/market_benchmark.csv"), Path("analysis/market_benchmark.csv")),
@@ -223,6 +259,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Publish only the current prediction CSVs, skipping evaluation/analysis CSVs.",
     )
     parser.add_argument(
+        "--results-only",
+        action="store_true",
+        help=(
+            "Publish only graded live results (every graded week + cumulative) and picks of record. "
+            "Used after a week's games are final."
+        ),
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail if any selected CSV is missing. By default only predictions.csv is required.",
@@ -253,10 +297,19 @@ def build_artifact_plan(
     include_diagnostics: bool = True,
     season: int | None = None,
     week: int | None = None,
+    source_root: Path = Path("."),
+    results_only: bool = False,
 ) -> list[CsvArtifact]:
+    if results_only:
+        artifacts = live_results_artifacts(source_root)
+        if season is not None:
+            artifacts.extend(picks_of_record_artifacts(season))
+        return artifacts
+
     artifacts = list(CURRENT_CSV_ARTIFACTS)
     if include_diagnostics:
         artifacts.extend(DIAGNOSTIC_CSV_ARTIFACTS)
+        artifacts.extend(live_results_artifacts(source_root, include_cumulative=False))
         if week is not None:
             artifacts.append(
                 CsvArtifact(
@@ -301,24 +354,6 @@ def build_artifact_plan(
                         / f"prop_line_gap_audit_week_{week:02d}.csv",
                         Path("evaluation") / "player_props" / f"prop_line_gap_audit_week_{week:02d}.csv",
                     ),
-                    CsvArtifact(
-                        Path("predictions")
-                        / "evaluation"
-                        / f"live_prediction_vs_actual_week_{week:02d}.csv",
-                        Path("evaluation") / f"live_prediction_vs_actual_week_{week:02d}.csv",
-                    ),
-                    CsvArtifact(
-                        Path("predictions")
-                        / "evaluation"
-                        / f"live_prediction_vs_actual_summary_week_{week:02d}.csv",
-                        Path("evaluation") / f"live_prediction_vs_actual_summary_week_{week:02d}.csv",
-                    ),
-                    CsvArtifact(
-                        Path("predictions")
-                        / "evaluation"
-                        / f"live_prediction_vs_actual_segments_week_{week:02d}.csv",
-                        Path("evaluation") / f"live_prediction_vs_actual_segments_week_{week:02d}.csv",
-                    ),
                 ]
             )
 
@@ -335,16 +370,7 @@ def build_artifact_plan(
         )
 
     if season is not None:
-        # Per-game picks of record (src.evaluation.picks_of_record). Locked rows never
-        # change after their deadline, so these are always copied, not archived.
-        for name in (f"picks_of_record_{season}.csv", f"picks_ledger_{season}.csv"):
-            artifacts.append(
-                CsvArtifact(
-                    Path("predictions") / "picks_of_record" / name,
-                    Path("picks_of_record") / name,
-                    never_required=True,
-                )
-            )
+        artifacts.extend(picks_of_record_artifacts(season))
 
     return artifacts
 
@@ -428,10 +454,17 @@ def publish_csvs(
     overwrite_week_archive: bool = False,
     allow_partial_week_archive: bool = False,
     dry_run: bool = False,
+    results_only: bool = False,
 ) -> list[PublishedCsv]:
     source_root = source_root.resolve()
     destination_root = _resolve_destination_root(repo_dir, dest_dir)
-    artifacts = build_artifact_plan(include_diagnostics=include_diagnostics, season=season, week=week)
+    artifacts = build_artifact_plan(
+        include_diagnostics=include_diagnostics,
+        season=season,
+        week=week,
+        source_root=source_root,
+        results_only=results_only,
+    )
     published: list[PublishedCsv] = []
     missing: list[Path] = []
     copy_plan: list[tuple[CsvArtifact, Path, Path]] = []
@@ -498,6 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         overwrite_week_archive=args.overwrite_week_archive,
         allow_partial_week_archive=args.allow_partial_week_archive,
         dry_run=args.dry_run,
+        results_only=args.results_only,
     )
     action = "Planned" if args.dry_run else "Published"
     print(f"[publish_mtb] {action} {len(published)} CSV artifact(s).")

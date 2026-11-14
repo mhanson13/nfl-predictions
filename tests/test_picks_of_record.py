@@ -141,3 +141,25 @@ def test_picks_files_published_but_never_strict_required(tmp_path):
     plan = pub.build_artifact_plan(season=2026, week=10)
     picks = [a for a in plan if "picks_of_record" in str(a.destination)]
     assert len(picks) == 2 and all(a.never_required and not a.week_archive for a in picks)
+
+
+def test_late_pick_is_first_row_after_deadline_like_mtb(tmp_path):
+    path = tmp_path / "ledger.csv"
+    por.append_ledger(_rows(_preds(prob_sun=0.61), KICK_SUN - timedelta(minutes=100), "late1"), path)
+    por.append_ledger(_rows(_preds(prob_sun=0.75), KICK_SUN - timedelta(minutes=30), "late2"), path)
+    rec = por.resolve_records(pd.read_csv(path), now=KICK_SUN + timedelta(hours=4)).set_index("game_id")
+    assert rec.loc["2026_10_C_D", "status"] == "late"
+    assert rec.loc["2026_10_C_D", "home_win_prob"] == pytest.approx(0.61)
+
+
+def test_record_stamps_rows_with_predictions_file_time(tmp_path):
+    import os
+
+    preds_path = tmp_path / "predictions.csv"
+    _preds().to_csv(preds_path, index=False)
+    written = KICK_THU - timedelta(hours=4)
+    os.utime(preds_path, (written.timestamp(), written.timestamp()))
+    por.record(2026, 10, written - timedelta(minutes=30), predictions_path=preds_path,
+               features_path=tmp_path / "missing.parquet", out_dir=tmp_path, slot="thu")
+    led = pd.read_csv(por.ledger_path(2026, tmp_path))
+    assert set(led["recorded_at"]) == {written.strftime("%Y-%m-%dT%H:%M:%SZ")}
