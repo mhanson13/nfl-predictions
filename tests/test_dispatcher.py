@@ -110,29 +110,47 @@ def test_publish_failure_marks_slot_failed(tmp_path, monkeypatch):
 
 
 def test_alert_outbox_only_when_email_not_configured(tmp_path):
-    secrets = {"SENDGRID_API_KEY": "k", "ALERT_EMAIL_FROM": "alerts@example.com"}
-    res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, secret=secrets.get,
-                            post=lambda *a: (_ for _ in ()).throw(AssertionError("must not send")))
+    def boom(*a):
+        raise AssertionError("must not send")
+
+    secrets = {"BIRD_API_KEY": "k", "ALERT_EMAIL_FROM": "alerts@example.com"}
+    res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, secret=secrets.get, bird_send=boom, sendgrid_send=boom)
     assert not res.emailed and "ALERT_EMAIL_TO" in res.detail
     assert "body" in res.outbox_path.read_text(encoding="utf-8")
+    res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, bird_send=boom, sendgrid_send=boom,
+                            secret={"ALERT_EMAIL_FROM": "a@x.com", "ALERT_EMAIL_TO": "b@x.com"}.get)
+    assert not res.emailed and "no BIRD_ACCESS_KEY" in res.detail
 
 
-def test_alert_sends_and_records_failures(tmp_path):
-    secrets = {"SENDGRID_API_KEY": "k", "ALERT_EMAIL_FROM": "alerts@example.com", "ALERT_EMAIL_TO": "a@x.com, b@x.com"}
+def test_alert_prefers_bird_smtp_and_records_failures(tmp_path):
+    secrets = {"BIRD_ACCESS_KEY": "bk", "SENDGRID_API_KEY": "sg", "ALERT_EMAIL_FROM": "alerts@mattythebookie.com",
+               "ALERT_EMAIL_TO": "a@x.com, b@x.com"}
     sent = {}
 
-    def post(key, payload):
-        sent.update(payload)
-        return 202, ""
+    def bird(key, msg):
+        sent.update(key=key, msg=msg)
+        return "bird smtp accepted"
 
-    res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, secret=secrets.get, post=post)
-    assert res.emailed
-    assert [t["email"] for t in sent["personalizations"][0]["to"]] == ["a@x.com", "b@x.com"]
-    assert sent["tracking_settings"]["click_tracking"]["enable"] is False
+    res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, secret=secrets.get, bird_send=bird,
+                            sendgrid_send=lambda *a: (_ for _ in ()).throw(AssertionError("bird first")))
+    assert res.emailed and sent["key"] == "bk"
+    assert sent["msg"]["To"] == "a@x.com, b@x.com"
+    assert sent["msg"]["From"] == "MattyTheBookie Alerts <alerts@mattythebookie.com>"
+    assert "mattythebookie.com" in sent["msg"]["Message-ID"]
 
+    def auth_fail(key, msg):
+        raise RuntimeError("535 authentication failed")
+
+    res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, secret=secrets.get, bird_send=auth_fail)
+    assert not res.emailed and "535" in res.outbox_path.read_text(encoding="utf-8")
+
+
+def test_alert_sendgrid_fallback(tmp_path):
+    secrets = {"SENDGRID_API_KEY": "sg", "ALERT_EMAIL_FROM": "alerts@x.com", "ALERT_EMAIL_TO": "a@x.com"}
+    got = {}
     res = alerts.send_alert("Run OK", "body", outbox_dir=tmp_path, secret=secrets.get,
-                            post=lambda *a: (401, '{"errors":[{"message":"Maximum credits exceeded"}]}'))
-    assert not res.emailed and "401" in res.detail and "credits" in res.outbox_path.read_text(encoding="utf-8")
+                            sendgrid_send=lambda key, payload: got.update(payload) or "sendgrid HTTP 202")
+    assert res.emailed and got["tracking_settings"]["click_tracking"]["enable"] is False
 
 
 def test_review_probability_moves_and_facts(tmp_path):
