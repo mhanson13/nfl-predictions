@@ -13,6 +13,8 @@ This file is the live roadmap and status board for the NFL prediction pipeline. 
 ## Maintenance Rules
 
 - Update this file after any production pipeline run that materially changes metrics, data sources, model behavior, publishing flow, or roadmap priority.
+- Record every open item, watch item, decision, data issue, or finding that comes up in a working session here in the same session: in [Open Items And Watch List](#open-items-and-watch-list), [Known Data Issues](#known-data-issues), or the relevant roadmap section. Ship the update in the same PR as the related change, or in a small docs PR. Roadmap state must not live only in chat, plan files, or assistant memory.
+- When an item is done, remove it from the open list, record the result in its section, and update `Last reviewed`.
 - Use current artifact paths when marking a goal complete.
 - Keep historical implementation notes in `docs/`; keep this file focused on current goals and status.
 - Do not keep inactive phase labels. If a task is still worth doing, keep it on the roadmap. If not, remove it.
