@@ -1,0 +1,319 @@
+"""Schedule-driven dispatcher for unattended live runs (Task Scheduler entry point).
+
+Run this every 15 minutes (see tools/install_dispatcher_task.ps1). Each call is
+cheap: it reads the local schedule, finds today's game-day slot, and only starts
+work when the slot's launch window is open and the slot has not succeeded yet.
+
+Slots: one per game day (US/Eastern date) -- Thu, Sat, Sun, Mon, plus any
+Wed/Fri/holiday games. A day with morning (international) games plus later games
+gets two slots: ``<Day>-early`` for the morning games and ``<Day>`` for the rest. The launch window opens ``--start-lead`` before the day's
+first kickoff (default 3h30m) and stays open while at least one of that day's
+games is still ``--last-start-lead`` or more away (default 2h45m), so a missed
+window (PC asleep) still catches the later games. A failed slot is retried once
+while the window is open.
+
+For a slot it:
+  1. runs ``tools.weekly_run`` for the slot's season/week (debug log + picks of
+     record ledger; ``NFL_RUN_SLOT`` is set so ledger rows carry the slot id),
+  2. on success publishes the site (MTB ``scripts/publish_site.py``: import,
+     lint/typecheck/test/build, commit, push, deploy) -- never after a failure,
+  3. runs the review agent (``tools.review_run``),
+  4. sends one alert (``src.utils.alerts``) with the outcome and the review.
+
+State lives in ``logs/dispatcher/state.json``; a lock file prevents overlap.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Optional, Sequence
+
+import pandas as pd
+
+from src.utils.nfl_calendar import DEFAULT_SCHEDULE_PATH, EASTERN, _kickoffs
+
+STATE_DIR = Path("logs/dispatcher")
+STATE_PATH = STATE_DIR / "state.json"
+LOCK_PATH = STATE_DIR / "running.lock"
+DEFAULT_MTB_REPO = Path(r"C:\Code\mtb")
+START_LEAD = timedelta(hours=3, minutes=30)
+LAST_START_LEAD = timedelta(hours=2, minutes=45)
+MAX_ATTEMPTS = 2
+STALE_LOCK = timedelta(hours=4)
+SLOT_ENV = "NFL_RUN_SLOT"
+EARLY_CUTOFF_HOUR_ET = 12  # games before noon ET (London/Dublin/Berlin) get their own slot
+
+
+@dataclass(frozen=True)
+class Slot:
+    slot_id: str
+    season: int
+    week: int
+    day_et: str
+    first_kickoff: datetime
+    last_kickoff: datetime
+    kickoffs: tuple[datetime, ...]
+    game_ids: tuple[str, ...]
+
+    def window_open(self, now: datetime, start_lead: timedelta, last_start_lead: timedelta) -> bool:
+        if now < self.first_kickoff - start_lead:
+            return False
+        return any(k - now >= last_start_lead for k in self.kickoffs)
+
+
+def build_slots(schedule: pd.DataFrame) -> list[Slot]:
+    sched = schedule.copy()
+    sched["kickoff"] = _kickoffs(sched)
+    sched = sched.dropna(subset=["kickoff"])
+    sched["day_et"] = sched["kickoff"].dt.strftime("%Y-%m-%d")
+    sched["early"] = sched["kickoff"].dt.hour < EARLY_CUTOFF_HOUR_ET
+    slots = []
+    for (season, day), day_games in sched.groupby(["season", "day_et"]):
+        # Morning (international) games get their own earlier slot when the day also
+        # has later games, so the 1 pm / 4 pm / night games are picked closer to kickoff.
+        groups = [day_games]
+        if day_games["early"].any() and not day_games["early"].all():
+            groups = [day_games[day_games["early"]], day_games[~day_games["early"]]]
+        for games in groups:
+            slots.append(_slot(int(season), day, games, early=len(groups) > 1 and bool(games["early"].all())))
+    return sorted(slots, key=lambda s: s.first_kickoff)
+
+
+def _slot(season: int, day: str, games: pd.DataFrame, *, early: bool) -> Slot:
+    games = games.sort_values("kickoff")
+    kicks = tuple(k.to_pydatetime().astimezone(timezone.utc) for k in games["kickoff"])
+    week = int(games["week"].iloc[0])
+    dow = games["kickoff"].iloc[0].strftime("%a") + ("-early" if early else "")
+    return Slot(
+        slot_id=f"{season}_wk{week:02d}_{dow}_{day}",
+        season=season,
+        week=week,
+        day_et=day,
+        first_kickoff=kicks[0],
+        last_kickoff=kicks[-1],
+        kickoffs=kicks,
+        game_ids=tuple(games["game_id"].astype(str)),
+    )
+
+
+def load_state(path: Path = STATE_PATH) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_state(state: dict, path: Path = STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def due_slot(
+    slots: Sequence[Slot],
+    state: dict,
+    now: datetime,
+    *,
+    start_lead: timedelta = START_LEAD,
+    last_start_lead: timedelta = LAST_START_LEAD,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> Optional[Slot]:
+    """The slot to run now, or None (not in a window, already succeeded, or out of retries)."""
+    for slot in slots:
+        if not slot.window_open(now, start_lead, last_start_lead):
+            continue
+        rec = state.get(slot.slot_id, {})
+        if rec.get("status") == "success":
+            continue
+        if int(rec.get("attempts", 0)) >= max_attempts:
+            continue
+        return slot
+    return None
+
+
+def acquire_lock(now: datetime, path: Path = LOCK_PATH) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            started = datetime.fromisoformat(json.loads(path.read_text())["started"])
+            if now - started < STALE_LOCK:
+                return False
+        except Exception:
+            pass
+        path.unlink(missing_ok=True)
+    path.write_text(json.dumps({"pid": os.getpid(), "started": now.isoformat()}))
+    return True
+
+
+def release_lock(path: Path = LOCK_PATH) -> None:
+    path.unlink(missing_ok=True)
+
+
+def keep_awake(on: bool) -> None:
+    """Stop Windows from sleeping mid-run (no-op elsewhere)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0)
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
+    except Exception:
+        pass
+
+
+def newest_debug_log(season: int, since: float, log_dir: Path = Path("logs/pipeline")) -> Optional[Path]:
+    logs = [p for p in (log_dir / str(season)).glob("output_wk*_debug.txt") if p.stat().st_mtime >= since]
+    return max(logs, key=lambda p: p.stat().st_mtime) if logs else None
+
+
+def _run(cmd: Sequence[str], *, cwd: Optional[Path] = None, env: Optional[dict] = None,
+         timeout: Optional[float] = None, log: Optional[Path] = None) -> int:
+    print(f"[dispatcher] $ {' '.join(map(str, cmd))}" + (f"  (cwd={cwd})" if cwd else ""), flush=True)
+    out = open(log, "a", encoding="utf-8") if log else None
+    try:
+        return subprocess.run(list(map(str, cmd)), cwd=cwd, env=env, timeout=timeout,
+                              stdout=out, stderr=subprocess.STDOUT if out else None, check=False).returncode
+    except subprocess.TimeoutExpired:
+        print(f"[dispatcher] timed out after {timeout}s: {cmd[0]}")
+        return 124
+    finally:
+        if out:
+            out.close()
+
+
+def run_slot(slot: Slot, args: argparse.Namespace, *, runner: Callable = _run,
+             alert: Optional[Callable] = None) -> dict:
+    started = time.time()
+    env = dict(os.environ, **{SLOT_ENV: slot.slot_id})
+    py = sys.executable
+    result = {"slot": slot.slot_id, "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+    weekly = [py, "-m", "tools.weekly_run", "--season", str(slot.season), "--week", str(slot.week),
+              "--mtb-repo-dir", str(args.mtb_repo_dir)]
+    if args.no_publish:
+        weekly.append("--no-publish")
+    rc = runner(weekly, env=env, timeout=args.pipeline_timeout_min * 60)
+    log = newest_debug_log(slot.season, started)
+    result.update(pipeline_rc=rc, debug_log=str(log) if log else None)
+
+    publish_rc = None
+    if rc == 0 and not args.no_publish and not args.no_site_deploy:
+        publish_log = STATE_DIR / f"{slot.slot_id}_publish.txt"
+        publish_rc = runner(
+            [py, "scripts/publish_site.py", "--commit-message",
+             f"Publish NFL predictions {slot.season} week {slot.week} ({slot.slot_id})"],
+            cwd=args.mtb_repo_dir, timeout=args.publish_timeout_min * 60, log=publish_log.resolve(),
+        )
+        result.update(publish_rc=publish_rc, publish_log=str(publish_log))
+    ok = rc == 0 and publish_rc in (None, 0)
+    result["status"] = "success" if ok else "failed"
+    result["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    review_path = None
+    if not args.no_review:
+        review_path = STATE_DIR.parent / "reviews" / str(slot.season) / f"{slot.slot_id}_review.md"
+        review_cmd = [py, "-m", "tools.review_run", "--slot", slot.slot_id, "--status", result["status"],
+                      "--out", str(review_path)]
+        if log:
+            review_cmd += ["--debug-log", str(log)]
+        if result.get("publish_log"):
+            review_cmd += ["--publish-log", result["publish_log"]]
+        runner(review_cmd, timeout=args.review_timeout_min * 60)
+        result["review"] = str(review_path)
+
+    if alert is not None:
+        alert(slot, result, review_path)
+    return result
+
+
+def send_slot_alert(slot: Slot, result: dict, review_path: Optional[Path]) -> None:
+    from src.utils.alerts import send_alert
+
+    status = result["status"].upper()
+    lines = [
+        f"Slot: {slot.slot_id}  (season {slot.season} week {slot.week}, {len(slot.game_ids)} games that day)",
+        f"First kickoff: {slot.first_kickoff.astimezone(EASTERN):%a %Y-%m-%d %H:%M} ET",
+        f"Pipeline exit: {result.get('pipeline_rc')}   Site publish exit: {result.get('publish_rc')}",
+        f"Debug log: {result.get('debug_log')}",
+    ]
+    if result.get("publish_log"):
+        lines.append(f"Publish log: {result['publish_log']}")
+    if result["status"] != "success":
+        lines.append("Nothing was published after the failure; the last good picks stay live.")
+    body = "\n".join(lines)
+    if review_path and Path(review_path).exists():
+        body += "\n\n---- Review ----\n\n" + Path(review_path).read_text(encoding="utf-8")
+    send_alert(f"[NFL pipeline] {status}: {slot.slot_id}", body)
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE_PATH)
+    p.add_argument("--mtb-repo-dir", type=Path, default=DEFAULT_MTB_REPO)
+    p.add_argument("--start-lead-min", type=int, default=int(START_LEAD.total_seconds() // 60))
+    p.add_argument("--last-start-lead-min", type=int, default=int(LAST_START_LEAD.total_seconds() // 60))
+    p.add_argument("--pipeline-timeout-min", type=int, default=120)
+    p.add_argument("--publish-timeout-min", type=int, default=30)
+    p.add_argument("--review-timeout-min", type=int, default=15)
+    p.add_argument("--no-publish", action="store_true", help="Run and record picks, but publish nothing.")
+    p.add_argument("--no-site-deploy", action="store_true", help="Copy CSVs to MTB but do not commit/push/deploy.")
+    p.add_argument("--no-review", action="store_true")
+    p.add_argument("--no-alert", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="Show slots and what would run now.")
+    p.add_argument("--now", help="Override current time (ISO, for testing).")
+    return p.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    now = datetime.fromisoformat(args.now) if args.now else datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    start_lead = timedelta(minutes=args.start_lead_min)
+    last_lead = timedelta(minutes=args.last_start_lead_min)
+    slots = build_slots(pd.read_parquet(args.schedule))
+    state = load_state()
+    slot = due_slot(slots, state, now, start_lead=start_lead, last_start_lead=last_lead)
+
+    if args.dry_run:
+        upcoming = [s for s in slots if s.last_kickoff > now][:6]
+        for s in upcoming:
+            open_at = (s.first_kickoff - start_lead).astimezone(EASTERN)
+            print(f"{s.slot_id:28s} first kick {s.first_kickoff.astimezone(EASTERN):%a %m-%d %H:%M} ET  "
+                  f"window opens {open_at:%a %H:%M} ET  games={len(s.game_ids)}  state={state.get(s.slot_id, {})}")
+        print(f"[dispatcher] due now: {slot.slot_id if slot else 'nothing'}")
+        return 0
+    if slot is None:
+        return 0
+    if not acquire_lock(now):
+        print("[dispatcher] another run holds the lock; skipping")
+        return 0
+    keep_awake(True)
+    try:
+        rec = state.setdefault(slot.slot_id, {})
+        rec["attempts"] = int(rec.get("attempts", 0)) + 1
+        rec["status"] = "running"
+        save_state(state)
+        result = run_slot(slot, args, alert=None if args.no_alert else send_slot_alert)
+        rec.update({k: v for k, v in result.items() if k != "slot"})
+        save_state(state)
+        print(f"[dispatcher] {slot.slot_id}: {result['status']}")
+        return 0 if result["status"] == "success" else 1
+    finally:
+        keep_awake(False)
+        release_lock()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
