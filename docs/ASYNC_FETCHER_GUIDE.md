@@ -636,8 +636,8 @@ fetcher = MyAPIFetcher(
 
 - [httpx Documentation](https://www.python-httpx.org/)
 - [asyncio Documentation](https://docs.python.org/3/library/asyncio.html)
-- [Phase 2A Roadmap](./ENHANCEMENT_PHASE_2_ROADMAP.md)
-- [GitHub Issue #1](./PHASE_2A_GITHUB_ISSUES.md#issue-1)
+- [Phase 2A Roadmap (archived)](./archive/ENHANCEMENT_PHASE_2_ROADMAP.md)
+- [GitHub Issue #1 (archived)](./archive/PHASE_2A_GITHUB_ISSUES.md#issue-1)
 
 ## Support
 

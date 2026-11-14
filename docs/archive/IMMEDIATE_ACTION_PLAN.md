@@ -15,8 +15,8 @@ Complete immediate preparatory tasks to enable Phase 2A (Foundation) implementat
 ## ✅ Completed Tasks
 
 ### 1. Validation Infrastructure Documentation ✓
-- [x] Created [`PHASE_3_BENCHMARK_COMPARISON.md`](PHASE_3_BENCHMARK_COMPARISON.md) (497 lines)
-- [x] Created [`PHASE_5_CALIBRATION_MONITORING.md`](PHASE_5_CALIBRATION_MONITORING.md) (653 lines)
+- [x] Created [`PHASE_3_BENCHMARK_COMPARISON.md`](../PHASE_3_BENCHMARK_COMPARISON.md) (497 lines)
+- [x] Created [`PHASE_5_CALIBRATION_MONITORING.md`](../PHASE_5_CALIBRATION_MONITORING.md) (653 lines)
 - [x] Documented all 5 validation phases
 - [x] Created [`PROJECT_STATUS_REVIEW.md`](PROJECT_STATUS_REVIEW.md) (571 lines)
 
@@ -191,7 +191,7 @@ The platform includes comprehensive validation infrastructure:
 4. **Paper Trading** - Kelly criterion, risk-free strategy testing
 5. **Calibration Monitoring** - Drift detection, automated recalibration
 
-See [`docs/VALIDATION_METHODOLOGY.md`](docs/VALIDATION_METHODOLOGY.md) for details.
+See [`docs/VALIDATION_METHODOLOGY.md`](../VALIDATION_METHODOLOGY.md) for details.
 ```
 
 #### 3.2 Update GOALS.md
@@ -422,17 +422,17 @@ Total Progress:                  [ ] 0% → Target: 100%
 - [Project Status Review](PROJECT_STATUS_REVIEW.md)
 
 ### Validation Documentation
-- [Phase 1: Walk-Forward Validation](PHASE_1_WALK_FORWARD_VALIDATION.md)
-- [Phase 2: Live Tracking](PHASE_2_LIVE_TRACKING.md)
-- [Phase 3: Benchmark Comparison](PHASE_3_BENCHMARK_COMPARISON.md)
-- [Phase 4: Paper Trading](PHASE_4_PAPER_TRADING.md)
-- [Phase 5: Calibration Monitoring](PHASE_5_CALIBRATION_MONITORING.md)
+- [Phase 1: Walk-Forward Validation](../PHASE_1_WALK_FORWARD_VALIDATION.md)
+- [Phase 2: Live Tracking](../PHASE_2_LIVE_TRACKING.md)
+- [Phase 3: Benchmark Comparison](../PHASE_3_BENCHMARK_COMPARISON.md)
+- [Phase 4: Paper Trading](../PHASE_4_PAPER_TRADING.md)
+- [Phase 5: Calibration Monitoring](../PHASE_5_CALIBRATION_MONITORING.md)
 
 ### Technical Documentation
-- [Developer Onboarding](DEVELOPER_ONBOARDING.md)
-- [ADR 0001: Data Loader Factory](adr/0001-data-loader-factory-pattern.md)
-- [ADR 0002: Abstract Base Fetchers](adr/0002-abstract-base-fetchers.md)
-- [ADR 0003: Retry Pattern](adr/0003-retry-pattern.md)
+- [Developer Onboarding](../DEVELOPER_ONBOARDING.md)
+- [ADR 0001: Data Loader Factory](../adr/0001-data-loader-factory-pattern.md)
+- [ADR 0002: Abstract Base Fetchers](../adr/0002-abstract-base-fetchers.md)
+- [ADR 0003: Retry Pattern](../adr/0003-retry-pattern.md)
 
 ---
 

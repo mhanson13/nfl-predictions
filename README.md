@@ -42,7 +42,7 @@ Step-by-step environment, data, and pipeline instructions live in [INSTALL.md](I
 
 ## 2. Current Operating State
 
-The current validated model is usable but below the aspirational targets in [GOALS.md](GOALS.md). Treat older claims of near-perfect AUC/Brier values as stale unless they are reproduced by the current evaluation pipeline.
+On walk-forward history the model is at parity with the no-vig market on Brier and LogLoss and slightly behind it on AUC (largest gap in 2026); current numbers, roadmap and open items are in [GOALS.md](GOALS.md). Treat older claims of near-perfect AUC/Brier values as stale unless they are reproduced by the current evaluation pipeline.
 
 Current highlights:
 
@@ -304,9 +304,13 @@ Key reference documents in [`docs/`](docs/):
 | [PHASE_3_BENCHMARK_COMPARISON.md](docs/PHASE_3_BENCHMARK_COMPARISON.md) | Benchmark comparison (nfelo, Vegas, baselines) |
 | [PHASE_4_PAPER_TRADING.md](docs/PHASE_4_PAPER_TRADING.md) | Paper trading / Kelly criterion simulation |
 | [PHASE_5_CALIBRATION_MONITORING.md](docs/PHASE_5_CALIBRATION_MONITORING.md) | Calibration drift monitoring |
-| [PROJECT_STATUS_REVIEW.md](docs/PROJECT_STATUS_REVIEW.md) | Current project status and roadmap |
-| [ENHANCEMENT_PHASE_2_ROADMAP.md](docs/ENHANCEMENT_PHASE_2_ROADMAP.md) | Phase 2 enhancement roadmap |
-| [IMMEDIATE_ACTION_PLAN.md](docs/IMMEDIATE_ACTION_PLAN.md) | Near-term action plan |
+| [automation.md](docs/automation.md) | Unattended game-day runs, picks of record, results grading |
+| [weekly_run.md](docs/weekly_run.md) | Week-aware runner and debug log |
+| [market_bias_watch.md](docs/market_bias_watch.md) | Home win probability vs market watch item |
+| [weather_sources_review.md](docs/weather_sources_review.md) | Weather sources and the Xweather trial |
+| [archive/](docs/archive/README.md) | Superseded plans and status reviews (historical) |
+
+Current roadmap, status and open items: [GOALS.md](GOALS.md).
 
 Architecture decision records live in [`docs/adr/`](docs/adr/).
 

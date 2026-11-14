@@ -400,14 +400,14 @@ Phase 2D: Advanced (Weeks 13-16)
 ### Planning Documents
 - 📄 [**Full Roadmap**](ENHANCEMENT_PHASE_2_ROADMAP.md) - Complete 1,087-line detailed plan
 - 📊 **This Summary** - Executive overview and key metrics
-- 📋 [**GOALS.md**](../GOALS.md) - Current performance baselines
-- 📖 [**README.md**](../README.md) - System architecture overview
+- 📋 [**GOALS.md**](../../GOALS.md) - Current performance baselines
+- 📖 [**README.md**](../../README.md) - System architecture overview
 
 ### Technical Documentation
-- 🏗️ [**ADR 0001**](adr/0001-data-loader-factory-pattern.md) - Data loader pattern
-- 🏗️ [**ADR 0002**](adr/0002-abstract-base-fetchers.md) - Abstract base fetchers
-- 🏗️ [**ADR 0003**](adr/0003-retry-pattern.md) - Retry pattern
-- 👨‍💻 [**Developer Onboarding**](DEVELOPER_ONBOARDING.md) - Getting started guide
+- 🏗️ [**ADR 0001**](../adr/0001-data-loader-factory-pattern.md) - Data loader pattern
+- 🏗️ [**ADR 0002**](../adr/0002-abstract-base-fetchers.md) - Abstract base fetchers
+- 🏗️ [**ADR 0003**](../adr/0003-retry-pattern.md) - Retry pattern
+- 👨‍💻 [**Developer Onboarding**](../DEVELOPER_ONBOARDING.md) - Getting started guide
 
 ### Progress Tracking
 - ✅ [**Phase 1 Summary**](ENHANCEMENT_SUMMARY.md) - Completed work (55% of 31 tasks)

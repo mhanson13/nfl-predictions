@@ -1,6 +1,12 @@
 # NFL Predictions Goals
 
-Last reviewed: 2026-10-29
+Last reviewed: 2026-11-14
+
+Primary goal: team win-probability AUC and Brier at or better than the no-vig market, measured on
+walk-forward history (`predictions/evaluation/walk_forward_vs_market.csv`, final published probability).
+The pipeline's published outputs (files, columns, MTB publishing) stay stable while the model improves.
+Open items and watch items are listed in [Open Items And Watch List](#open-items-and-watch-list).
+Superseded plans and status docs are in [`docs/archive/`](docs/archive/README.md).
 
 This file is the live roadmap and status board for the NFL prediction pipeline. Keep it tied to current artifacts, not historical plans. Do not mark work complete unless the code, generated output, or documentation exists in the repo.
 
@@ -15,7 +21,9 @@ This file is the live roadmap and status board for the NFL prediction pipeline. 
 
 Source artifacts:
 
+- `predictions/evaluation/walk_forward_vs_market.csv`
 - `predictions/evaluation/overall_metrics.csv`
+- `predictions/evaluation/live_prediction_vs_actual.csv` / `live_prediction_vs_actual_summary.csv`
 - `analysis/market_benchmark.csv`
 - `analysis/market_benchmark_summary.csv`
 - `analysis/market_clv_detail.csv`
@@ -82,25 +90,45 @@ Source artifacts:
 - `analysis/run_comparisons/run_report.md`
 - `README.md`
 
-Latest full evaluation snapshot from the current-schema evaluation run on 2026-10-29:
+Walk-forward history vs the no-vig market, Week 10 run of 2026-11-14 (2,355 games, 2018-2026;
+`model_final` = the published probability):
 
-| Metric | Current | Near-Term Goal |
-|---|---:|---:|
-| Games / samples | 2325 | Track per run |
-| Accuracy | 0.654 | >= 0.670 |
-| F1 | 0.692 | >= 0.710 |
-| AUC | 0.706 | >= 0.720 |
-| Brier | 0.219 | <= 0.210 |
-| LogLoss | 0.628 | <= 0.610 |
-| Margin MAE | 10.17 | <= 9.75 |
-| Margin RMSE | 13.20 | <= 12.75 |
+| Scope | Model AUC | Market AUC | Model Brier | Market Brier | Model LogLoss | Market LogLoss |
+|---|---:|---:|---:|---:|---:|---:|
+| Overall | 0.7226 | 0.7240 | 0.2110 | 0.2110 | 0.6096 | 0.6098 |
+| 2026 season (136 games) | 0.7184 | 0.7271 | 0.2169 | 0.2157 | 0.6264 | 0.6232 |
 
-Current read: the model is usable but below the earlier aspirational AUC/Brier targets. Treat prior AUC values near 1.0 as invalid or stale unless backed by the current evaluation pipeline.
+Full evaluation (`overall_metrics.csv`, same run):
+
+| Metric | Current | Previous (2026-10-29) | Goal |
+|---|---:|---:|---:|
+| Games / samples | 2354 | 2325 | Track per run |
+| Accuracy | 0.664 | 0.654 | >= 0.670 |
+| F1 | 0.709 | 0.692 | >= 0.710 |
+| AUC | 0.7226 | 0.706 | >= market (0.724) |
+| Brier | 0.2110 | 0.219 | <= market (0.211) |
+| LogLoss | 0.6096 | 0.628 | <= market (0.610) |
+| Margin MAE | 9.83 | 10.17 | <= 9.75 |
+| Margin RMSE | 12.73 | 13.20 | <= 12.75 |
+
+Current read: Brier and LogLoss are at market parity overall; AUC trails the market by about 0.0014
+overall and by about 0.009 in 2026. The 2026 gap is the main thing to close. Calibration currently
+selects `none` (walk-forward Brier 0.2108 none / 0.2117 sigmoid / 0.2135 isotonic).
+
+Live published-pick record (graded on what MTB showed, `live_prediction_vs_actual.csv`): 2026 weeks 2-9,
+75-39-1 straight-up (65.8%) over 115 games; moneyline +5.92 units. See
+[Archive-To-Results Feedback Loop](#archive-to-results-feedback-loop) for which games are not graded.
 
 ## What Is In Place
 
 - Core pipeline command with async data ingestion, GPU training, live-week exclusion, evaluation, SHAP, run comparison, README refresh, and optional MTB publishing.
 - Current operational defaults: `--start-year 2017`, `--max-parallel-data 8`, `--data-start-delay 1`, `--live-run`, and `--publish-mtb` when exporting to the website repo.
+- Market-anchored win and spread models with weekly walk-forward evaluation against the no-vig market: `predictions/evaluation/walk_forward_vs_market.csv` (PR #1).
+- Walk-forward calibration selection (`none` / `sigmoid` / `isotonic`, scored out of sample; replaced the always-on isotonic step), market-anchored volatility shrink, and injury grid fill (PR #2).
+- Week-aware runner with a week-named debug log (`tools.weekly_run`, [docs/weekly_run.md](docs/weekly_run.md)), LA odds mapping, and the home-vs-market bias monitor ([docs/market_bias_watch.md](docs/market_bias_watch.md)) (PR #3).
+- Weather at the actual venue and kickoff time for every game, Visual Crossing refresh, Xweather trial snapshots ([docs/weather_sources_review.md](docs/weather_sources_review.md)) (PR #4); international travel features `travel_km_diff` / `travel_tz_shift_diff` and corrected nflverse 2025 international venues (PR #5); NOAA skips non-US venues and is optional (PR #6).
+- Per-game picks-of-record ledger for live runs: `predictions/picks_of_record/` (`src.evaluation.picks_of_record`). Pick of record = latest row recorded at least 2h before that game's kickoff, else the first late row; same rule as MTB's week archive (PR #7).
+- Unattended game-day runs: Windows task + `tools.dispatcher` run the pipeline each game day, publish MTB, write a Claude review, and alert via Bird SMTP; on Tuesday it grades the completed week and republishes results ([docs/automation.md](docs/automation.md)) (PRs #8-#10).
 - Live prediction reruns now pass `--exclude-started` into `src.predict.predict_upcoming` when `--live-run` is active, so Friday/Saturday reruns do not regenerate post-kickoff Thursday game picks.
 - NFLVerse, ESPN, NFL.com, NOAA/weather, Visual Crossing, BallDontLie, PropLine, Yahoo, SportsDataIO fallback, and local reference-data ingestion paths.
 - Weekly publish runs can now skip Tomorrow.io live weather with `--skip-tomorrow-weather` while retaining the paid Visual Crossing source plus NOAA/static fallback, reducing rate-limit noise without disabling weather features.
@@ -208,15 +236,16 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
   - `C:\Code\mtb\data\prediction-csvs\seasons\<season>\week_NN\*.csv`
   - `C:\Code\mtb\data\predictions\current.json`
   - `C:\Code\mtb\data\predictions\seasons\<season>\week_NN.json`
-- MattyTheBookie archive pages currently preserve immutable prediction snapshots by season/week. They are useful as a public audit trail of what was published before kickoff, but they do not yet include final scores, graded pick outcomes, ATS/moneyline results, or player-prop result overlays.
-- Archive-to-results grading now has a first Python implementation:
+- MattyTheBookie archive pages preserve immutable prediction snapshots by season/week and show graded team results (final scores, SU, ATS, moneyline) as an overlay. Player-prop result overlays are not built yet.
+- Archive-to-results grading (`src.evaluation.live_results`):
   - `src.evaluation.live_results`
   - `predictions/evaluation/live_prediction_vs_actual_week_NN.csv`
   - `predictions/evaluation/live_prediction_vs_actual.csv`
   - `predictions/evaluation/live_prediction_vs_actual_summary_week_NN.csv`
   - `predictions/evaluation/live_prediction_vs_actual_summary.csv`
   - `predictions/evaluation/live_prediction_vs_actual_segments_week_NN.csv`
-  - The command prefers MTB season/week CSV snapshots, falls back to `predictions_log`, joins finalized `matchup_features` scores by `season`, `week`, and `game_id`, and writes regenerated overlays without mutating the archived prediction snapshot.
+  - Each game is graded on its pick of record when the ledger has one; other games fall back to `predictions_log/<season>/week_NN_published_override.csv`, then the MTB season/week CSV, then `predictions_log` locked predictions. Final scores come from the nflverse schedule (`--refresh-scores`). Re-grading a week replaces that week's rows in the cumulative files; archived snapshots are never mutated.
+  - `--completed-weeks` backfills every finished week; an explicit recovery pick set is graded with `grade_week(..., prediction_file=...)` (the CLI's `--prediction-file` applies only without `--completed-weeks` / `--require-complete` / `--refresh-scores`, and then takes scores from `matchup_features`).
 - Schema models and validation framework exist in `src/utils/pydantic_schemas.py`, with validation hooks in several ingestion jobs.
 - Run comparison, market ROI, volatility classifier, calibration, evaluation, and SHAP tooling exist and are integrated into the pipeline where appropriate.
 - Market benchmark artifacts exist for model-vs-no-vig-Vegas comparison:
@@ -251,7 +280,8 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 
 ## Current Gaps
 
-- `GOALS.md` and some older docs previously contained stale metrics and completed-status claims. This file should now be the source of current roadmap truth.
+- `GOALS.md` is the source of current roadmap truth. Older plans and status reviews with stale metrics were moved to `docs/archive/` on 2026-11-14.
+- The model still trails the market on 2026 AUC (0.718 vs 0.727). See Team Model Improvement below.
 - Live tracking, paper trading, calibration monitoring, and benchmark modules exist, but their generated artifacts are not all currently maintained as live weekly outputs. CLV detail/summary CSVs are now generated in the weekly pipeline from local pick-time and close/latest odds snapshots.
 - Current measured coverage is low. Treat any old >70% coverage claim as stale until a fresh full-suite coverage run proves otherwise.
 - Player prop labels, split feature tables, baseline scoring, trained-model evaluation, weekly trained-model CSV exports, optional PropLine sportsbook ingestion, historical line joins, market-aware over-probability diagnostics, and first edge-threshold backtests now exist for the core yardage/sacks markets. Direct QB/RB/WRTE touchdown markets and anytime TD scorer are now published as projections; first/last/2+/3+ TD scorer novelty markets now have PBP-derived labels, a separate novelty feature/model family, and research-only weekly output. QB passing TD and anytime TD have exact current line coverage; RB rushing TD and WR/TE receiving TD now have non-bettable anytime-TD fallback lines and explicit `research_only` publish reasons, but still need true exact sportsbook line coverage before recommendation gates can use them. Remaining prop gaps are confidence-tier calibration, broader defensive-sack sportsbook/vendor coverage, historical touchdown line calibration, profitable edge validation, historical novelty-market calibration, and closing coverage gaps where offered PropLine player/game/market pairs sit outside the prediction universe.
@@ -264,6 +294,29 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - Market benchmarking now publishes model-vs-Vegas probability comparisons, model-vs-no-vig-Vegas probability calibration by bin, model-confidence calibration and empirical recalibration by agreement/disagreement segment, walk-forward confidence-recalibration strategy decisions, walk-forward market-aware blend backtests, favorite-disagreement game diagnostics/recommendations, moneyline disagreement threshold ROI, moneyline disagreement season-stability gates, bounded moneyline disagreement edge-bin ROI, disagreement-only segment diagnostics by side/odds/confidence/edge/CLV, segment-aware and confidence-aware moneyline disagreement policy gates, corrected spread ROI, spread edge-bin ROI, spread key-number diagnostics, spread cover-probability calibration, weekly CLV detail/summary artifacts, and optional per-game CLV fields in `market_benchmark.csv` when matching pick-time and close/latest snapshots exist.
 - Corrected spread ROI no longer shows broad profitability. Current Week 5 policy artifacts mark broad spread threshold strategies as `no_bet`; only the 2-to-3 point spread-edge bucket remains a low-confidence lean/research signal.
 
+## Open Items And Watch List
+
+As of 2026-11-14. Remove items when done; move lasting results into the sections below.
+
+| Item | When | Notes |
+|---|---|---|
+| Review the first automated weekend | Sun 11-15 to Tue 11-17 | Sunday early and main slots, Monday, then Week 10 grading (Tue ~04:15 ET) and its alert. Confirm Week 10 publishes distinct probabilities with calibration `none`. Reviews: `logs/reviews/2026/`. |
+| Pick-time vs closing-line report (Step 4) | After 2-3 weeks of ledger data (~Week 12) | Uses `predictions/picks_of_record/` from Week 10 on. |
+| Xweather keep/drop decision | Around Week 13 | After 3-4 weeks of trial snapshots; see [docs/weather_sources_review.md](docs/weather_sources_review.md). |
+| Home-vs-market bias watch | Every run | `[market_bias]` lines in the debug log; see [docs/market_bias_watch.md](docs/market_bias_watch.md). |
+| Close the 2026 AUC gap to the market | Ongoing | Next model work: Step 5 feature pruning. |
+| ESPN player news speed-up | Optional | Shorten the ESPN player news fetch. |
+| 3 weather rows missing coordinates | Minor | Data cleanup. |
+| `test_rolling_average_properties` failure | Minor | Fails on main too. |
+| Step 8 cleanup | Minor | Split `src/models/train.py` and `src/predict/predict_upcoming.py`. |
+| Find the stage that sometimes un-stepped final probabilities in September/early-October runs | Record only | No current effect; see Known Data Issues. |
+
+## Known Data Issues
+
+- **Step-valued published probabilities, 2026 weeks 2-10 (fixed 2026-11-13, PR #2).** Before PR #2, `src.evaluation.calibrate_winprob` always fit an isotonic calibrator and prediction applied it, so `home_win_prob_calibrated` took only about 5-10 distinct values (e.g. 0.2245, 0.7377, 0.15). Visible repeats in the published probability: weeks 5-9 in every version, week 10's Thursday file (MTB 158762b), 2 of 8 week 3 versions, and the early week 4 versions (25eea5a, 0adf06d). Other September/early-October versions had distinct final values because a later stage spread them out. Since PR #2, calibration is chosen walk-forward and currently `none`; the 2026-11-14 Week 10 run is clean. Published picks are not regraded: they are what readers saw.
+- **Week 2 version MTB 7e1d595** repeats values in the raw model output itself (13 distinct of 16). Superseded the next day; low priority.
+- **MTB archive overwrites.** Later publishes replaced some weeks' archive CSVs with only the games not yet kicked off (e.g. week 4 at MTB 9d230e2 kept only ATL-NO). Weeks 4 and 9 were rebuilt per game from MTB git history (MTB PR #7). From Week 10 grading uses the picks-of-record ledger, so a later overwrite of the archive CSV no longer changes which pick is graded. If grading ever shows fewer games than the schedule, compare against the archive file's git history.
+
 ## Operating Roadmap
 
 ### 1. Metrics And Documentation Hygiene
@@ -272,8 +325,8 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [x] Generate run-comparison report after pipeline runs.
 - [ ] Add season-by-season metric table to README or a dedicated evaluation doc.
 - [ ] Add a lightweight changelog for major pipeline/data/model changes.
-- [ ] Update `GOALS.md` after each meaningful pipeline run or roadmap change.
-- [ ] Reconcile old docs that still claim stale AUC/Brier/coverage values.
+- [ ] Update `GOALS.md` after each meaningful pipeline run or roadmap change (ongoing; last 2026-11-14).
+- [x] Reconcile old docs that still claim stale AUC/Brier/coverage values: superseded plans/status docs moved to `docs/archive/` (2026-11-14).
 
 ### 2. Data Source Direction
 
@@ -291,6 +344,22 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 
 ### 3. Team Model Improvement
 
+Market-gap plan (started 2026-11-12). Metric: walk-forward AUC/Brier/LogLoss vs no-vig market.
+
+| Step | Status |
+|---|---|
+| 1. Evaluation harness: weekly walk-forward vs market | Done (PR #1) |
+| 2. Retire stale params; walk-forward tuning | Done |
+| 3. Market-anchored win + spread models | Done (PR #1) |
+| 4. Pick-time lines | Partial: Wednesday line history backfilled; pick-time vs closing-line gap not yet reported (needs 2-3 weeks of picks-of-record ledger data, from Week 10) |
+| 5. Prune features | Not started |
+| 6. Long-memory team strength | Shelved (no lift) |
+| 7. Calibration simplification | Done: walk-forward selection (currently `none`); volatility shrinks toward market (PR #2) |
+| 8. Hygiene | Partial: weekly runner + debug log done; `train.py` / `predict_upcoming.py` size untouched |
+| Data quality | Done: injury grid, LA odds, Visual Crossing refresh, actual venue + kickoff, 2025 international venues, travel. Open: Xweather decision, home-bias watch |
+
+Older checklist:
+
 - [x] Use walk-forward historical predictions for calibration/evaluation.
 - [x] Exclude the live prediction week from training/calibration/evaluation during live runs.
 - [x] Exclude already-started games from live prediction output reruns to avoid publishing post-kickoff regenerated picks.
@@ -305,9 +374,11 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [ ] Continue reviewing `feature_family_ablation.csv` after each full pipeline run.
 - [ ] Treat `bdl_*` features as production-proven only after at least 3 full live-week runs show same-split lift or no material regression: target `baseline_plus_bdl` or `baseline_plus_bdl_no_sparse_sack_rate` should improve or hold AUC/Brier/LogLoss while also improving spread MAE by a repeatable margin.
 - [ ] If later ablation proves only a narrow BDL subset is useful, add a named subset gate instead of enabling the entire `bdl_*` family.
-- [ ] Improve current AUC from ~0.706 to >=0.720 without leakage.
-- [ ] Improve Brier from ~0.217 to <=0.210.
-- [ ] Improve margin MAE from ~10.15 to <=9.75.
+- [x] Improve AUC from ~0.706 to >=0.720 without leakage (0.7226 walk-forward, 2026-11-14).
+- [ ] Match or beat the no-vig market AUC (0.7240 overall; 0.7271 in 2026).
+- [x] Reach market Brier parity overall (0.2110 vs 0.2110).
+- [ ] Reach market Brier parity in the current season (2026: 0.2169 vs 0.2157).
+- [ ] Improve margin MAE from 9.83 to <=9.75.
 - [ ] Re-check feature lift after every material feature-family change.
 - [x] Rework volatility classifier to RF, log-loss-only labels, and 0.5 percentile default.
 - [ ] Add a separate spread/margin-volatility model instead of mixing margin-error labels into probability volatility.
@@ -319,7 +390,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 - [x] Refresh upcoming predictions after market ROI/confidence artifacts are regenerated so published CSVs use the current run's confidence-policy diagnostics rather than the previous run's artifacts.
 - [ ] If the confidence-recalibration decision artifact shows durable overall Brier/LogLoss lift, wire the chosen strategy into the base win-probability calibration path behind an explicit experiment flag before defaulting it on.
 - [ ] Decide whether MattyTheBookie should display calibrated confidence as primary public confidence or keep raw model confidence primary with calibrated confidence as tooltip/context.
-- [ ] Build a live-published prediction-vs-actual artifact from archived/locked predictions and finalized game results before using archive outcomes for model decisions. This artifact should grade SU winner, margin error, probability loss metrics, ATS/spread outcomes when market lines exist, and market-policy result fields without rewriting the original prediction snapshot.
+- [x] Build a live-published prediction-vs-actual artifact from archived/locked predictions and finalized game results before using archive outcomes for model decisions (`live_prediction_vs_actual*.csv`; see Archive-To-Results). This artifact should grade SU winner, margin error, probability loss metrics, ATS/spread outcomes when market lines exist, and market-policy result fields without rewriting the original prediction snapshot.
 - [ ] Add live holdout segment diagnostics from the prediction-vs-actual artifact by confidence bin, favorite/underdog, home/away, rest, weather, injury/roster status, volatility label, market agreement/disagreement, team, division, venue, and key spread buckets.
 - [ ] Convert repeated live holdout errors into explicit action classes: recalibrate probabilities, improve or remove a feature family, tighten publication policy gates, or leave as monitored variance. Do not train future models on prior predictions as features unless a separately validated stacking/meta-model is designed.
 
@@ -327,7 +398,7 @@ Current read: the model is usable but below the earlier aspirational AUC/Brier t
 
 Priority: high. Protect published picks from known bad market signals before adding new model complexity.
 
-Current read from the Week 5 evaluation set:
+Current read from the Week 5 evaluation set (2026-10-11; not refreshed since the market-anchored models, so treat these numbers as historical until the market artifacts are re-reviewed):
 
 - SU model accuracy is 65.4% over 2,283 market-matched games.
 - No-vig Vegas favorite accuracy is about 66.1% over the same games.
@@ -531,7 +602,10 @@ Implementation details live in `docs/PLAYER_PROP_PREDICTION_PLAN.md`.
 
 Principle: keep archived prediction snapshots immutable as the public record of what was published before kickoff. Add result grading as a separate overlay that can be regenerated after games finalize.
 
-- [x] Define the canonical live-published prediction source for grading: MTB archive CSV first, then `predictions_log` locked predictions, with an explicit file override for recovery cases.
+- [x] Define the canonical live-published prediction source for grading: per-game pick of record (ledger) first, then `week_NN_published_override.csv`, then the MTB archive CSV, then `predictions_log` locked predictions, with an explicit file override for recovery cases.
+- [x] Grade automatically: the dispatcher grades each week from 8h after its last kickoff, once every game is final, then publishes results to MTB and alerts (PR #10).
+- [x] Backfill 2026 weeks 2-9. Week 8 grades from a published override built from the site JSON. Weeks 4 and 9 were regraded on 2026-11-14 from per-game picks of record rebuilt from MTB git history (MTB restored its archive files to match, MTB PR #7).
+- Not graded on purpose: week 1 (no published picks); week 5 TB-DAL and PHI-JAX and week 6 SEA-DEN and HOU-JAX (left out by decision on 2026-11-14; their only pre-kickoff versions, MTB 0547f57 and fdab881, came from early-week runs whose probabilities were badly step-valued, see Known Data Issues); week 7 NE-CHI (first publish was after kickoff).
 - [x] Implement a weekly join from published predictions to finalized game results using `season`, `week`, and `game_id`.
 - [x] Publish weekly and cumulative artifacts: `predictions/evaluation/live_prediction_vs_actual_week_NN.csv`, `predictions/evaluation/live_prediction_vs_actual.csv`, `predictions/evaluation/live_prediction_vs_actual_summary_week_NN.csv`, `predictions/evaluation/live_prediction_vs_actual_summary.csv`, and `predictions/evaluation/live_prediction_vs_actual_segments_week_NN.csv`.
 - [x] Include core per-game grading fields: final scores, actual winner, model pick result, SU correctness, predicted margin error, Brier/log-loss contribution, ATS result where a valid line exists, moneyline result, moneyline unit profit when odds are available, and market-policy context fields.
@@ -549,8 +623,9 @@ Principle: keep archived prediction snapshots immutable as the public record of 
 ### 7. Testing And Quality
 
 - [x] Unit tests exist for data fetchers, schema validation, prediction helpers, pipeline helpers, publish/import helpers, and analysis utilities.
-- [ ] Run a fresh full test suite after the next full pipeline stabilization point.
-- [ ] Establish a realistic current coverage baseline from the full suite.
+- [x] Run a fresh full test suite after the next full pipeline stabilization point (2026-11-14: 1235 passed, 1 known failure, run in `.venv`; the `nflgpu` env crashes in `test_player_prop_train`).
+- [x] Establish a realistic current coverage baseline from the full suite (about 66% of `src`; `pyproject.toml` sets `--cov-fail-under=70`, so local full runs report a coverage failure until coverage rises or the gate is lowered).
+- [ ] Fix `test_rolling_average_properties` (fails on main too).
 - [x] Add focused tests for the first player-prop label builder.
 - [x] Add focused tests for the split player-prop feature builder.
 - [x] Add focused tests for the first player-prop baseline evaluator.

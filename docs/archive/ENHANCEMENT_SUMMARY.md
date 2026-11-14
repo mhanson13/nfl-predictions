@@ -80,7 +80,7 @@ Establish consistent architectural patterns and improve code organization.
   - `DataLoaderFactory`: Factory for creating loaders
   - Convenience functions: `load_parquet()`, `load_csv()`
 - **Impact**: Centralized data loading with consistent caching and error handling
-- **ADR**: [0001-data-loader-factory-pattern.md](adr/0001-data-loader-factory-pattern.md)
+- **ADR**: [0001-data-loader-factory-pattern.md](../adr/0001-data-loader-factory-pattern.md)
 
 #### 2.2 - Dependency Injection ✅
 - **Status**: Already implemented via `src/config.py`
@@ -97,7 +97,7 @@ Establish consistent architectural patterns and improve code organization.
   - `BatchDataFetcher`: For batch processing
   - `FetchResult`: Dataclass for consistent return values
 - **Impact**: Standardized interface for all data fetching operations
-- **ADR**: [0002-abstract-base-fetchers.md](adr/0002-abstract-base-fetchers.md)
+- **ADR**: [0002-abstract-base-fetchers.md](../adr/0002-abstract-base-fetchers.md)
 
 #### 2.4 - Strategy Pattern for Prediction Models ⏭️
 - **Status**: Deferred - requires more analysis
@@ -130,7 +130,7 @@ Implement comprehensive error handling and resilience patterns.
   - Selective exception retrying
   - Thread-safe implementation
 - **Impact**: Automatic handling of transient failures
-- **ADR**: [0003-retry-pattern.md](adr/0003-retry-pattern.md)
+- **ADR**: [0003-retry-pattern.md](../adr/0003-retry-pattern.md)
 
 #### 3.2 - Circuit Breaker Pattern ✅
 - **File Created**: `src/utils/circuit_breaker.py` (398 lines)
