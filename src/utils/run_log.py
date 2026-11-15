@@ -116,8 +116,17 @@ def preflight(schedule_path: Optional[Path] = None) -> list[str]:
 
 
 def write(text: str, streams: Iterable[TextIO]) -> None:
+    """Write to every stream; a console that can't encode a character gets it replaced.
+
+    Under the scheduled task stdout is a file in the locale codepage (cp1252), so a
+    non-cp1252 character in pipeline output must never abort the run.
+    """
     for stream in streams:
-        stream.write(text)
+        try:
+            stream.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "ascii"
+            stream.write(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
         stream.flush()
 
 
@@ -142,6 +151,10 @@ def run_logged(command: Sequence[str], header: str, log_paths: Sequence[Path]) -
     for path in log_paths:
         path.parent.mkdir(parents=True, exist_ok=True)
     logs = [path.open("w", encoding="utf-8") for path in log_paths]
+    try:  # keep the console copy from ever raising on an unencodable character
+        sys.stdout.reconfigure(errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
     streams = [sys.stdout, *logs]
     env = os.environ.copy()
     env.update({"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", CHILD_ENV_FLAG: "1"})
