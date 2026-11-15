@@ -445,18 +445,18 @@ The comprehensive roadmap is complete and ready for implementation. Phase 2A foc
 - [`GITHUB_ISSUES_CREATION_GUIDE.md`](GITHUB_ISSUES_CREATION_GUIDE.md) - Issue templates
 
 ### Validation Infrastructure
-- [`PHASE_1_WALK_FORWARD_VALIDATION.md`](PHASE_1_WALK_FORWARD_VALIDATION.md) - Walk-forward docs
-- [`PHASE_2_LIVE_TRACKING.md`](PHASE_2_LIVE_TRACKING.md) - Live tracking docs
-- [`PHASE_4_PAPER_TRADING.md`](PHASE_4_PAPER_TRADING.md) - Paper trading docs
+- [`PHASE_1_WALK_FORWARD_VALIDATION.md`](../PHASE_1_WALK_FORWARD_VALIDATION.md) - Walk-forward docs
+- [`PHASE_2_LIVE_TRACKING.md`](../PHASE_2_LIVE_TRACKING.md) - Live tracking docs
+- [`PHASE_4_PAPER_TRADING.md`](../PHASE_4_PAPER_TRADING.md) - Paper trading docs
 
 ### Technical Documentation
-- [`DEVELOPER_ONBOARDING.md`](DEVELOPER_ONBOARDING.md) - Getting started guide
+- [`DEVELOPER_ONBOARDING.md`](../DEVELOPER_ONBOARDING.md) - Getting started guide
 - [`ENHANCEMENT_SUMMARY.md`](ENHANCEMENT_SUMMARY.md) - Phase 1 summary
-- [`adr/`](adr/) - Architecture Decision Records
+- [`adr/`](../adr) - Architecture Decision Records
 
 ### Project Management
-- [`GOALS.md`](../GOALS.md) - Performance targets and metrics
-- [`README.md`](../README.md) - Project overview
+- [`GOALS.md`](../../GOALS.md) - Performance targets and metrics
+- [`README.md`](../../README.md) - Project overview
 
 ---
 

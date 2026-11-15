@@ -68,7 +68,7 @@ Create granular drive-level features to capture momentum and situational perform
 - [ ] Calculate rolling drive success rates (3/5/10 game windows)
 - [ ] Build drive momentum indicators (EPA trend over last 3 drives)
 - [ ] Add situational drive metrics (red zone, 2-minute drill, 4th quarter)
-- [ ] Integrate with [`build_features.py`](../src/features/build_features.py)
+- [ ] Integrate with [`build_features.py`](../../src/features/build_features.py)
 
 **Files to Create:**
 - `src/features/drive_epa_features.py` (~400 lines)
@@ -152,7 +152,7 @@ Enable near-real-time feature updates as game day approaches.
 - ✅ Brier score drops below 0.125
 - ✅ Feature importance analysis shows new features in top 20
 - ✅ Forward validation maintains performance on 2026 season
-- ✅ All new features documented in [`GOALS.md`](../GOALS.md)
+- ✅ All new features documented in [`GOALS.md`](../../GOALS.md)
 
 ---
 
@@ -181,7 +181,7 @@ Complete deferred Phase 1 tasks and scale the platform to handle 10x throughput.
 Convert the entire pipeline to async/await for massive parallelism.
 
 **Tasks:**
-- [ ] Refactor [`run_pipeline.py`](../tools/run_pipeline.py) to use asyncio
+- [ ] Refactor [`run_pipeline.py`](../../tools/run_pipeline.py) to use asyncio
 - [ ] Convert all data fetchers to async (inherit from `AsyncBaseDataFetcher`)
 - [ ] Implement async feature building with concurrent processing
 - [ ] Add async model training with GPU queue management
@@ -204,7 +204,7 @@ Convert the entire pipeline to async/await for massive parallelism.
 Profile and optimize memory usage across the pipeline.
 
 **Tasks:**
-- [ ] Run memory profiler on full pipeline ([`memory_profiler.py`](../src/utils/memory_profiler.py))
+- [ ] Run memory profiler on full pipeline ([`memory_profiler.py`](../../src/utils/memory_profiler.py))
 - [ ] Implement chunked DataFrame processing for large datasets
 - [ ] Add memory-mapped file support for parquet files
 - [ ] Optimize feature engineering to use less memory
@@ -222,7 +222,7 @@ Profile and optimize memory usage across the pipeline.
 Implement comprehensive recovery strategies for pipeline failures.
 
 **Tasks:**
-- [ ] Enhance [`pipeline_recovery.py`](../src/utils/pipeline_recovery.py) with state machine
+- [ ] Enhance [`pipeline_recovery.py`](../../src/utils/pipeline_recovery.py) with state machine
 - [ ] Add checkpoint system for each pipeline stage
 - [ ] Implement automatic retry with exponential backoff
 - [ ] Create pipeline state persistence (SQLite or Redis)
@@ -262,7 +262,7 @@ Enable distributed processing for large-scale backtesting.
 Enhance the existing caching system for better performance.
 
 **Tasks:**
-- [ ] Add Redis support to [`cache.py`](../src/utils/cache.py)
+- [ ] Add Redis support to [`cache.py`](../../src/utils/cache.py)
 - [ ] Implement cache warming for frequently accessed data
 - [ ] Add cache invalidation strategies
 - [ ] Create cache hit rate monitoring
@@ -440,7 +440,7 @@ Implement comprehensive data quality checks to catch issues before they impact m
 Build comprehensive schema validation for all data sources.
 
 **Tasks:**
-- [ ] Extend [`schemas.py`](../src/utils/schemas.py) with Pydantic models
+- [ ] Extend [`schemas.py`](../../src/utils/schemas.py) with Pydantic models
 - [ ] Add schema validation to all data fetchers
 - [ ] Create schema evolution tracking
 - [ ] Build schema compatibility checks
@@ -690,8 +690,8 @@ Achieve 85%+ code coverage and comprehensive test suite for all components.
 Add unit tests for all existing code.
 
 **Tasks:**
-- [ ] Test all data fetchers ([`src/data/*.py`](../src/data/))
-- [ ] Test all feature engineering ([`src/features/*.py`](../src/features/))
+- [ ] Test all data fetchers ([`src/data/*.py`](../../src/data))
+- [ ] Test all feature engineering ([`src/features/*.py`](../../src/features))
 - [ ] Test model training and prediction
 - [ ] Test utility functions
 - [ ] Test Streamlit components
@@ -710,7 +710,7 @@ Add unit tests for all existing code.
 Build end-to-end integration tests.
 
 **Tasks:**
-- [ ] Expand [`test_integration_pipeline.py`](../tests/test_integration_pipeline.py)
+- [ ] Expand [`test_integration_pipeline.py`](../../tests/test_integration_pipeline.py)
 - [ ] Add API integration tests
 - [ ] Test data pipeline end-to-end
 - [ ] Test model training pipeline
@@ -991,10 +991,10 @@ graph TD
 
 ### B. Documentation Updates Required
 
-- [ ] Update [`README.md`](../README.md) with new features
-- [ ] Update [`GOALS.md`](../GOALS.md) with Phase 2 metrics
+- [ ] Update [`README.md`](../../README.md) with new features
+- [ ] Update [`GOALS.md`](../../GOALS.md) with Phase 2 metrics
 - [ ] Create new ADRs for major decisions
-- [ ] Update [`DEVELOPER_ONBOARDING.md`](../docs/DEVELOPER_ONBOARDING.md)
+- [ ] Update [`DEVELOPER_ONBOARDING.md`](../DEVELOPER_ONBOARDING.md)
 - [ ] Create operational runbooks
 
 ### C. Training & Knowledge Transfer
