@@ -1,6 +1,6 @@
 # NFL Predictions Goals
 
-Last reviewed: 2026-11-14
+Last reviewed: 2026-11-15
 
 Primary goal: team win-probability AUC and Brier at or better than the no-vig market, measured on
 walk-forward history (`predictions/evaluation/walk_forward_vs_market.csv`, final published probability).
@@ -302,10 +302,10 @@ As of 2026-11-14. Remove items when done; move lasting results into the sections
 
 | Item | When | Notes |
 |---|---|---|
-| Review the first automated weekend | Sun 11-15 to Tue 11-17 | Sunday early and main slots, Monday, then Week 10 grading (Tue ~04:15 ET) and its alert. Confirm Week 10 publishes distinct probabilities with calibration `none`. Reviews: `logs/reviews/2026/`. |
-| Pick-time vs closing-line report (Step 4) | After 2-3 weeks of ledger data (~Week 12) | Uses `predictions/picks_of_record/` from Week 10 on. |
+| Review the first automated weekend | Mon 11-16 to Tue 11-17 | Sun 11-15: early slot failed twice (run-log encoding crash, fixed in PR #12); main slot succeeded, published 10:02 ET (MTB 8a38c37) with 12 distinct probabilities, calibration `none`, and the first 12 ledger rows. Still to check: Monday's slot, then Week 10 grading (Tue ~04:15 ET) and its alert. Reviews: `logs/reviews/2026/`. |
+| Pick-time vs closing-line report (Step 4) | After 2-3 weeks of ledger data (~Week 12) | Uses `predictions/picks_of_record/`; the ledger starts with the Week 10 Sunday main slot (2026-11-15). |
 | Xweather keep/drop decision | Around Week 13 | After 3-4 weeks of trial snapshots; see [docs/weather_sources_review.md](docs/weather_sources_review.md). |
-| Home-vs-market bias watch | Every run | `[market_bias]` lines in the debug log; see [docs/market_bias_watch.md](docs/market_bias_watch.md). |
+| Home-vs-market bias watch | Every run | `[market_bias]` lines in the debug log; see [docs/market_bias_watch.md](docs/market_bias_watch.md). 2026-11-15 Week 10 Sunday slate: WATCH, home below market in 12/12 games, mean -2.2 pts (t=-7.4); season (-0.6 pts, t=-3.8) and last 8 weeks also WATCH; all history -0.45 pts (INFO). Decide on a home-gap correction if it persists for another slate. |
 | Close the 2026 AUC gap to the market | Ongoing | Next model work: Step 5 feature pruning. |
 | ESPN player news speed-up | Optional | Shorten the ESPN player news fetch. |
 | 3 weather rows missing coordinates | Minor | Data cleanup. |
@@ -316,8 +316,9 @@ As of 2026-11-14. Remove items when done; move lasting results into the sections
 ## Known Data Issues
 
 - **Step-valued published probabilities, 2026 weeks 2-10 (fixed 2026-11-13, PR #2).** Before PR #2, `src.evaluation.calibrate_winprob` always fit an isotonic calibrator and prediction applied it, so `home_win_prob_calibrated` took only about 5-10 distinct values (e.g. 0.2245, 0.7377, 0.15). Visible repeats in the published probability: weeks 5-9 in every version, week 10's Thursday file (MTB 158762b), 2 of 8 week 3 versions, and the early week 4 versions (25eea5a, 0adf06d). Other September/early-October versions had distinct final values because a later stage spread them out. Since PR #2, calibration is chosen walk-forward and currently `none`; the 2026-11-14 Week 10 run is clean. Published picks are not regraded: they are what readers saw.
+- **Run-log encoding crash (fixed 2026-11-15, PR #12).** Under the scheduled task, `tools.weekly_run`'s stdout is a cp1252 file; a non-cp1252 character in pipeline output raised `UnicodeEncodeError` in `src/utils/run_log.py` and killed both Week 10 Sunday-early attempts 30 seconds in. The NE-DET London game therefore got no fresh pick. Manual runs never showed it because the VS Code terminal is UTF-8.
 - **Week 2 version MTB 7e1d595** repeats values in the raw model output itself (13 distinct of 16). Superseded the next day; low priority.
-- **MTB archive overwrites.** Later publishes replaced some weeks' archive CSVs with only the games not yet kicked off (e.g. week 4 at MTB 9d230e2 kept only ATL-NO). Weeks 4 and 9 were rebuilt per game from MTB git history (MTB PR #7). From Week 10 grading uses the picks-of-record ledger, so a later overwrite of the archive CSV no longer changes which pick is graded. If grading ever shows fewer games than the schedule, compare against the archive file's git history.
+- **MTB archive overwrites.** Later publishes replaced some weeks' archive CSVs with only the games not yet kicked off (e.g. week 4 at MTB 9d230e2 kept only ATL-NO). Weeks 4 and 9 were rebuilt per game from MTB git history (MTB PR #7). From the Week 10 Sunday main slot on, grading uses the picks-of-record ledger, so a later overwrite of the archive CSV no longer changes which pick is graded. If grading ever shows fewer games than the schedule, compare against the archive file's git history.
 
 ## Operating Roadmap
 
@@ -608,6 +609,7 @@ Principle: keep archived prediction snapshots immutable as the public record of 
 - [x] Grade automatically: the dispatcher grades each week from 8h after its last kickoff, once every game is final, then publishes results to MTB and alerts (PR #10).
 - [x] Backfill 2026 weeks 2-9. Week 8 grades from a published override built from the site JSON. Weeks 4 and 9 were regraded on 2026-11-14 from per-game picks of record rebuilt from MTB git history (MTB restored its archive files to match, MTB PR #7).
 - Not graded on purpose: week 1 (no published picks); week 5 TB-DAL and PHI-JAX and week 6 SEA-DEN and HOU-JAX (left out by decision on 2026-11-14; their only pre-kickoff versions, MTB 0547f57 and fdab881, came from early-week runs whose probabilities were badly step-valued, see Known Data Issues); week 7 NE-CHI (first publish was after kickoff).
+- Week 10 WAS-NYG (Thursday) and NE-DET (London, 09:30 ET Sunday) have no ledger rows: the ledger started with the Sunday main slot. They will grade on the MTB archive CSV (Thursday's file, MTB 158762b, which still has step-valued probabilities), which is what the site showed.
 - [x] Implement a weekly join from published predictions to finalized game results using `season`, `week`, and `game_id`.
 - [x] Publish weekly and cumulative artifacts: `predictions/evaluation/live_prediction_vs_actual_week_NN.csv`, `predictions/evaluation/live_prediction_vs_actual.csv`, `predictions/evaluation/live_prediction_vs_actual_summary_week_NN.csv`, `predictions/evaluation/live_prediction_vs_actual_summary.csv`, and `predictions/evaluation/live_prediction_vs_actual_segments_week_NN.csv`.
 - [x] Include core per-game grading fields: final scores, actual winner, model pick result, SU correctness, predicted margin error, Brier/log-loss contribution, ATS result where a valid line exists, moneyline result, moneyline unit profit when odds are available, and market-policy context fields.
