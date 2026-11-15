@@ -50,8 +50,7 @@ def test_noaa_skips_international_venues_and_survives_lookup_errors(tmp_path, mo
 
 
 def test_noaa_job_is_optional_in_pipeline():
-    import inspect
-
     from tools import run_pipeline
 
-    assert inspect.getsource(run_pipeline).count('optional_jobs = {"yahoo_static", "noaa_weather"}') == 2
+    # One constant drives both the threaded and async data-job runners.
+    assert {"yahoo_static", "noaa_weather"} <= run_pipeline.OPTIONAL_DATA_JOBS

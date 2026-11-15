@@ -51,6 +51,22 @@ run, and sends an alert.
   `python -m tools.publish_mtb_csvs --season 2026 --results-only`. State key:
   `grade_<season>_wkNN` in `logs/dispatcher/state.json` (delete it to retry).
 
+## When something dies
+
+- **A data job** (nflverse, ESPN, etc.) that exits non-zero logs
+  `[pipeline] ERROR: data job <name> died: <exit status> (attempt 1/2)` with Windows crash codes
+  decoded (e.g. `0xC0000409: stack buffer overrun / fail-fast`), waits 30s and runs once more
+  (`DATA_JOB_RETRIES` / `DATA_JOB_RETRY_DELAY` in `tools/run_pipeline.py`). If it still fails, one
+  line names every failed job (`[pipeline] ERROR: N required data job(s) failed; stopping the run`)
+  and the run exits non-zero. Optional jobs (`yahoo_static`, `noaa_weather`) only warn. A job that
+  hangs is not timed out.
+- **The run-log wrapper itself** (`src/utils/run_log.py`) failing writes
+  `[run_log] ERROR: run_log wrapper failed (...); pipeline stopped` plus the traceback into the
+  debug log, stops the pipeline it launched (so nothing publishes unwatched), and still writes the
+  run summary footer. The 2026-11-15 Sunday-early failures were this case (a cp1252 console and a
+  tqdm progress bar), which PR #12 fixed; before, the traceback only reached
+  `logs/dispatcher/dispatcher.log`.
+
 ## Leakage guards
 
 - Training excludes the whole current week (`--live-run`), so later-in-week runs never

@@ -103,6 +103,63 @@ class Job:
     command: Sequence[str]
 
 
+OPTIONAL_DATA_JOBS = frozenset({"yahoo_static", "noaa_weather"})
+DATA_JOB_RETRIES = 1          # a failed data job is re-run this many times before the run fails
+DATA_JOB_RETRY_DELAY = 30.0   # seconds between attempts (transient network/API errors)
+
+# Windows NTSTATUS codes a crashed child commonly exits with.
+_WINDOWS_EXIT_CODES = {
+    0xC0000005: "access violation",
+    0xC0000409: "stack buffer overrun / fail-fast",
+    0xC00000FD: "stack overflow",
+    0xC0000017: "out of memory",
+    0xC000013A: "terminated by Ctrl+C / console close",
+    0xC0000142: "DLL initialization failed",
+}
+
+
+def describe_exit(returncode: int) -> str:
+    """Human-readable exit status, e.g. ``exit code 3221226505 (0xC0000409: stack buffer overrun / fail-fast)``."""
+    code = returncode & 0xFFFFFFFF  # Windows may report NTSTATUS signed (negative) or unsigned
+    if code & 0xF0000000 == 0xC0000000:  # NTSTATUS error (0xCxxxxxxx)
+        name = _WINDOWS_EXIT_CODES.get(code, "crashed")
+        return f"exit code {returncode} (0x{code:08X}: {name})"
+    if returncode < 0:
+        return f"killed by signal {-returncode}"
+    return f"exit code {returncode}"
+
+
+class DataJobError(RuntimeError):
+    """A required data job still failed after its retries."""
+
+    def __init__(self, job_name: str, returncode: int, attempts: int):
+        self.job_name = job_name
+        self.returncode = returncode
+        self.attempts = attempts
+        super().__init__(f"data job {job_name} failed: {describe_exit(returncode)} after {attempts} attempt(s)")
+
+
+def _data_job_failure(job: Job, returncode: int, attempt: int, attempts: int) -> bool:
+    """Log one failed attempt; return True when it should be retried."""
+    print(f"[pipeline] ERROR: data job {job.name} died: {describe_exit(returncode)} (attempt {attempt}/{attempts})")
+    if attempt < attempts:
+        print(f"[pipeline] Retrying data job {job.name} in {DATA_JOB_RETRY_DELAY:.0f}s")
+        return True
+    return False
+
+
+def _raise_data_job_failures(errors: Sequence[BaseException]) -> None:
+    """Report every failed required data job in one clear line, then raise."""
+    if not errors:
+        return
+    parts = [str(e) for e in errors]
+    print(f"[pipeline] ERROR: {len(errors)} required data job(s) failed; stopping the run: " + "; ".join(parts))
+    first = errors[0]
+    if len(errors) == 1 and isinstance(first, Exception):
+        raise first
+    raise RuntimeError("Data jobs failed: " + "; ".join(parts)) from first
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """CLI parser covering data years, concurrency, GPU flags, and dry-run mode."""
     parser = argparse.ArgumentParser(
@@ -503,7 +560,9 @@ def run_job(job: Job, env: dict[str, str] | None = None, dry_run: bool = False) 
                 "treating as success (likely Windows fastparquet shutdown issue)."
             )
             return
-        raise RuntimeError(f"Job {job.name} failed with exit code {result.returncode}")
+        err = RuntimeError(f"Job {job.name} failed with {describe_exit(result.returncode)}")
+        err.returncode = result.returncode  # type: ignore[attr-defined]
+        raise err
     print(f"[pipeline] Completed {job.name}")
 
 
@@ -540,27 +599,42 @@ def run_jobs_parallel(
         asyncio.run(_async_run_jobs_parallel(jobs, max_workers, launch_delay, env))
         return
 
-    optional_jobs = {"yahoo_static", "noaa_weather"}
     if max_workers <= 1 or len(jobs) <= 1:
         run_jobs_sequential(jobs, env, dry_run)
         return
 
     launch_delay = max(launch_delay, 0.0)
     futures: dict[concurrent.futures.Future[None], Job] = {}
+    errors: list[BaseException] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         for idx, job in enumerate(jobs):
             if idx > 0 and launch_delay > 0:
                 time.sleep(launch_delay)
-            futures[executor.submit(run_job, job, env, dry_run)] = job
+            futures[executor.submit(_run_data_job_with_retry, job, env, dry_run)] = job
         for future in concurrent.futures.as_completed(futures):
             job = futures[future]
             try:
                 future.result()
-            except Exception as exc:  # pragma: no cover - propagate with context
-                if job.name in optional_jobs:
+            except Exception as exc:
+                if job.name in OPTIONAL_DATA_JOBS:
                     print(f"[pipeline] Warning: optional job {job.name} failed ({exc}); continuing.")
                     continue
-                raise RuntimeError(f"Data job {job.name} failed") from exc
+                errors.append(exc)
+    _raise_data_job_failures(errors)
+
+
+def _run_data_job_with_retry(job: Job, env: dict[str, str] | None, dry_run: bool) -> None:
+    """Threaded data job with the same retry/logging policy as the async runner."""
+    attempts = 1 if job.name in OPTIONAL_DATA_JOBS else 1 + DATA_JOB_RETRIES
+    for attempt in range(1, attempts + 1):
+        try:
+            run_job(job, env=env, dry_run=dry_run)
+            return
+        except RuntimeError as exc:
+            code = getattr(exc, "returncode", 1)
+            if not _data_job_failure(job, code, attempt, attempts):
+                raise DataJobError(job.name, code, attempts) from exc
+            time.sleep(DATA_JOB_RETRY_DELAY)
 
 
 async def _async_run_job(
@@ -570,32 +644,39 @@ async def _async_run_job(
     launch_delay: float,
     slot_index: int,
 ) -> None:
-    """Run a single pipeline job asynchronously under a concurrency semaphore."""
-    optional_jobs = {"yahoo_static", "noaa_weather"}
+    """Run a single pipeline job asynchronously under a concurrency semaphore.
+
+    A required job that exits non-zero is logged with its decoded exit status and
+    retried ``DATA_JOB_RETRIES`` times; if it still fails, ``DataJobError`` is raised.
+    Optional jobs log a warning and never fail the run.
+    """
     await asyncio.sleep(slot_index * launch_delay)
 
     async with semaphore:
         command = list(job.command)
         if command and command[0] == "python":
             command[0] = PYTHON_EXECUTABLE
-        print(f"[pipeline] Starting {job.name} (async): {format_command(command)}")
-
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            env=env,
-            stdout=None,  # inherit — subprocess writes directly to terminal
-            stderr=None,
-        )
-        returncode = await proc.wait()
-
-        if returncode != 0:
-            msg = f"Job {job.name} failed with exit code {returncode}"
-            if job.name in optional_jobs:
-                print(f"[pipeline] Warning: optional async job {job.name} failed (exit {returncode}); continuing.")
+        optional = job.name in OPTIONAL_DATA_JOBS
+        attempts = 1 if optional else 1 + DATA_JOB_RETRIES
+        for attempt in range(1, attempts + 1):
+            label = "" if attempt == 1 else f" (retry {attempt - 1}/{attempts - 1})"
+            print(f"[pipeline] Starting {job.name} (async){label}: {format_command(command)}")
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                env=env,
+                stdout=None,  # inherit — subprocess writes directly to terminal
+                stderr=None,
+            )
+            returncode = await proc.wait()
+            if returncode == 0:
+                print(f"[pipeline] Completed {job.name} (async)")
                 return
-            raise RuntimeError(msg)
-
-        print(f"[pipeline] Completed {job.name} (async)")
+            if optional:
+                print(f"[pipeline] Warning: optional async job {job.name} failed ({describe_exit(returncode)}); continuing.")
+                return
+            if not _data_job_failure(job, returncode, attempt, attempts):
+                raise DataJobError(job.name, returncode, attempts)
+            await asyncio.sleep(DATA_JOB_RETRY_DELAY)
 
 
 async def _async_run_jobs_parallel(
@@ -613,10 +694,7 @@ async def _async_run_jobs_parallel(
         for idx, job in enumerate(jobs)
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    errors = [r for r in results if isinstance(r, Exception)]
-    if errors:
-        # Re-raise first non-optional failure
-        raise errors[0]
+    _raise_data_job_failures([r for r in results if isinstance(r, BaseException)])
 
 
 

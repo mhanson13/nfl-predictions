@@ -124,7 +124,7 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
    ```powershell
    python -m tools.weekly_run            # add --dry-run to see the plan only
    ```
-   - Reads the schedule to pick the slate and the phase of the week (`early_week`, `pre_kickoff`, `in_progress`), builds the live `run_pipeline` command below with the right week/season/archive flags, and always writes a debug log to `logs/pipeline/<season>/output_wk<NN>_<phase>_<stamp>_debug.txt` (copied to `output_wk<N>_debug.txt`). Extra `run_pipeline` flags go after `--`. See [docs/weekly_run.md](docs/weekly_run.md).
+   - Reads the schedule to pick the slate and the phase of the week (`early_week`, `pre_kickoff`, `in_progress`), builds the live `run_pipeline` command below with the right week/season/archive flags, and always writes a debug log to `logs/pipeline/<season>/output_wk<NN>_<phase>_<stamp>_debug.txt` (copied to `output_wk<N>_debug.txt`). Extra `run_pipeline` flags go after `--`. See [docs/weekly_run.md](docs/weekly_run.md). A data job that dies is logged with its decoded exit status and retried once; if the logger itself fails, the error and traceback go into the debug log and the pipeline is stopped (see [docs/automation.md](docs/automation.md#when-something-dies)).
    - Every run prints the home-vs-market bias monitor; see [docs/market_bias_watch.md](docs/market_bias_watch.md).
 
 3. **Full run (manual)**

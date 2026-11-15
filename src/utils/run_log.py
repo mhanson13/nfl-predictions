@@ -12,12 +12,14 @@ where ``<N>`` is the NFL week being predicted (regular season 1-18, postseason
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import re
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, TextIO
@@ -146,6 +148,23 @@ def footer(rc: int, started: float, stages: dict[str, list[float]], issues: list
     return "\n".join(out)
 
 
+def _stop(proc: subprocess.Popen) -> None:
+    """Terminate ``proc`` (then kill it) if it is still running."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def _safe_console(text: str) -> None:
+    with contextlib.suppress(Exception):
+        write(text, [sys.stdout])
+
+
 def run_logged(command: Sequence[str], header: str, log_paths: Sequence[Path]) -> int:
     """Run ``command``; stream its output to the console and every path in ``log_paths``."""
     for path in log_paths:
@@ -171,21 +190,36 @@ def run_logged(command: Sequence[str], header: str, log_paths: Sequence[Path]) -
             for raw in iter(proc.stdout.readline, b""):
                 line = raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
                 write(line, streams)
-                text = line.strip()
-                match = _STAGE_RE.match(text)
-                if match:
-                    stages.setdefault(match.group(2), []).append(time.time())
-                if is_issue_line(text):
-                    key = re.sub(r"\d+", "#", text)[:160]
-                    if key not in seen:
-                        seen.add(key)
-                        issues.append(text)
+                # Progress bars redraw with \r, so a "[pipeline] Starting ..." line can
+                # follow one on the same physical line; scan each \r-separated piece.
+                for piece in line.split("\r"):
+                    text = piece.strip()
+                    match = _STAGE_RE.match(text)
+                    if match:
+                        stages.setdefault(match.group(2), []).append(time.time())
+                    if is_issue_line(text):
+                        key = re.sub(r"\d+", "#", text)[:160]
+                        if key not in seen:
+                            seen.add(key)
+                            issues.append(text)
             rc = proc.wait()
         except KeyboardInterrupt:
             proc.terminate()
             rc = proc.wait()
             issues.insert(0, "Interrupted by user (Ctrl+C)")
-        write(footer(rc, started, stages, issues, log_paths), streams)
+        except Exception as exc:
+            # The logger itself failed. Stop the child (it must never run unwatched, e.g.
+            # publishing to MTB) and put the reason in the log files and the footer.
+            _stop(proc)
+            rc = proc.returncode if proc.returncode not in (None, 0) else 1
+            reason = f"run_log wrapper failed ({exc.__class__.__name__}: {exc}); pipeline stopped"
+            issues.insert(0, reason)
+            details = f"\n[run_log] ERROR: {reason}\n{traceback.format_exc()}"
+            write(details, logs)
+            _safe_console(details)
+        summary = footer(rc, started, stages, issues, log_paths)
+        write(summary, logs)
+        _safe_console(summary)
     finally:
         for log in logs:
             log.close()
