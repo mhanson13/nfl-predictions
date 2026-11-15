@@ -61,3 +61,18 @@ def test_debug_run_reexecs_under_logger_only_once(monkeypatch):
     monkeypatch.delenv(run_log.CHILD_ENV_FLAG, raising=False)
     assert run_pipeline.main(["--debug", "--prediction-week", "10", "--live-run", "--season", "2026"]) == 0
     assert calls == [["--debug", "--prediction-week", "10", "--live-run", "--season", "2026"]]
+
+
+def test_write_survives_console_that_cannot_encode():
+    """The scheduled task's stdout is cp1252; a non-cp1252 character must not abort the run."""
+    import io
+
+    from src.utils import run_log
+
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252", newline="\n")
+    log = io.StringIO()
+    run_log.write("arrow → check ✓\n", [console, log])
+    console.flush()
+    assert raw.getvalue().decode("cp1252") == "arrow ? check ?\n"
+    assert log.getvalue() == "arrow → check ✓\n"
