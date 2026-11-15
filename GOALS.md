@@ -312,6 +312,8 @@ As of 2026-11-14. Remove items when done; move lasting results into the sections
 | `test_rolling_average_properties` failure | Minor | Fails on main too. |
 | Step 8 cleanup | Minor | Split `src/models/train.py` and `src/predict/predict_upcoming.py`. |
 | Find the stage that sometimes un-stepped final probabilities in September/early-October runs | Record only | No current effect; see Known Data Issues. |
+| Investigate: season-to-date published-pick stats on MTB | Next stats work | `analysis/model_metrics_week_NN.csv` (the site's stats page) only has latest-graded-week published-pick rows. On 2026-11-15 that was Week 9, 15 games: 86.7% SU, AUC 0.98, +19% ML ROI, too small a sample to headline. The season record (75-39-1, 65.8%, 115 games, +5.92 units) appears only in blog posts. Idea: add season-to-date rows (record, accuracy, Brier, ATS, ML units) and label the weekly rows as one week's sample. Additive rows only; MTB needs a small display change. |
+| Investigate: model-vs-market AUC on MTB | Next stats work | The stats page compares Brier to Vegas (0.2109 vs 0.2110) but not AUC (0.7226 vs 0.7240 overall, 0.718 vs 0.727 in 2026, from `walk_forward_vs_market.csv`). Idea: add an AUC-vs-market row. Also consider saying plainly that there is no betting edge yet: model/Vegas agreement is 98.2% (43 disagreement games), model-side ML ROI -3.1%, and the policy rows read `unavailable`/`no_bet`. |
 
 ## Known Data Issues
 
