@@ -256,8 +256,11 @@ def grading_summary(state: dict) -> Optional[str]:
 def send_grading_alert(season: int, week: int, result: dict, *, final: bool) -> None:
     from src.utils.alerts import send_alert
 
+    from tools.review_run import blog_failure_lines, blog_failures, with_blog_note
+
     status = result["status"]
-    label = "RESULTS" if status == "success" else "RESULTS FAILED"
+    blog = blog_failures(result.get("publish_log"))
+    label = with_blog_note("RESULTS" if status == "success" else "RESULTS FAILED", blog)
     lines = [
         f"Week: {season} week {week}",
         f"Grade exit: {result.get('grade_rc')}   MTB publish exit: {result.get('publish_rc')}",
@@ -268,6 +271,7 @@ def send_grading_alert(season: int, week: int, result: dict, *, final: bool) -> 
     if status != "success":
         lines.append("Results were not published. " + (
             "Giving up; grade by hand (docs/automation.md)." if final else "Will retry within the hour."))
+    lines += blog_failure_lines(blog)
     body = "\n".join(lines)
     if result.get("report"):
         body += "\n\n" + result["report"]
@@ -392,7 +396,10 @@ def run_slot(slot: Slot, args: argparse.Namespace, *, runner: Callable = _run,
 def send_slot_alert(slot: Slot, result: dict, review_path: Optional[Path]) -> None:
     from src.utils.alerts import send_alert
 
-    status = result["status"].upper()
+    from tools.review_run import blog_failure_lines, blog_failures, with_blog_note
+
+    blog = blog_failures(result.get("publish_log"))
+    status = with_blog_note(result["status"].upper(), blog)
     lines = [
         f"Slot: {slot.slot_id}  (season {slot.season} week {slot.week}, {len(slot.game_ids)} games that day)",
         f"First kickoff: {slot.first_kickoff.astimezone(EASTERN):%a %Y-%m-%d %H:%M} ET",
@@ -403,6 +410,7 @@ def send_slot_alert(slot: Slot, result: dict, review_path: Optional[Path]) -> No
         lines.append(f"Publish log: {result['publish_log']}")
     if result["status"] != "success":
         lines.append("Nothing was published after the failure; the last good picks stay live.")
+    lines += blog_failure_lines(blog)
     grading = grading_summary(load_state())
     if grading:
         lines.append(grading)
