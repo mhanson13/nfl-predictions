@@ -28,6 +28,29 @@ PROMPT_PATH = Path(__file__).with_name("review_prompt.md")
 LEDGER_GLOB = "predictions/picks_of_record/picks_ledger_{season}.csv"
 MOVE_THRESHOLD = 0.05
 KEY_PREFIXES = ("[picks_of_record]", "[market_bias]", "[weather_trial]", "[calibrate] selected", "[pipeline] Live run")
+# MTB scripts/blog-run.ts: a post that failed its checks, or a write/rewrite that errored.
+# Either way the predictions/results published and the previous post (if any) stays up.
+BLOG_FAILURE_RE = re.compile(r"^\[blog\] .*(\bNOT published\b|\bfailed: )")
+
+
+def blog_failures(publish_log: Optional[Path | str]) -> list[str]:
+    """``[blog] ... NOT published`` / ``[blog] ... failed: ...`` lines anywhere in the publish log."""
+    if not publish_log or not Path(publish_log).exists():
+        return []
+    text = Path(publish_log).read_text(encoding="utf-8", errors="replace")
+    return [line.strip() for line in text.splitlines() if BLOG_FAILURE_RE.match(line.strip())]
+
+
+def with_blog_note(label: str, failures: Sequence[str]) -> str:
+    """Alert label with a heads-up suffix; the run's status itself is unchanged."""
+    return f"{label} (blog post failed)" if failures else label
+
+
+def blog_failure_lines(failures: Sequence[str]) -> list[str]:
+    if not failures:
+        return []
+    return ["", "Blog post problem (heads-up only; predictions/results published; any existing post stays up):",
+            *[f"  {line}" for line in failures]]
 
 
 def find_claude() -> Optional[str]:
@@ -91,6 +114,9 @@ def build_facts(slot: str, status: str, debug_log: Optional[Path], publish_log: 
     if publish_log and publish_log.exists():
         tail = publish_log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
         parts += ["", "## Site publish (last lines)", "```", *tail, "```"]
+        failures = blog_failures(publish_log)
+        if failures:
+            parts += ["", "## Blog post failed (heads-up; predictions published)", *[f"- `{f}`" for f in failures]]
     season = slot.split("_", 1)[0]
     ledger_path = Path(LEDGER_GLOB.format(season=season))
     if ledger_path.exists():
