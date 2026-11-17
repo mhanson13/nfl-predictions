@@ -163,3 +163,26 @@ def test_record_stamps_rows_with_predictions_file_time(tmp_path):
                features_path=tmp_path / "missing.parquet", out_dir=tmp_path, slot="thu")
     led = pd.read_csv(por.ledger_path(2026, tmp_path))
     assert set(led["recorded_at"]) == {written.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+def test_warning_names_the_static_features_that_changed(tmp_path, capsys):
+    preds_path, feats_path = tmp_path / "predictions.csv", tmp_path / "features.parquet"
+    _preds().to_csv(preds_path, index=False)
+    gid = "2026_10_C_D"
+    feats = pd.DataFrame({"game_id": ["2026_10_A_B", gid], "def_plays_allowed_home": [900.0, 2263.0],
+                          "pass_epa_rolling3_diff": [0.1, 0.2], "sched_spread_close_diff": [-3.0, -4.0]})
+    start = datetime.now(timezone.utc) - timedelta(minutes=5)
+    feats.to_parquet(feats_path)
+    por.record(2026, 10, start, now=KICK_THU - timedelta(hours=3), predictions_path=preds_path,
+               features_path=feats_path, out_dir=tmp_path, slot="thu")
+    # Next run: a pick-time input and one slow-moving column change.
+    feats.assign(def_plays_allowed_home=[900.0, 2386.0], sched_spread_close_diff=[-3.0, -5.5]).to_parquet(feats_path)
+    por.record(2026, 10, start + timedelta(minutes=1), now=KICK_SUN - timedelta(hours=3), predictions_path=preds_path,
+               features_path=feats_path, out_dir=tmp_path, slot="sun")
+    snaps = pd.read_parquet(por.snapshots_path(2026, tmp_path))
+    assert snaps.groupby("game_id")["static_feature_hash"].nunique().to_dict() == {"2026_10_A_B": 1, gid: 2}
+    capsys.readouterr()
+    por.resolve(2026, now=KICK_SUN + timedelta(hours=4), out_dir=tmp_path, schedule_path=tmp_path / "none.parquet")
+    out = capsys.readouterr().out
+    assert f"non-pick-time features changed between runs for 1 games: ['{gid}']" in out
+    assert f"{gid}: 1 changed: def_plays_allowed_home 2263->2386" in out

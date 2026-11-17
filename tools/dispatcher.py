@@ -9,8 +9,10 @@ Wed/Fri/holiday games. A day with morning (international) games plus later games
 gets two slots: ``<Day>-early`` for the morning games and ``<Day>`` for the rest. The launch window opens ``--start-lead`` before the day's
 first kickoff (default 3h30m) and stays open while at least one of that day's
 games is still ``--last-start-lead`` or more away (default 2h45m), so a missed
-window (PC asleep) still catches the later games. A failed slot is retried once
-while the window is open.
+window (PC asleep) still catches the later games. A failed slot gets up to
+``MAX_ATTEMPTS`` tries while the window is open; an attempt that fails within
+``QUICK_FAIL`` (a crash, not a slow run) is retried in the same tick after
+``QUICK_RETRY_DELAY`` instead of waiting 15 minutes for the next one.
 
 For a slot it:
   1. runs ``tools.weekly_run`` for the slot's season/week (debug log + picks of
@@ -54,7 +56,9 @@ LOCK_PATH = STATE_DIR / "running.lock"
 DEFAULT_MTB_REPO = Path(r"C:\Code\mtb")
 START_LEAD = timedelta(hours=3, minutes=30)
 LAST_START_LEAD = timedelta(hours=2, minutes=45)
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
+QUICK_FAIL = timedelta(minutes=10)      # a failure this fast is a crash; retry right away
+QUICK_RETRY_DELAY = 60.0                # seconds before that in-tick retry
 STALE_LOCK = timedelta(hours=4)
 SLOT_ENV = "NFL_RUN_SLOT"
 EARLY_CUTOFF_HOUR_ET = 12  # games before noon ET (London/Dublin/Berlin) get their own slot
@@ -408,6 +412,41 @@ def send_slot_alert(slot: Slot, result: dict, review_path: Optional[Path]) -> No
     send_alert(f"[NFL pipeline] {status}: {slot.slot_id}", body)
 
 
+def run_slot_attempts(
+    slot: Slot,
+    args: argparse.Namespace,
+    state: dict,
+    *,
+    start_lead: timedelta = START_LEAD,
+    last_start_lead: timedelta = LAST_START_LEAD,
+    max_attempts: int = MAX_ATTEMPTS,
+    runner: Callable = None,
+    alert: Optional[Callable] = None,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """Run ``slot``; retry at once (same tick) while attempts fail fast and the window is open."""
+    while True:
+        rec = state.setdefault(slot.slot_id, {})
+        rec["attempts"] = int(rec.get("attempts", 0)) + 1
+        rec["status"] = "running"
+        save_state(state)
+        began = clock()
+        result = run_slot(slot, args, alert=alert, **({"runner": runner} if runner else {}))
+        rec.update({k: v for k, v in result.items() if k != "slot"})
+        save_state(state)
+        print(f"[dispatcher] {slot.slot_id}: {result['status']} (attempt {rec['attempts']}/{max_attempts})")
+        if result["status"] == "success" or rec["attempts"] >= max_attempts:
+            return result
+        if clock() - began >= QUICK_FAIL:
+            return result  # a slow failure; the next tick retries if the window is still open
+        sleep(QUICK_RETRY_DELAY)
+        if not slot.window_open(clock(), start_lead, last_start_lead):
+            print(f"[dispatcher] {slot.slot_id}: launch window closed; no more retries")
+            return result
+        print(f"[dispatcher] {slot.slot_id}: failed after {(clock() - began).total_seconds():.0f}s; retrying now")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE_PATH)
@@ -462,14 +501,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             save_state(state)
             print(f"[dispatcher] {grade_key(*grade)}: {rec['status']}")
             return 0 if rec["status"] in ("success", "pending") else 1
-        rec = state.setdefault(slot.slot_id, {})
-        rec["attempts"] = int(rec.get("attempts", 0)) + 1
-        rec["status"] = "running"
-        save_state(state)
-        result = run_slot(slot, args, alert=None if args.no_alert else send_slot_alert)
-        rec.update({k: v for k, v in result.items() if k != "slot"})
-        save_state(state)
-        print(f"[dispatcher] {slot.slot_id}: {result['status']}")
+        result = run_slot_attempts(slot, args, state, start_lead=start_lead, last_start_lead=last_lead,
+                                   alert=None if args.no_alert else send_slot_alert)
         return 0 if result["status"] == "success" else 1
     finally:
         keep_awake(False)

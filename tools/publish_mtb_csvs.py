@@ -76,6 +76,13 @@ def live_results_artifacts(source_root: Path, *, include_cumulative: bool = True
     return artifacts
 
 
+def game_venues_artifact(season: int) -> CsvArtifact:
+    # Every game of the season with venue_name/city/country, neutral_site and coordinates
+    # (src.utils.venues.game_venue_table), so past weeks have venues too.
+    name = f"game_venues_{season}.csv"
+    return CsvArtifact(Path("predictions") / name, Path("reference") / name, never_required=True)
+
+
 def picks_of_record_artifacts(season: int) -> list[CsvArtifact]:
     # Per-game picks of record (src.evaluation.picks_of_record). Locked rows never
     # change after their deadline, so these are always copied, not archived.
@@ -371,6 +378,7 @@ def build_artifact_plan(
 
     if season is not None:
         artifacts.extend(picks_of_record_artifacts(season))
+        artifacts.append(game_venues_artifact(season))
 
     return artifacts
 

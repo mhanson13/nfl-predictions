@@ -54,3 +54,32 @@ def test_noaa_job_is_optional_in_pipeline():
 
     # One constant drives both the threaded and async data-job runners.
     assert {"yahoo_static", "noaa_weather"} <= run_pipeline.OPTIONAL_DATA_JOBS
+
+
+def test_public_venue_columns_for_neutral_and_home_games():
+    from src.utils.venues import PUBLIC_VENUE_COLUMNS, attach_venue_columns, game_venue_table
+
+    sched = _schedule().assign(stadium=["Tottenham Hotspur Stadium", "Lambeau Field", "Huntington Bank Field"],
+                               stadium_id=["LON02", "GNB00", "CLE00"])
+    sched.loc[sched.game_id == "2026_10_MIN_GB", ["stadium", "stadium_id", "location"]] = [
+        "FC Bayern Munich Stadium", "MUN01", "Neutral"]  # a Munich game nflverse files under GB
+    table = game_venue_table(sched).set_index("game_id")
+    munich = table.loc["2026_10_MIN_GB"]
+    assert munich["venue_city"] == "Munich" and munich["venue_country"] == "Germany" and bool(munich["neutral_site"])
+    assert round(munich["venue_lat"], 2) == 48.22 and round(munich["venue_lon"], 2) == 11.62
+    assert bool(table.loc["2026_04_IND_WAS", "neutral_site"]) and table.loc["2026_04_IND_WAS", "venue_city"] == "London"
+    assert not bool(table.loc["2026_10_HOU_CLE", "neutral_site"]) and table.loc["2026_10_HOU_CLE", "venue_country"] == "USA"
+
+    preds = pd.DataFrame({"game_id": ["2026_10_MIN_GB"], "home_win_prob": [0.6], "venue_lat": [44.5], "venue_lon": [-88.06]})
+    out = attach_venue_columns(preds, sched)
+    assert set(PUBLIC_VENUE_COLUMNS) <= set(out.columns)
+    assert out.loc[0, "home_win_prob"] == 0.6 and round(out.loc[0, "venue_lat"], 2) == 48.22
+
+
+def test_game_venues_file_published_with_predictions_only():
+    from tools import publish_mtb_csvs as pub
+
+    dests = [str(a.destination).replace("\\", "/") for a in pub.build_artifact_plan(season=2026, week=11)]
+    assert "reference/game_venues_2026.csv" in dests
+    graded = pub.build_artifact_plan(season=2026, week=10, results_only=True)
+    assert not any("game_venues" in str(a.destination) for a in graded)

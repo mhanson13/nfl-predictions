@@ -5930,6 +5930,19 @@ def main():
 
 
 
+    # Venue columns for the site (name, city, country, neutral site, coordinates).
+    # Output only: the model's probabilities are already final at this point.
+    try:
+        from src.utils.venues import PUBLIC_VENUE_COLUMNS, attach_venue_columns, game_venue_table
+        venue_schedule = pd.read_parquet(RAW_DIR / "nfl_schedules.parquet")
+        preds = attach_venue_columns(preds, venue_schedule)
+        season_table = game_venue_table(venue_schedule[venue_schedule["season"] == season])
+        venues_out = Path(args.save).parent / f"game_venues_{season}.csv"
+        season_table.to_csv(venues_out, index=False, lineterminator="\n")
+        print(f"[predict][venues] attached {PUBLIC_VENUE_COLUMNS}; wrote {len(season_table)} games -> {venues_out}")
+    except Exception as exc:  # never block predictions on venue labels
+        print(f"[predict][venues] warning: venue columns unavailable: {exc}")
+
     # Optionally save full dump (consolidate decision columns: keep only pick_expl)
 
     if args.dump_all:
@@ -6062,6 +6075,9 @@ def main():
 
                 curated.append(col)
 
+    for col in ("venue_name", "venue_city", "venue_country", "neutral_site", "venue_lat", "venue_lon"):
+        if col not in curated:
+            curated.append(col)
     curated_cols = [c for c in curated if c in preds.columns]
 
     _backup_existing_file(Path(args.save))

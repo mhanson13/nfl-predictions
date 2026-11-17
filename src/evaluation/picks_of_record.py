@@ -15,7 +15,9 @@ Each row also stores the market line at pick time and a fingerprint of the
 game's slow-moving features (everything except odds, injuries, news, weather).
 Between a game's first and last pick only those pick-time inputs may change;
 ``static_features_changed`` flags anything else, which would indicate leakage
-from games played earlier in the same week.
+from games played earlier in the same week. The fingerprinted values are also kept
+locally (``feature_snapshots_<season>.parquet``, one copy per game and fingerprint,
+never published) so the warning can name the columns that changed.
 
 Usage:
     python -m src.evaluation.picks_of_record --record --season 2026 --week 10 \
@@ -76,6 +78,54 @@ def records_path(season: int, out_dir: Path = OUT_DIR) -> Path:
     return out_dir / f"picks_of_record_{season}.csv"
 
 
+def snapshots_path(season: int, out_dir: Path = OUT_DIR) -> Path:
+    return out_dir / f"feature_snapshots_{season}.parquet"
+
+
+def save_feature_snapshots(values: pd.DataFrame, hashes: pd.Series, path: Path) -> int:
+    """Keep each (game, fingerprint)'s static values in long form; return games added."""
+    if values.empty:
+        return 0
+    long = values.rename_axis("game_id").reset_index().melt(id_vars="game_id", var_name="feature", value_name="value")
+    long["game_id"] = long["game_id"].astype(str)
+    long["static_feature_hash"] = long["game_id"].map(hashes).astype(str)
+    existing = pd.read_parquet(path) if path.exists() else None
+    if existing is not None:
+        seen = set(zip(existing["game_id"].astype(str), existing["static_feature_hash"].astype(str)))
+        long = long[[k not in seen for k in zip(long["game_id"], long["static_feature_hash"])]]
+    if long.empty:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    combined = long if existing is None else pd.concat([existing, long], ignore_index=True)
+    combined.to_parquet(path, index=False)
+    return int(long["game_id"].nunique())
+
+
+def changed_static_features(records: pd.DataFrame, ledger: pd.DataFrame, path: Path) -> dict[str, list[str]]:
+    """For flagged games, the features that differ between the first and the latest fingerprint."""
+    if not path.exists() or records.empty or "static_features_changed" not in records:
+        return {}
+    flagged = records.loc[records["static_features_changed"].astype(bool), "game_id"].astype(str).tolist()
+    if not flagged:
+        return {}
+    snaps = pd.read_parquet(path)
+    out: dict[str, list[str]] = {}
+    for gid in flagged:
+        hashes = ledger.loc[ledger["game_id"].astype(str) == gid, "static_feature_hash"].dropna().astype(str)
+        hashes = hashes[hashes.str.len() > 0]
+        if hashes.nunique() < 2:
+            continue
+        game = snaps[snaps["game_id"].astype(str) == gid]
+        a = game[game["static_feature_hash"] == hashes.iloc[0]].set_index("feature")["value"]
+        b = game[game["static_feature_hash"] == hashes.iloc[-1]].set_index("feature")["value"]
+        if a.empty or b.empty:
+            continue
+        a, b = a.align(b)
+        same = (a == b) | (a.isna() & b.isna())
+        out[gid] = [f"{name} {a[name]:g}->{b[name]:g}" for name in same[~same].index]
+    return out
+
+
 def _utc(value) -> pd.Series | pd.Timestamp:
     return pd.to_datetime(value, utc=True, errors="coerce")
 
@@ -89,8 +139,8 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def static_feature_hashes(features: pd.DataFrame, game_ids) -> pd.Series:
-    """Fingerprint each game's slow-moving features (excludes pick-time inputs)."""
+def static_feature_values(features: pd.DataFrame, game_ids) -> pd.DataFrame:
+    """Each game's slow-moving numeric features (excludes pick-time inputs), indexed by game_id."""
     rows = features[features["game_id"].astype(str).isin(set(map(str, game_ids)))]
     rows = rows.drop_duplicates("game_id", keep="last").set_index("game_id")
     cols = sorted(
@@ -99,7 +149,12 @@ def static_feature_hashes(features: pd.DataFrame, game_ids) -> pd.Series:
         and not any(m in c.lower() for m in PICK_TIME_MARKERS)
         and pd.api.types.is_numeric_dtype(rows[c])
     )
-    values = rows[cols].astype(float).round(6)
+    return rows[cols].astype(float).round(6)
+
+
+def static_feature_hashes(features: pd.DataFrame, game_ids) -> pd.Series:
+    """Fingerprint each game's slow-moving features (excludes pick-time inputs)."""
+    values = static_feature_values(features, game_ids)
 
     def _hash(row: pd.Series) -> str:
         payload = ",".join("nan" if pd.isna(v) else repr(float(v)) for v in row.to_numpy())
@@ -233,7 +288,7 @@ def attach_results(records: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFram
     return out
 
 
-def summarize(records: pd.DataFrame) -> str:
+def summarize(records: pd.DataFrame, changed_features: Optional[dict[str, list[str]]] = None) -> str:
     if records.empty:
         return "[picks_of_record] no records"
     counts = records["status"].value_counts().to_dict()
@@ -249,6 +304,9 @@ def summarize(records: pd.DataFrame) -> str:
     if changed:
         ids = records.loc[records["static_features_changed"], "game_id"].tolist()
         msg += f"\n[picks_of_record] Warning: non-pick-time features changed between runs for {changed} games: {ids}"
+        for gid, feats in (changed_features or {}).items():
+            shown = ", ".join(feats[:15]) + (f", ... (+{len(feats) - 15} more)" if len(feats) > 15 else "")
+            msg += f"\n[picks_of_record]   {gid}: {len(feats)} changed: {shown}"
     return msg
 
 
@@ -277,9 +335,16 @@ def record(season: int, week: Optional[int], run_started_at: datetime, *, now: O
         preds = preds[preds["week"] == week]
     hashes = None
     try:
-        hashes = static_feature_hashes(pd.read_parquet(features_path), preds["game_id"])
+        features = pd.read_parquet(features_path)
+        hashes = static_feature_hashes(features, preds["game_id"])
     except Exception as exc:  # fingerprint is a guard, not a requirement
         print(f"[picks_of_record] feature fingerprint unavailable: {exc}")
+    else:
+        try:
+            save_feature_snapshots(static_feature_values(features, preds["game_id"]), hashes,
+                                   snapshots_path(season, out_dir))
+        except Exception as exc:  # diagnostics only
+            print(f"[picks_of_record] feature snapshot not saved: {exc}")
     rows = build_ledger_rows(
         preds,
         recorded_at=recorded_at,
@@ -300,12 +365,18 @@ def resolve(season: int, *, now: Optional[datetime] = None, out_dir: Path = OUT_
     if not path.exists():
         print(f"[picks_of_record] no ledger at {path}")
         return pd.DataFrame()
+    ledger = pd.read_csv(path)
     records = resolve_records(
-        pd.read_csv(path), now=now or datetime.now(timezone.utc), lead=lead, schedule=_read_schedule(schedule_path)
+        ledger, now=now or datetime.now(timezone.utc), lead=lead, schedule=_read_schedule(schedule_path)
     )
     dest = records_path(season, out_dir)
     records.to_csv(dest, index=False, lineterminator="\n")
-    print(summarize(records))
+    try:
+        changed = changed_static_features(records, ledger, snapshots_path(season, out_dir))
+    except Exception as exc:  # diagnostics only
+        print(f"[picks_of_record] could not list changed features: {exc}")
+        changed = {}
+    print(summarize(records, changed))
     print(f"[picks_of_record] wrote {len(records)} records -> {dest}")
     return records
 
