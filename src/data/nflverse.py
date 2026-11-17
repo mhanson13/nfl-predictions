@@ -155,6 +155,18 @@ def _normalize_pbp_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _drop_refetched_seasons(existing: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
+    """``existing`` without the seasons present in ``new_df`` (those are replaced, not appended)."""
+    if existing.empty or "season" not in existing.columns or "season" not in new_df.columns:
+        return existing
+    fetched = set(pd.to_numeric(new_df["season"], errors="coerce").dropna().astype(int))
+    keep = ~pd.to_numeric(existing["season"], errors="coerce").isin(fetched)
+    dropped = int((~keep).sum())
+    if dropped:
+        print(f"[nflverse] PBP: replacing cached seasons {sorted(fetched)} ({dropped} cached rows dropped)")
+    return existing.loc[keep].reset_index(drop=True)
+
+
 def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> Path:
     """Append new rows onto cached dataset and write back to disk."""
     if path.name == "nfl_player_stats.parquet":
@@ -167,6 +179,12 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
     elif path.name == "nfl_pbp.parquet":
         existing = _normalize_pbp_columns(existing)
         new_df = _normalize_pbp_columns(new_df)
+
+    if path.name == "nfl_pbp.parquet":
+        # nflverse revises in-season plays (EPA, WP, ...) on every release, so a
+        # refetched season replaces its cached slice; appending kept every revision
+        # as a near-duplicate row (2026 had ~3x its real play count).
+        existing = _drop_refetched_seasons(existing, new_df)
 
     if existing.empty:
         combined = new_df
