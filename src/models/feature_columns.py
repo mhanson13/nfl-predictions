@@ -103,8 +103,11 @@ def make_feature_diffs(df: pd.DataFrame) -> pd.DataFrame:
     def is_numeric(series: pd.Series) -> bool:
         return pd.api.types.is_numeric_dtype(series)
 
-    for col in list(cols):
-        if not isinstance(col, str) or not col.endswith("_home"):
+    # Sorted, not set order: set iteration follows the per-process string hash seed,
+    # and the model's column sampling (colsample_bytree) depends on column order, so
+    # an unsorted loop trained on different features in every process.
+    for col in sorted(c for c in cols if isinstance(c, str)):
+        if not col.endswith("_home"):
             continue
         base = col[:-5]
         away_col = base + "_away"
