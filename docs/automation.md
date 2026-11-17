@@ -24,7 +24,8 @@ run, and sends an alert.
 - Window opens **3h30m before the slot's first kickoff** (06:00 ET for a 09:30 London game,
   09:30 ET for the 1 pm slate).
 - New launches are allowed while any of that day's games is **≥ 2h45m away** (catch-up
-  if the PC was asleep). A failed slot is retried once.
+  if the PC was asleep). A failed slot gets up to 3 attempts; one that fails within
+  10 minutes (a crash) is retried a minute later in the same tick.
 - A run takes ~30 min, so picks are published ~2.5–3h before kickoff.
 - Each game's **pick of record** = latest ledger row recorded ≥ 2h before *its* kickoff.
   Thursday's game is locked by the Thursday run, Sunday's games by the Sunday run, etc.

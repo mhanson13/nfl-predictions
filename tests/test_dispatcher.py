@@ -60,8 +60,9 @@ def test_due_slot_skips_success_and_exhausted_retries():
     now = _utc("2026-11-15T15:00:00")
     sun = slots[2].slot_id
     assert d.due_slot(slots, {}, now).slot_id == sun
-    assert d.due_slot(slots, {sun: {"status": "failed", "attempts": 1}}, now).slot_id == sun  # one retry
-    assert d.due_slot(slots, {sun: {"status": "failed", "attempts": 2}}, now) is None
+    assert d.due_slot(slots, {sun: {"status": "failed", "attempts": 1}}, now).slot_id == sun  # retries
+    assert d.due_slot(slots, {sun: {"status": "failed", "attempts": 2}}, now).slot_id == sun
+    assert d.due_slot(slots, {sun: {"status": "failed", "attempts": d.MAX_ATTEMPTS}}, now) is None
     assert d.due_slot(slots, {sun: {"status": "success", "attempts": 1}}, now) is None
 
 
@@ -242,3 +243,61 @@ def test_grading_failure_alerts_once_and_skips_publish(tmp_path, monkeypatch):
                                alert=lambda *a, **kw: alerts_sent.append(a))
     assert rec["status"] == "failed" and rec["failures"] == 2 and len(alerts_sent) == 1
     assert not any("tools.publish_mtb_csvs" in c for c in calls)
+
+
+class _Clock:
+    def __init__(self, start):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+
+def _attempts(tmp_path, monkeypatch, slot, clock, outcomes, run_minutes=0.2):
+    """Run ``run_slot_attempts`` with a fake pipeline returning ``outcomes`` in turn."""
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(d, "save_state", lambda state, path=None: None)
+    rcs = iter(outcomes)
+    runs = []
+
+    def runner(cmd, **kw):
+        if "tools.weekly_run" in cmd:
+            runs.append(clock.now)
+            clock.now += timedelta(minutes=run_minutes)
+            return next(rcs)
+        return 0
+
+    def sleep(seconds):
+        clock.now += timedelta(seconds=seconds)
+
+    state = {}
+    res = d.run_slot_attempts(slot, _args(tmp_path), state, runner=runner, clock=clock, sleep=sleep)
+    return res, state[slot.slot_id], runs
+
+
+def test_quick_failure_is_retried_in_the_same_tick(tmp_path, monkeypatch):
+    early = d.build_slots(_schedule())[1]  # London 9:30 ET: window 6:00-6:45 ET
+    clock = _Clock(_utc("2026-11-15T11:00:00"))
+    res, rec, runs = _attempts(tmp_path, monkeypatch, early, clock, [1, 0])
+    assert res["status"] == "success" and rec["attempts"] == 2 and len(runs) == 2
+
+
+def test_quick_retries_stop_at_max_attempts(tmp_path, monkeypatch):
+    early = d.build_slots(_schedule())[1]
+    clock = _Clock(_utc("2026-11-15T11:00:00"))
+    res, rec, runs = _attempts(tmp_path, monkeypatch, early, clock, [1, 1, 1, 1])
+    assert res["status"] == "failed" and rec["attempts"] == d.MAX_ATTEMPTS == len(runs)
+
+
+def test_slow_failure_waits_for_the_next_tick(tmp_path, monkeypatch):
+    early = d.build_slots(_schedule())[1]
+    clock = _Clock(_utc("2026-11-15T11:00:00"))
+    res, rec, runs = _attempts(tmp_path, monkeypatch, early, clock, [1, 0], run_minutes=25)
+    assert res["status"] == "failed" and rec["attempts"] == 1 and len(runs) == 1
+
+
+def test_no_quick_retry_after_the_window_closes(tmp_path, monkeypatch):
+    early = d.build_slots(_schedule())[1]
+    clock = _Clock(_utc("2026-11-15T11:44:30"))  # 30 s before the last start time
+    res, rec, runs = _attempts(tmp_path, monkeypatch, early, clock, [1, 0])
+    assert res["status"] == "failed" and len(runs) == 1

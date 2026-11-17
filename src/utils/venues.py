@@ -122,6 +122,7 @@ def resolve_game_venues(schedule: pd.DataFrame, venues: pd.DataFrame | None = No
     out["venue_lon"] = venue_id.map(by_id["longitude"]).astype(float)
     out["venue_roof_type"] = venue_id.map(by_id["roof_type"])
     out["venue_country"] = venue_id.map(by_id["country"])
+    out["venue_city"] = venue_id.map(by_id["city"])
 
     # last resort: home team's current stadium
     teams = pd.read_csv(TEAM_LOCATIONS_PATH)
@@ -241,3 +242,39 @@ def audit_neutral_venues(schedule: pd.DataFrame) -> pd.DataFrame:
     suspicious = neutral & regular & not_overridden & (resolved["venue_id"].to_numpy(dtype=object) == home_usual)
     cols = [c for c in ("game_id", "gameday", "gametime", "stadium", "venue_id") if c in resolved.columns]
     return resolved.loc[suspicious, cols]
+
+
+# Venue columns published with the predictions (MTB uses them for schema.org Place).
+PUBLIC_VENUE_COLUMNS = ["venue_name", "venue_city", "venue_country", "neutral_site", "venue_lat", "venue_lon"]
+
+
+def game_venue_table(schedule: pd.DataFrame) -> pd.DataFrame:
+    """One row per game: where it is played and whether it is at a neutral site.
+
+    ``neutral_site`` is the schedule's ``location == "Neutral"`` (international and
+    other neutral-site games); everything else is from :func:`resolve_game_venues`.
+    """
+    resolved = resolve_game_venues(schedule)
+    location = resolved.get("location", pd.Series("", index=resolved.index)).astype("string").str.strip().str.lower()
+    resolved["neutral_site"] = location.eq("neutral").fillna(False).astype(bool)
+    keys = [c for c in ("game_id", "season", "week", "gameday", "away_team", "home_team") if c in resolved.columns]
+    return resolved[keys + PUBLIC_VENUE_COLUMNS].drop_duplicates("game_id", keep="last").reset_index(drop=True)
+
+
+def attach_venue_columns(preds: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFrame:
+    """``preds`` with :data:`PUBLIC_VENUE_COLUMNS` set from the schedule by game_id.
+
+    Output-only: runs after the model has produced its probabilities.
+    """
+    if preds.empty or "game_id" not in preds.columns:
+        return preds
+    table = game_venue_table(schedule).set_index("game_id")
+    out = preds.copy()
+    ids = out["game_id"].astype(str)
+    for col in PUBLIC_VENUE_COLUMNS:
+        resolved = ids.map(table[col])
+        if col in out.columns:
+            out[col] = resolved.where(resolved.notna(), out[col])
+        else:
+            out[col] = resolved
+    return out
