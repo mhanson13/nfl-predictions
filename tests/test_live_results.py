@@ -392,10 +392,14 @@ def test_final_game_without_pick_gets_score_row_with_blank_grades(tmp_path: Path
     _write_mtb_archive(mtb_root, [r for r in _prediction_rows() if r["game_id"] == "2026_07_BUF_NYJ"])
     schedule = pd.DataFrame(_actual_rows())
     out = tmp_path / "eval"
+    known = tmp_path / "known"
+    known.mkdir()
+    (known / "no_pick_of_record_2026.csv").write_text("game_id,reason\n2026_07_KC_DEN,test\n", encoding="utf-8")
     grade = lr.grade_week(season=2026, week=7, schedule=schedule, output_dir=out, mtb_csv_root=mtb_root,
                           market_clv_detail_path=tmp_path / "none.csv", picks_dir=tmp_path / "no_picks",
-                          predictions_log_dir=tmp_path / "no_log")
+                          predictions_log_dir=tmp_path / "no_log", known_no_pick_dir=known)
     assert grade.status == "graded" and grade.games == 1 and "1/2" in grade.detail
+    assert grade.alerts == []  # listed game: no alert
 
     detail = pd.read_csv(out / lr.WEEKLY_DETAIL_TEMPLATE.format(week=7)).set_index("game_id")
     assert list(detail.index) == ["2026_07_BUF_NYJ", "2026_07_KC_DEN"]
@@ -413,3 +417,44 @@ def test_final_game_without_pick_gets_score_row_with_blank_grades(tmp_path: Path
     assert record["games"] == 1 and record["no_pick_games"] == 1
     assert record["su_wins"] + record["su_losses"] + record["su_pushes"] == 1
     assert "1 final games with no pick of record" in lr.format_report([grade], record, 2026)
+
+
+def test_unlisted_no_pick_game_raises_alert(tmp_path: Path, capsys):
+    # KC-DEN is final, missing from the archive, and not on the known list: it still gets a
+    # score-only row that doesn't count, but grading must alert (it may be a newly dropped game).
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root, [r for r in _prediction_rows() if r["game_id"] == "2026_07_BUF_NYJ"])
+    schedule = pd.DataFrame(_actual_rows())
+    out = tmp_path / "eval"
+    known = tmp_path / "known"
+    known.mkdir()
+    (known / "no_pick_of_record_2026.csv").write_text("game_id,reason\n2026_05_TB_DAL,test\n", encoding="utf-8")
+    grade = lr.grade_week(season=2026, week=7, schedule=schedule, output_dir=out, mtb_csv_root=mtb_root,
+                          market_clv_detail_path=tmp_path / "none.csv", picks_dir=tmp_path / "no_picks",
+                          predictions_log_dir=tmp_path / "no_log", known_no_pick_dir=known)
+    expected = "ALERT: final game with no pick of record, not on the known list -- check the archive history"
+    assert grade.status == "graded" and grade.games == 1
+    assert len(grade.alerts) == 1 and grade.alerts[0].startswith(expected) and "2026_07_KC_DEN" in grade.alerts[0]
+    assert expected in capsys.readouterr().out
+
+    detail = pd.read_csv(out / lr.WEEKLY_DETAIL_TEMPLATE.format(week=7)).set_index("game_id")
+    assert detail.loc["2026_07_KC_DEN", "prediction_source_type"] == lr.NO_PICK_SOURCE
+    assert pd.isna(detail.loc["2026_07_KC_DEN", "su_result"])
+    record = lr.season_record(out, 2026)
+    assert record["games"] == 1 and record["no_pick_games"] == 1
+    report = lr.format_report([grade], record, 2026)
+    assert expected in report
+
+    # The results email flags it in the subject and carries the line in the body.
+    from tools import dispatcher
+
+    sent = {}
+    import src.utils.alerts as alerts
+
+    original = alerts.send_alert
+    alerts.send_alert = lambda subject, body: sent.update(subject=subject, body=body)
+    try:
+        dispatcher.send_grading_alert(2026, 7, {"status": "success", "report": report}, final=False)
+    finally:
+        alerts.send_alert = original
+    assert "RESULTS ALERT" in sent["subject"] and expected in sent["body"]

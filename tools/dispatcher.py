@@ -260,7 +260,10 @@ def send_grading_alert(season: int, week: int, result: dict, *, final: bool) -> 
 
     status = result["status"]
     blog = blog_failures(result.get("publish_log"))
-    label = with_blog_note("RESULTS" if status == "success" else "RESULTS FAILED", blog)
+    base = "RESULTS" if status == "success" else "RESULTS FAILED"
+    if "ALERT:" in (result.get("report") or ""):
+        base += " ALERT"  # e.g. a final game with no pick of record that is not on the known list
+    label = with_blog_note(base, blog)
     lines = [
         f"Week: {season} week {week}",
         f"Grade exit: {result.get('grade_rc')}   MTB publish exit: {result.get('publish_rc')}",
