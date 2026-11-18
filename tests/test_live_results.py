@@ -384,3 +384,32 @@ def test_published_override_beats_mtb_archive(tmp_path: Path):
                                     picks_dir=tmp_path / "no_picks")
     assert source.source_type == "published_override"
     assert source.frame.set_index("game_id")["home_win_prob"].to_dict() == {"2026_07_BUF_NYJ": 0.55, "2026_07_KC_DEN": 0.30}
+
+
+def test_final_game_without_pick_gets_score_row_with_blank_grades(tmp_path: Path):
+    # Archive has only BUF-NYJ; KC-DEN was final but had no pick published before kickoff.
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root, [r for r in _prediction_rows() if r["game_id"] == "2026_07_BUF_NYJ"])
+    schedule = pd.DataFrame(_actual_rows())
+    out = tmp_path / "eval"
+    grade = lr.grade_week(season=2026, week=7, schedule=schedule, output_dir=out, mtb_csv_root=mtb_root,
+                          market_clv_detail_path=tmp_path / "none.csv", picks_dir=tmp_path / "no_picks",
+                          predictions_log_dir=tmp_path / "no_log")
+    assert grade.status == "graded" and grade.games == 1 and "1/2" in grade.detail
+
+    detail = pd.read_csv(out / lr.WEEKLY_DETAIL_TEMPLATE.format(week=7)).set_index("game_id")
+    assert list(detail.index) == ["2026_07_BUF_NYJ", "2026_07_KC_DEN"]
+    den = detail.loc["2026_07_KC_DEN"]
+    assert den["prediction_source_type"] == lr.NO_PICK_SOURCE
+    assert den["home_score"] == 20.0 and pd.notna(den["away_score"]) and pd.notna(den["actual_winner"])
+    for col in ("model_pick_team", "home_win_prob", "su_correct", "su_result", "moneyline_result",
+                "spread_result_points", "selected_spread_result", "brier_component"):
+        assert pd.isna(den[col]), col
+    assert detail.loc["2026_07_BUF_NYJ", "su_result"] in {"win", "loss"}
+
+    summary = pd.read_csv(out / lr.WEEKLY_SUMMARY_TEMPLATE.format(week=7))
+    assert summary.loc[0, "n_games"] == 1
+    record = lr.season_record(out, 2026)
+    assert record["games"] == 1 and record["no_pick_games"] == 1
+    assert record["su_wins"] + record["su_losses"] + record["su_pushes"] == 1
+    assert "1 final games with no pick of record" in lr.format_report([grade], record, 2026)

@@ -32,6 +32,13 @@ DEFAULT_PICKS_DIR = por.OUT_DIR
 DEFAULT_SOURCE_ORDER = ("picks_of_record", "published_override", "mtb_archive", "locked_log")
 SOURCE_TYPES = ("picks_of_record", "published_override", "mtb_archive", "locked_log")
 GRADABLE_PICK_STATUSES = ("locked", "late")
+# A final game with no pick published before kickoff (or only a faulty one) gets a row
+# with its score and blank pick/grade columns. It never counts toward any record or metric.
+NO_PICK_SOURCE = "no_pick_of_record"
+NO_PICK_COLUMNS = (
+    "season", "week", "game_id", "home_team", "away_team",
+    "home_score", "away_score", "home_margin", "actual_winner", "actual_home_win",
+)
 EXIT_NOT_FINAL = 3  # CLI exit code: the week's games are not all final yet
 
 WEEKLY_DETAIL_TEMPLATE = "live_prediction_vs_actual_week_{week:02d}.csv"
@@ -621,6 +628,36 @@ def build_prediction_vs_actual(
     return _order_detail_columns(merged)
 
 
+def append_no_pick_rows(detail: pd.DataFrame, actuals: pd.DataFrame) -> pd.DataFrame:
+    """Add a score-only row for each final game that has no pick of record.
+
+    Pick and grade columns stay blank, so the row never counts. Graded rows are untouched,
+    and summaries are computed before this runs.
+    """
+    if actuals is None or actuals.empty:
+        return detail
+    graded = set(detail["game_id"].astype(str)) if "game_id" in detail.columns else set()
+    missing = actuals[~actuals["game_id"].astype(str).isin(graded)]
+    if missing.empty:
+        return detail
+    rows = missing[[c for c in NO_PICK_COLUMNS if c in missing.columns]].copy()
+    rows["prediction_source_type"] = NO_PICK_SOURCE
+    rows["graded_at_utc"] = datetime.now(timezone.utc).isoformat()
+    if detail.empty:
+        return rows.reset_index(drop=True)
+    return pd.concat([detail, rows], ignore_index=True, sort=False)[
+        list(detail.columns) + [c for c in rows.columns if c not in detail.columns]
+    ]
+
+
+def has_pick(detail: pd.DataFrame) -> pd.Series:
+    """Rows that carry a pick (no-pick rows have a blank ``model_pick_team``)."""
+    if "model_pick_team" not in detail.columns:
+        return pd.Series(True, index=detail.index)
+    team = detail["model_pick_team"]
+    return team.notna() & team.astype(str).str.strip().ne("")
+
+
 def attach_market_clv_detail(frame: pd.DataFrame, clv_detail: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     _ensure_clv_columns(out)
@@ -797,6 +834,7 @@ def build_and_write_live_results(
         )
     summary = summarize_detail(detail)
     segments = summarize_segments(detail)
+    detail = append_no_pick_rows(detail, actuals)
     return write_artifacts(
         detail=detail,
         summary=summary,
@@ -851,6 +889,7 @@ def grade_week(
     except Exception as exc:
         return WeekGrade(season, week, "error", f"{exc.__class__.__name__}: {exc}")
     detail = pd.read_csv(artifacts.detail_path)
+    detail = detail[has_pick(detail)]
     result = detail["su_result"].astype(str)
     published = int(len(detail))
     note = f"{published}/{scheduled} games had a published pick" if published < scheduled else "all games"
@@ -883,11 +922,14 @@ def season_record(output_dir: Path, season: int) -> dict[str, object]:
     """Straight-up record across every graded week in the cumulative detail file."""
     path = output_dir / CUMULATIVE_DETAIL_NAME
     if not path.exists():
-        return {"weeks": [], "games": 0, "su_wins": 0, "su_losses": 0, "su_pushes": 0}
+        return {"weeks": [], "games": 0, "su_wins": 0, "su_losses": 0, "su_pushes": 0, "no_pick_games": 0}
     detail = pd.read_csv(path)
     detail = detail[pd.to_numeric(detail["season"], errors="coerce") == season]
+    no_pick = int((~has_pick(detail)).sum())
+    detail = detail[has_pick(detail)]
     result = detail["su_result"].astype(str)
     return {
+        "no_pick_games": no_pick,
         "weeks": sorted(int(w) for w in detail["week"].unique()),
         "games": int(len(detail)),
         "su_wins": int(result.eq("win").sum()),
@@ -905,6 +947,7 @@ def format_report(grades: Sequence[WeekGrade], record: dict[str, object], season
     lines.append(
         f"{season} season straight-up: {w}-{l}{push}{pct} over {record['games']} graded games, "
         f"weeks {record['weeks']}"
+        + (f"; {record['no_pick_games']} final games with no pick of record (not counted)" if record.get("no_pick_games") else "")
     )
     return "\n".join(lines)
 
