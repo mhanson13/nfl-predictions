@@ -156,6 +156,30 @@ def _normalize_pbp_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# Datasets nflverse revises in place during a season (EPA/WP on plays, stat
+# corrections). A refetched season replaces its cached slice; appending kept
+# every revision as a near-duplicate row (2026 PBP had ~3x its real play count,
+# player stats 1,638 repeated keys). nfl_injuries.parquet has the same problem
+# (1,917 repeated keys) but deduping it scored worse in walk-forward, so it stays
+# on append until that is understood (branch fix/injuries-replace).
+REPLACE_ON_REFETCH = {
+    "nfl_pbp.parquet": "PBP",
+    "nfl_player_stats.parquet": "player stats",
+}
+
+
+def _drop_refetched_seasons(existing: pd.DataFrame, new_df: pd.DataFrame, label: str = "PBP") -> pd.DataFrame:
+    """``existing`` without the seasons present in ``new_df`` (those are replaced, not appended)."""
+    if existing.empty or "season" not in existing.columns or "season" not in new_df.columns:
+        return existing
+    fetched = set(pd.to_numeric(new_df["season"], errors="coerce").dropna().astype(int))
+    keep = ~pd.to_numeric(existing["season"], errors="coerce").isin(fetched)
+    dropped = int((~keep).sum())
+    if dropped:
+        print(f"[nflverse] {label}: replacing cached seasons {sorted(fetched)} ({dropped} cached rows dropped)")
+    return existing.loc[keep].reset_index(drop=True)
+
+
 INJURY_HISTORY_DIRNAME = Path("history") / "nfl_injuries"
 INJURY_MANIFEST = "manifest.csv"
 
@@ -164,8 +188,8 @@ def _content_hash(df: pd.DataFrame) -> str:
     """Row-order independent hash of a frame's contents."""
     text = df.astype("string").fillna("<NA>")
     text = text.reindex(sorted(text.columns), axis=1)
-    lines = sorted("".join(row) for row in text.itertuples(index=False, name=None))
-    payload = "".join(["".join(text.columns), *lines])
+    lines = sorted("\x1f".join(row) for row in text.itertuples(index=False, name=None))
+    payload = "\x1e".join(["\x1f".join(text.columns), *lines])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -229,6 +253,9 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
     elif path.name == "nfl_pbp.parquet":
         existing = _normalize_pbp_columns(existing)
         new_df = _normalize_pbp_columns(new_df)
+
+    if path.name in REPLACE_ON_REFETCH:
+        existing = _drop_refetched_seasons(existing, new_df, REPLACE_ON_REFETCH[path.name])
 
     if existing.empty:
         combined = new_df
