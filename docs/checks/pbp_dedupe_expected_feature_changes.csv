@@ -1,0 +1,1557 @@
+column,source,model_feature,in_ledger_fingerprint
+def_adj_eff_raw_away,pbp,False,True
+def_adj_eff_raw_diff,pbp,False,True
+def_adj_eff_raw_home,pbp,False,True
+def_adj_eff_rolling3_away,pbp,False,True
+def_adj_eff_rolling3_diff,pbp,True,True
+def_adj_eff_rolling3_home,pbp,False,True
+def_epa_allowed_away,pbp,False,True
+def_epa_allowed_diff,pbp,False,True
+def_epa_allowed_home,pbp,False,True
+def_epa_per_play_allowed_away,pbp,False,True
+def_epa_per_play_allowed_diff,pbp,False,True
+def_epa_per_play_allowed_home,pbp,False,True
+def_plays_allowed_away,pbp,False,True
+def_plays_allowed_diff,pbp,False,True
+def_plays_allowed_home,pbp,False,True
+def_yards_allowed_away,pbp,False,True
+def_yards_allowed_diff,pbp,False,True
+def_yards_allowed_home,pbp,False,True
+def_ypp_allowed_away,pbp,False,True
+def_ypp_allowed_diff,pbp,False,True
+def_ypp_allowed_home,pbp,False,True
+drive_completion_rate_away,pbp,False,True
+drive_completion_rate_home,pbp,False,True
+drive_completion_rate_rolling3_away,pbp,False,True
+drive_completion_rate_rolling3_diff,pbp,True,True
+drive_completion_rate_rolling3_home,pbp,False,True
+drive_epa_first_drive_away,pbp,False,True
+drive_epa_first_drive_home,pbp,False,True
+drive_epa_first_drive_rolling3_away,pbp,False,True
+drive_epa_first_drive_rolling3_diff,pbp,True,True
+drive_epa_first_drive_rolling3_home,pbp,False,True
+drive_epa_mean_away,pbp,False,True
+drive_epa_mean_diff,pbp,False,True
+drive_epa_mean_home,pbp,False,True
+drive_epa_mean_rolling3_away,pbp,False,True
+drive_epa_mean_rolling3_diff,pbp,True,True
+drive_epa_mean_rolling3_diff_lg_away,pbp,False,True
+drive_epa_mean_rolling3_diff_lg_diff,pbp,True,True
+drive_epa_mean_rolling3_diff_lg_home,pbp,False,True
+drive_epa_mean_rolling3_home,pbp,False,True
+drive_epa_q4_away,pbp,False,True
+drive_epa_q4_home,pbp,False,True
+drive_epa_q4_rolling3_away,pbp,False,True
+drive_epa_q4_rolling3_diff,pbp,True,True
+drive_epa_q4_rolling3_home,pbp,False,True
+drive_epa_red_zone_away,pbp,False,True
+drive_epa_red_zone_home,pbp,False,True
+drive_epa_red_zone_rolling3_away,pbp,False,True
+drive_epa_red_zone_rolling3_diff,pbp,True,True
+drive_epa_red_zone_rolling3_home,pbp,False,True
+drives_per_game_away,pbp,False,True
+drives_per_game_home,pbp,False,True
+drives_per_game_rolling3_away,pbp,False,True
+drives_per_game_rolling3_diff,pbp,False,True
+drives_per_game_rolling3_home,pbp,False,True
+epa_allowed_away,pbp,False,True
+epa_allowed_home,pbp,False,True
+epa_away,pbp,False,True
+epa_home,pbp,False,True
+epa_per_play_allowed_away,pbp,False,True
+epa_per_play_allowed_home,pbp,False,True
+epa_per_play_away,pbp,False,True
+epa_per_play_home,pbp,False,True
+off_adj_eff_raw_away,pbp,False,True
+off_adj_eff_raw_diff,pbp,False,True
+off_adj_eff_raw_home,pbp,False,True
+off_adj_eff_rolling3_away,pbp,False,True
+off_adj_eff_rolling3_diff,pbp,True,True
+off_adj_eff_rolling3_home,pbp,False,True
+pass_epa_per_db_away,pbp,False,True
+pass_epa_per_db_diff,pbp,False,True
+pass_epa_per_db_home,pbp,False,True
+pass_epa_per_db_rolling3_away,pbp,False,True
+pass_epa_per_db_rolling3_diff,pbp,True,True
+pass_epa_per_db_rolling3_diff_lg_away,pbp,False,True
+pass_epa_per_db_rolling3_diff_lg_diff,pbp,True,True
+pass_epa_per_db_rolling3_diff_lg_home,pbp,False,True
+pass_epa_per_db_rolling3_home,pbp,False,True
+pass_epa_per_db_rolling5_away,pbp,False,True
+pass_epa_per_db_rolling5_diff,pbp,True,True
+pass_epa_per_db_rolling5_home,pbp,False,True
+plays_allowed_away,pbp,False,True
+plays_allowed_home,pbp,False,True
+plays_away,pbp,False,True
+plays_home,pbp,False,True
+plays_proxy_away,pbp,False,True
+plays_proxy_home,pbp,False,True
+pressures_allowed_per_db_away,pbp,False,True
+pressures_allowed_per_db_diff,pbp,False,True
+pressures_allowed_per_db_home,pbp,False,True
+pressures_allowed_per_db_rolling3_away,pbp,False,True
+pressures_allowed_per_db_rolling3_diff,pbp,False,True
+pressures_allowed_per_db_rolling3_home,pbp,False,True
+pressures_generated_per_db_away,pbp,False,True
+pressures_generated_per_db_diff,pbp,False,True
+pressures_generated_per_db_home,pbp,False,True
+pressures_generated_per_db_rolling3_away,pbp,False,True
+pressures_generated_per_db_rolling3_diff,pbp,False,True
+pressures_generated_per_db_rolling3_home,pbp,False,True
+pstats_air_yards_share_away,player stats,False,True
+pstats_air_yards_share_delta_away,player stats,False,True
+pstats_air_yards_share_delta_home,player stats,False,True
+pstats_air_yards_share_home,player stats,False,True
+pstats_air_yards_share_pct_change_away,player stats,False,True
+pstats_air_yards_share_pct_change_home,player stats,False,True
+pstats_air_yards_share_prev_away,player stats,False,True
+pstats_air_yards_share_prev_home,player stats,False,True
+pstats_air_yards_share_rolling3_away,player stats,False,True
+pstats_air_yards_share_rolling3_home,player stats,False,True
+pstats_attempts_away,player stats,False,True
+pstats_attempts_delta_away,player stats,False,True
+pstats_attempts_delta_home,player stats,False,True
+pstats_attempts_home,player stats,False,True
+pstats_attempts_pct_change_away,player stats,False,True
+pstats_attempts_pct_change_home,player stats,False,True
+pstats_attempts_prev_away,player stats,False,True
+pstats_attempts_prev_home,player stats,False,True
+pstats_attempts_rolling3_away,player stats,False,True
+pstats_attempts_rolling3_home,player stats,False,True
+pstats_carries_away,player stats,False,True
+pstats_carries_delta_away,player stats,False,True
+pstats_carries_delta_home,player stats,False,True
+pstats_carries_home,player stats,False,True
+pstats_carries_pct_change_away,player stats,False,True
+pstats_carries_pct_change_home,player stats,False,True
+pstats_carries_prev_away,player stats,False,True
+pstats_carries_prev_home,player stats,False,True
+pstats_carries_rolling3_away,player stats,False,True
+pstats_carries_rolling3_home,player stats,False,True
+pstats_completions_away,player stats,False,True
+pstats_completions_delta_away,player stats,False,True
+pstats_completions_delta_home,player stats,False,True
+pstats_completions_home,player stats,False,True
+pstats_completions_pct_change_away,player stats,False,True
+pstats_completions_pct_change_home,player stats,False,True
+pstats_completions_prev_away,player stats,False,True
+pstats_completions_prev_home,player stats,False,True
+pstats_completions_rolling3_away,player stats,False,True
+pstats_completions_rolling3_home,player stats,False,True
+pstats_def_2pt_atts_away,player stats,False,True
+pstats_def_2pt_atts_delta_away,player stats,False,True
+pstats_def_2pt_atts_delta_home,player stats,False,True
+pstats_def_2pt_atts_home,player stats,False,True
+pstats_def_2pt_atts_prev_away,player stats,False,True
+pstats_def_2pt_atts_prev_home,player stats,False,True
+pstats_def_2pt_atts_rolling3_away,player stats,False,True
+pstats_def_2pt_atts_rolling3_home,player stats,False,True
+pstats_def_2pt_made_away,player stats,False,True
+pstats_def_2pt_made_delta_away,player stats,False,True
+pstats_def_2pt_made_delta_home,player stats,False,True
+pstats_def_2pt_made_home,player stats,False,True
+pstats_def_2pt_made_prev_away,player stats,False,True
+pstats_def_2pt_made_prev_home,player stats,False,True
+pstats_def_2pt_made_rolling3_away,player stats,False,True
+pstats_def_2pt_made_rolling3_home,player stats,False,True
+pstats_def_fg_blocks_away,player stats,False,True
+pstats_def_fg_blocks_delta_away,player stats,False,True
+pstats_def_fg_blocks_delta_home,player stats,False,True
+pstats_def_fg_blocks_home,player stats,False,True
+pstats_def_fg_blocks_prev_away,player stats,False,True
+pstats_def_fg_blocks_prev_home,player stats,False,True
+pstats_def_fg_blocks_rolling3_away,player stats,False,True
+pstats_def_fg_blocks_rolling3_home,player stats,False,True
+pstats_def_fumbles_away,player stats,False,True
+pstats_def_fumbles_delta_away,player stats,False,True
+pstats_def_fumbles_delta_home,player stats,False,True
+pstats_def_fumbles_forced_away,player stats,False,True
+pstats_def_fumbles_forced_delta_away,player stats,False,True
+pstats_def_fumbles_forced_delta_home,player stats,False,True
+pstats_def_fumbles_forced_home,player stats,False,True
+pstats_def_fumbles_forced_pct_change_away,player stats,False,True
+pstats_def_fumbles_forced_pct_change_home,player stats,False,True
+pstats_def_fumbles_forced_prev_away,player stats,False,True
+pstats_def_fumbles_forced_prev_home,player stats,False,True
+pstats_def_fumbles_forced_rolling3_away,player stats,False,True
+pstats_def_fumbles_forced_rolling3_home,player stats,False,True
+pstats_def_fumbles_home,player stats,False,True
+pstats_def_fumbles_prev_away,player stats,False,True
+pstats_def_fumbles_prev_home,player stats,False,True
+pstats_def_fumbles_rolling3_away,player stats,False,True
+pstats_def_fumbles_rolling3_home,player stats,False,True
+pstats_def_interception_yards_away,player stats,False,True
+pstats_def_interception_yards_delta_away,player stats,False,True
+pstats_def_interception_yards_delta_home,player stats,False,True
+pstats_def_interception_yards_home,player stats,False,True
+pstats_def_interception_yards_pct_change_away,player stats,False,True
+pstats_def_interception_yards_pct_change_home,player stats,False,True
+pstats_def_interception_yards_prev_away,player stats,False,True
+pstats_def_interception_yards_prev_home,player stats,False,True
+pstats_def_interception_yards_rolling3_away,player stats,False,True
+pstats_def_interception_yards_rolling3_home,player stats,False,True
+pstats_def_interceptions_away,player stats,False,True
+pstats_def_interceptions_delta_away,player stats,False,True
+pstats_def_interceptions_delta_home,player stats,False,True
+pstats_def_interceptions_home,player stats,False,True
+pstats_def_interceptions_pct_change_away,player stats,False,True
+pstats_def_interceptions_pct_change_home,player stats,False,True
+pstats_def_interceptions_prev_away,player stats,False,True
+pstats_def_interceptions_prev_home,player stats,False,True
+pstats_def_interceptions_rolling3_away,player stats,False,True
+pstats_def_interceptions_rolling3_home,player stats,False,True
+pstats_def_pass_defended_away,player stats,False,True
+pstats_def_pass_defended_delta_away,player stats,False,True
+pstats_def_pass_defended_delta_home,player stats,False,True
+pstats_def_pass_defended_home,player stats,False,True
+pstats_def_pass_defended_pct_change_away,player stats,False,True
+pstats_def_pass_defended_pct_change_home,player stats,False,True
+pstats_def_pass_defended_prev_away,player stats,False,True
+pstats_def_pass_defended_prev_home,player stats,False,True
+pstats_def_pass_defended_rolling3_away,player stats,False,True
+pstats_def_pass_defended_rolling3_home,player stats,False,True
+pstats_def_pat_blocks_away,player stats,False,True
+pstats_def_pat_blocks_delta_away,player stats,False,True
+pstats_def_pat_blocks_delta_home,player stats,False,True
+pstats_def_pat_blocks_home,player stats,False,True
+pstats_def_pat_blocks_prev_away,player stats,False,True
+pstats_def_pat_blocks_prev_home,player stats,False,True
+pstats_def_pat_blocks_rolling3_away,player stats,False,True
+pstats_def_pat_blocks_rolling3_home,player stats,False,True
+pstats_def_punt_blocks_away,player stats,False,True
+pstats_def_punt_blocks_delta_away,player stats,False,True
+pstats_def_punt_blocks_delta_home,player stats,False,True
+pstats_def_punt_blocks_home,player stats,False,True
+pstats_def_punt_blocks_prev_away,player stats,False,True
+pstats_def_punt_blocks_prev_home,player stats,False,True
+pstats_def_punt_blocks_rolling3_away,player stats,False,True
+pstats_def_punt_blocks_rolling3_home,player stats,False,True
+pstats_def_qb_hits_away,player stats,False,False
+pstats_def_qb_hits_delta_away,player stats,False,False
+pstats_def_qb_hits_delta_home,player stats,False,False
+pstats_def_qb_hits_home,player stats,False,False
+pstats_def_qb_hits_pct_change_away,player stats,False,False
+pstats_def_qb_hits_pct_change_home,player stats,False,False
+pstats_def_qb_hits_prev_away,player stats,False,False
+pstats_def_qb_hits_prev_home,player stats,False,False
+pstats_def_qb_hits_rolling3_away,player stats,False,False
+pstats_def_qb_hits_rolling3_home,player stats,False,False
+pstats_def_sack_yards_away,player stats,False,True
+pstats_def_sack_yards_delta_away,player stats,False,True
+pstats_def_sack_yards_delta_home,player stats,False,True
+pstats_def_sack_yards_home,player stats,False,True
+pstats_def_sack_yards_pct_change_away,player stats,False,True
+pstats_def_sack_yards_pct_change_home,player stats,False,True
+pstats_def_sack_yards_prev_away,player stats,False,True
+pstats_def_sack_yards_prev_home,player stats,False,True
+pstats_def_sack_yards_rolling3_away,player stats,False,True
+pstats_def_sack_yards_rolling3_home,player stats,False,True
+pstats_def_sacks_away,player stats,False,True
+pstats_def_sacks_delta_away,player stats,False,True
+pstats_def_sacks_delta_home,player stats,False,True
+pstats_def_sacks_home,player stats,False,True
+pstats_def_sacks_pct_change_away,player stats,False,True
+pstats_def_sacks_pct_change_home,player stats,False,True
+pstats_def_sacks_prev_away,player stats,False,True
+pstats_def_sacks_prev_home,player stats,False,True
+pstats_def_sacks_rolling3_away,player stats,False,True
+pstats_def_sacks_rolling3_home,player stats,False,True
+pstats_def_safeties_away,player stats,False,True
+pstats_def_safeties_delta_away,player stats,False,True
+pstats_def_safeties_delta_home,player stats,False,True
+pstats_def_safeties_home,player stats,False,True
+pstats_def_safeties_prev_away,player stats,False,True
+pstats_def_safeties_prev_home,player stats,False,True
+pstats_def_safeties_rolling3_away,player stats,False,True
+pstats_def_safeties_rolling3_home,player stats,False,True
+pstats_def_tackle_assists_away,player stats,False,True
+pstats_def_tackle_assists_delta_away,player stats,False,True
+pstats_def_tackle_assists_delta_home,player stats,False,True
+pstats_def_tackle_assists_home,player stats,False,True
+pstats_def_tackle_assists_pct_change_away,player stats,False,True
+pstats_def_tackle_assists_pct_change_home,player stats,False,True
+pstats_def_tackle_assists_prev_away,player stats,False,True
+pstats_def_tackle_assists_prev_home,player stats,False,True
+pstats_def_tackle_assists_rolling3_away,player stats,False,True
+pstats_def_tackle_assists_rolling3_home,player stats,False,True
+pstats_def_tackles_for_loss_away,player stats,False,True
+pstats_def_tackles_for_loss_delta_away,player stats,False,True
+pstats_def_tackles_for_loss_delta_home,player stats,False,True
+pstats_def_tackles_for_loss_home,player stats,False,True
+pstats_def_tackles_for_loss_pct_change_away,player stats,False,True
+pstats_def_tackles_for_loss_pct_change_home,player stats,False,True
+pstats_def_tackles_for_loss_prev_away,player stats,False,True
+pstats_def_tackles_for_loss_prev_home,player stats,False,True
+pstats_def_tackles_for_loss_rolling3_away,player stats,False,True
+pstats_def_tackles_for_loss_rolling3_home,player stats,False,True
+pstats_def_tackles_for_loss_yards_away,player stats,False,True
+pstats_def_tackles_for_loss_yards_delta_away,player stats,False,True
+pstats_def_tackles_for_loss_yards_delta_home,player stats,False,True
+pstats_def_tackles_for_loss_yards_home,player stats,False,True
+pstats_def_tackles_for_loss_yards_pct_change_away,player stats,False,True
+pstats_def_tackles_for_loss_yards_pct_change_home,player stats,False,True
+pstats_def_tackles_for_loss_yards_prev_away,player stats,False,True
+pstats_def_tackles_for_loss_yards_prev_home,player stats,False,True
+pstats_def_tackles_for_loss_yards_rolling3_away,player stats,False,True
+pstats_def_tackles_for_loss_yards_rolling3_home,player stats,False,True
+pstats_def_tackles_solo_away,player stats,False,True
+pstats_def_tackles_solo_delta_away,player stats,False,True
+pstats_def_tackles_solo_delta_home,player stats,False,True
+pstats_def_tackles_solo_home,player stats,False,True
+pstats_def_tackles_solo_pct_change_away,player stats,False,True
+pstats_def_tackles_solo_pct_change_home,player stats,False,True
+pstats_def_tackles_solo_prev_away,player stats,False,True
+pstats_def_tackles_solo_prev_home,player stats,False,True
+pstats_def_tackles_solo_rolling3_away,player stats,False,True
+pstats_def_tackles_solo_rolling3_home,player stats,False,True
+pstats_def_tackles_with_assist_away,player stats,False,True
+pstats_def_tackles_with_assist_delta_away,player stats,False,True
+pstats_def_tackles_with_assist_delta_home,player stats,False,True
+pstats_def_tackles_with_assist_home,player stats,False,True
+pstats_def_tackles_with_assist_pct_change_away,player stats,False,True
+pstats_def_tackles_with_assist_pct_change_home,player stats,False,True
+pstats_def_tackles_with_assist_prev_away,player stats,False,True
+pstats_def_tackles_with_assist_prev_home,player stats,False,True
+pstats_def_tackles_with_assist_rolling3_away,player stats,False,True
+pstats_def_tackles_with_assist_rolling3_home,player stats,False,True
+pstats_def_tds_away,player stats,False,True
+pstats_def_tds_delta_away,player stats,False,True
+pstats_def_tds_delta_home,player stats,False,True
+pstats_def_tds_home,player stats,False,True
+pstats_def_tds_prev_away,player stats,False,True
+pstats_def_tds_prev_home,player stats,False,True
+pstats_def_tds_rolling3_away,player stats,False,True
+pstats_def_tds_rolling3_home,player stats,False,True
+pstats_fantasy_points_away,player stats,False,True
+pstats_fantasy_points_delta_away,player stats,False,True
+pstats_fantasy_points_delta_home,player stats,False,True
+pstats_fantasy_points_home,player stats,False,True
+pstats_fantasy_points_pct_change_away,player stats,False,True
+pstats_fantasy_points_pct_change_home,player stats,False,True
+pstats_fantasy_points_ppr_away,player stats,False,True
+pstats_fantasy_points_ppr_delta_away,player stats,False,True
+pstats_fantasy_points_ppr_delta_home,player stats,False,True
+pstats_fantasy_points_ppr_home,player stats,False,True
+pstats_fantasy_points_ppr_pct_change_away,player stats,False,True
+pstats_fantasy_points_ppr_pct_change_home,player stats,False,True
+pstats_fantasy_points_ppr_prev_away,player stats,False,True
+pstats_fantasy_points_ppr_prev_home,player stats,False,True
+pstats_fantasy_points_ppr_rolling3_away,player stats,False,True
+pstats_fantasy_points_ppr_rolling3_home,player stats,False,True
+pstats_fantasy_points_prev_away,player stats,False,True
+pstats_fantasy_points_prev_home,player stats,False,True
+pstats_fantasy_points_rolling3_away,player stats,False,True
+pstats_fantasy_points_rolling3_home,player stats,False,True
+pstats_fg_att_away,player stats,False,True
+pstats_fg_att_delta_away,player stats,False,True
+pstats_fg_att_delta_home,player stats,False,True
+pstats_fg_att_home,player stats,False,True
+pstats_fg_att_pct_change_away,player stats,False,True
+pstats_fg_att_pct_change_home,player stats,False,True
+pstats_fg_att_prev_away,player stats,False,True
+pstats_fg_att_prev_home,player stats,False,True
+pstats_fg_att_rolling3_away,player stats,False,True
+pstats_fg_att_rolling3_home,player stats,False,True
+pstats_fg_blocked_away,player stats,False,True
+pstats_fg_blocked_delta_away,player stats,False,True
+pstats_fg_blocked_delta_home,player stats,False,True
+pstats_fg_blocked_distance_away,player stats,False,True
+pstats_fg_blocked_distance_delta_away,player stats,False,True
+pstats_fg_blocked_distance_delta_home,player stats,False,True
+pstats_fg_blocked_distance_home,player stats,False,True
+pstats_fg_blocked_distance_prev_away,player stats,False,True
+pstats_fg_blocked_distance_prev_home,player stats,False,True
+pstats_fg_blocked_distance_rolling3_away,player stats,False,True
+pstats_fg_blocked_distance_rolling3_home,player stats,False,True
+pstats_fg_blocked_home,player stats,False,True
+pstats_fg_blocked_prev_away,player stats,False,True
+pstats_fg_blocked_prev_home,player stats,False,True
+pstats_fg_blocked_rolling3_away,player stats,False,True
+pstats_fg_blocked_rolling3_home,player stats,False,True
+pstats_fg_long_away,player stats,False,True
+pstats_fg_long_delta_away,player stats,False,True
+pstats_fg_long_delta_home,player stats,False,True
+pstats_fg_long_home,player stats,False,True
+pstats_fg_long_pct_change_away,player stats,False,True
+pstats_fg_long_pct_change_home,player stats,False,True
+pstats_fg_long_prev_away,player stats,False,True
+pstats_fg_long_prev_home,player stats,False,True
+pstats_fg_long_rolling3_away,player stats,False,True
+pstats_fg_long_rolling3_home,player stats,False,True
+pstats_fg_made_0_19_away,player stats,False,True
+pstats_fg_made_0_19_delta_away,player stats,False,True
+pstats_fg_made_0_19_delta_home,player stats,False,True
+pstats_fg_made_0_19_home,player stats,False,True
+pstats_fg_made_0_19_prev_away,player stats,False,True
+pstats_fg_made_0_19_prev_home,player stats,False,True
+pstats_fg_made_0_19_rolling3_away,player stats,False,True
+pstats_fg_made_0_19_rolling3_home,player stats,False,True
+pstats_fg_made_20_29_away,player stats,False,True
+pstats_fg_made_20_29_delta_away,player stats,False,True
+pstats_fg_made_20_29_delta_home,player stats,False,True
+pstats_fg_made_20_29_home,player stats,False,True
+pstats_fg_made_20_29_pct_change_away,player stats,False,True
+pstats_fg_made_20_29_pct_change_home,player stats,False,True
+pstats_fg_made_20_29_prev_away,player stats,False,True
+pstats_fg_made_20_29_prev_home,player stats,False,True
+pstats_fg_made_20_29_rolling3_away,player stats,False,True
+pstats_fg_made_20_29_rolling3_home,player stats,False,True
+pstats_fg_made_30_39_away,player stats,False,True
+pstats_fg_made_30_39_delta_away,player stats,False,True
+pstats_fg_made_30_39_delta_home,player stats,False,True
+pstats_fg_made_30_39_home,player stats,False,True
+pstats_fg_made_30_39_pct_change_away,player stats,False,True
+pstats_fg_made_30_39_pct_change_home,player stats,False,True
+pstats_fg_made_30_39_prev_away,player stats,False,True
+pstats_fg_made_30_39_prev_home,player stats,False,True
+pstats_fg_made_30_39_rolling3_away,player stats,False,True
+pstats_fg_made_30_39_rolling3_home,player stats,False,True
+pstats_fg_made_40_49_away,player stats,False,True
+pstats_fg_made_40_49_delta_away,player stats,False,True
+pstats_fg_made_40_49_delta_home,player stats,False,True
+pstats_fg_made_40_49_home,player stats,False,True
+pstats_fg_made_40_49_pct_change_away,player stats,False,True
+pstats_fg_made_40_49_pct_change_home,player stats,False,True
+pstats_fg_made_40_49_prev_away,player stats,False,True
+pstats_fg_made_40_49_prev_home,player stats,False,True
+pstats_fg_made_40_49_rolling3_away,player stats,False,True
+pstats_fg_made_40_49_rolling3_home,player stats,False,True
+pstats_fg_made_50_59_away,player stats,False,True
+pstats_fg_made_50_59_delta_away,player stats,False,True
+pstats_fg_made_50_59_delta_home,player stats,False,True
+pstats_fg_made_50_59_home,player stats,False,True
+pstats_fg_made_50_59_pct_change_home,player stats,False,True
+pstats_fg_made_50_59_prev_away,player stats,False,True
+pstats_fg_made_50_59_prev_home,player stats,False,True
+pstats_fg_made_50_59_rolling3_away,player stats,False,True
+pstats_fg_made_50_59_rolling3_home,player stats,False,True
+pstats_fg_made_60__away,player stats,False,True
+pstats_fg_made_60__delta_away,player stats,False,True
+pstats_fg_made_60__delta_home,player stats,False,True
+pstats_fg_made_60__home,player stats,False,True
+pstats_fg_made_60__prev_away,player stats,False,True
+pstats_fg_made_60__prev_home,player stats,False,True
+pstats_fg_made_60__rolling3_away,player stats,False,True
+pstats_fg_made_60__rolling3_home,player stats,False,True
+pstats_fg_made_away,player stats,False,True
+pstats_fg_made_delta_away,player stats,False,True
+pstats_fg_made_delta_home,player stats,False,True
+pstats_fg_made_distance_away,player stats,False,True
+pstats_fg_made_distance_delta_away,player stats,False,True
+pstats_fg_made_distance_delta_home,player stats,False,True
+pstats_fg_made_distance_home,player stats,False,True
+pstats_fg_made_distance_pct_change_away,player stats,False,True
+pstats_fg_made_distance_pct_change_home,player stats,False,True
+pstats_fg_made_distance_prev_away,player stats,False,True
+pstats_fg_made_distance_prev_home,player stats,False,True
+pstats_fg_made_distance_rolling3_away,player stats,False,True
+pstats_fg_made_distance_rolling3_home,player stats,False,True
+pstats_fg_made_home,player stats,False,True
+pstats_fg_made_pct_change_away,player stats,False,True
+pstats_fg_made_pct_change_home,player stats,False,True
+pstats_fg_made_prev_away,player stats,False,True
+pstats_fg_made_prev_home,player stats,False,True
+pstats_fg_made_rolling3_away,player stats,False,True
+pstats_fg_made_rolling3_home,player stats,False,True
+pstats_fg_missed_0_19_away,player stats,False,True
+pstats_fg_missed_0_19_delta_away,player stats,False,True
+pstats_fg_missed_0_19_delta_home,player stats,False,True
+pstats_fg_missed_0_19_home,player stats,False,True
+pstats_fg_missed_0_19_prev_away,player stats,False,True
+pstats_fg_missed_0_19_prev_home,player stats,False,True
+pstats_fg_missed_0_19_rolling3_away,player stats,False,True
+pstats_fg_missed_0_19_rolling3_home,player stats,False,True
+pstats_fg_missed_20_29_away,player stats,False,True
+pstats_fg_missed_20_29_delta_away,player stats,False,True
+pstats_fg_missed_20_29_delta_home,player stats,False,True
+pstats_fg_missed_20_29_home,player stats,False,True
+pstats_fg_missed_20_29_prev_away,player stats,False,True
+pstats_fg_missed_20_29_prev_home,player stats,False,True
+pstats_fg_missed_20_29_rolling3_away,player stats,False,True
+pstats_fg_missed_20_29_rolling3_home,player stats,False,True
+pstats_fg_missed_30_39_away,player stats,False,True
+pstats_fg_missed_30_39_delta_away,player stats,False,True
+pstats_fg_missed_30_39_delta_home,player stats,False,True
+pstats_fg_missed_30_39_home,player stats,False,True
+pstats_fg_missed_30_39_pct_change_home,player stats,False,True
+pstats_fg_missed_30_39_prev_away,player stats,False,True
+pstats_fg_missed_30_39_prev_home,player stats,False,True
+pstats_fg_missed_30_39_rolling3_away,player stats,False,True
+pstats_fg_missed_30_39_rolling3_home,player stats,False,True
+pstats_fg_missed_40_49_away,player stats,False,True
+pstats_fg_missed_40_49_delta_away,player stats,False,True
+pstats_fg_missed_40_49_delta_home,player stats,False,True
+pstats_fg_missed_40_49_home,player stats,False,True
+pstats_fg_missed_40_49_prev_away,player stats,False,True
+pstats_fg_missed_40_49_prev_home,player stats,False,True
+pstats_fg_missed_40_49_rolling3_away,player stats,False,True
+pstats_fg_missed_40_49_rolling3_home,player stats,False,True
+pstats_fg_missed_50_59_away,player stats,False,True
+pstats_fg_missed_50_59_delta_away,player stats,False,True
+pstats_fg_missed_50_59_delta_home,player stats,False,True
+pstats_fg_missed_50_59_home,player stats,False,True
+pstats_fg_missed_50_59_pct_change_home,player stats,False,True
+pstats_fg_missed_50_59_prev_away,player stats,False,True
+pstats_fg_missed_50_59_prev_home,player stats,False,True
+pstats_fg_missed_50_59_rolling3_away,player stats,False,True
+pstats_fg_missed_50_59_rolling3_home,player stats,False,True
+pstats_fg_missed_60__away,player stats,False,True
+pstats_fg_missed_60__delta_away,player stats,False,True
+pstats_fg_missed_60__delta_home,player stats,False,True
+pstats_fg_missed_60__home,player stats,False,True
+pstats_fg_missed_60__prev_away,player stats,False,True
+pstats_fg_missed_60__prev_home,player stats,False,True
+pstats_fg_missed_60__rolling3_away,player stats,False,True
+pstats_fg_missed_60__rolling3_home,player stats,False,True
+pstats_fg_missed_away,player stats,False,True
+pstats_fg_missed_delta_away,player stats,False,True
+pstats_fg_missed_delta_home,player stats,False,True
+pstats_fg_missed_distance_away,player stats,False,True
+pstats_fg_missed_distance_delta_away,player stats,False,True
+pstats_fg_missed_distance_delta_home,player stats,False,True
+pstats_fg_missed_distance_home,player stats,False,True
+pstats_fg_missed_distance_pct_change_home,player stats,False,True
+pstats_fg_missed_distance_prev_away,player stats,False,True
+pstats_fg_missed_distance_prev_home,player stats,False,True
+pstats_fg_missed_distance_rolling3_away,player stats,False,True
+pstats_fg_missed_distance_rolling3_home,player stats,False,True
+pstats_fg_missed_home,player stats,False,True
+pstats_fg_missed_pct_change_home,player stats,False,True
+pstats_fg_missed_prev_away,player stats,False,True
+pstats_fg_missed_prev_home,player stats,False,True
+pstats_fg_missed_rolling3_away,player stats,False,True
+pstats_fg_missed_rolling3_home,player stats,False,True
+pstats_fg_pct_away,player stats,False,True
+pstats_fg_pct_delta_away,player stats,False,True
+pstats_fg_pct_delta_home,player stats,False,True
+pstats_fg_pct_home,player stats,False,True
+pstats_fg_pct_pct_change_away,player stats,False,True
+pstats_fg_pct_pct_change_home,player stats,False,True
+pstats_fg_pct_prev_away,player stats,False,True
+pstats_fg_pct_prev_home,player stats,False,True
+pstats_fg_pct_rolling3_away,player stats,False,True
+pstats_fg_pct_rolling3_home,player stats,False,True
+pstats_fumble_recovery_opp_away,player stats,False,True
+pstats_fumble_recovery_opp_delta_away,player stats,False,True
+pstats_fumble_recovery_opp_delta_home,player stats,False,True
+pstats_fumble_recovery_opp_home,player stats,False,True
+pstats_fumble_recovery_opp_pct_change_away,player stats,False,True
+pstats_fumble_recovery_opp_pct_change_home,player stats,False,True
+pstats_fumble_recovery_opp_prev_away,player stats,False,True
+pstats_fumble_recovery_opp_prev_home,player stats,False,True
+pstats_fumble_recovery_opp_rolling3_away,player stats,False,True
+pstats_fumble_recovery_opp_rolling3_home,player stats,False,True
+pstats_fumble_recovery_own_away,player stats,False,True
+pstats_fumble_recovery_own_delta_away,player stats,False,True
+pstats_fumble_recovery_own_delta_home,player stats,False,True
+pstats_fumble_recovery_own_home,player stats,False,True
+pstats_fumble_recovery_own_pct_change_away,player stats,False,True
+pstats_fumble_recovery_own_pct_change_home,player stats,False,True
+pstats_fumble_recovery_own_prev_away,player stats,False,True
+pstats_fumble_recovery_own_prev_home,player stats,False,True
+pstats_fumble_recovery_own_rolling3_away,player stats,False,True
+pstats_fumble_recovery_own_rolling3_home,player stats,False,True
+pstats_fumble_recovery_tds_away,player stats,False,True
+pstats_fumble_recovery_tds_delta_away,player stats,False,True
+pstats_fumble_recovery_tds_delta_home,player stats,False,True
+pstats_fumble_recovery_tds_home,player stats,False,True
+pstats_fumble_recovery_tds_prev_away,player stats,False,True
+pstats_fumble_recovery_tds_prev_home,player stats,False,True
+pstats_fumble_recovery_tds_rolling3_away,player stats,False,True
+pstats_fumble_recovery_tds_rolling3_home,player stats,False,True
+pstats_fumble_recovery_yards_opp_away,player stats,False,True
+pstats_fumble_recovery_yards_opp_delta_away,player stats,False,True
+pstats_fumble_recovery_yards_opp_delta_home,player stats,False,True
+pstats_fumble_recovery_yards_opp_home,player stats,False,True
+pstats_fumble_recovery_yards_opp_prev_away,player stats,False,True
+pstats_fumble_recovery_yards_opp_prev_home,player stats,False,True
+pstats_fumble_recovery_yards_opp_rolling3_away,player stats,False,True
+pstats_fumble_recovery_yards_opp_rolling3_home,player stats,False,True
+pstats_fumble_recovery_yards_own_away,player stats,False,True
+pstats_fumble_recovery_yards_own_delta_away,player stats,False,True
+pstats_fumble_recovery_yards_own_delta_home,player stats,False,True
+pstats_fumble_recovery_yards_own_home,player stats,False,True
+pstats_fumble_recovery_yards_own_pct_change_away,player stats,False,True
+pstats_fumble_recovery_yards_own_pct_change_home,player stats,False,True
+pstats_fumble_recovery_yards_own_prev_away,player stats,False,True
+pstats_fumble_recovery_yards_own_prev_home,player stats,False,True
+pstats_fumble_recovery_yards_own_rolling3_away,player stats,False,True
+pstats_fumble_recovery_yards_own_rolling3_home,player stats,False,True
+pstats_fumbles_forced_by_opp_away,player stats,False,True
+pstats_fumbles_forced_by_opp_delta_away,player stats,False,True
+pstats_fumbles_forced_by_opp_delta_home,player stats,False,True
+pstats_fumbles_forced_by_opp_home,player stats,False,True
+pstats_fumbles_forced_by_opp_pct_change_away,player stats,False,True
+pstats_fumbles_forced_by_opp_pct_change_home,player stats,False,True
+pstats_fumbles_forced_by_opp_prev_away,player stats,False,True
+pstats_fumbles_forced_by_opp_prev_home,player stats,False,True
+pstats_fumbles_forced_by_opp_rolling3_away,player stats,False,True
+pstats_fumbles_forced_by_opp_rolling3_home,player stats,False,True
+pstats_fumbles_lost_total_away,player stats,False,True
+pstats_fumbles_lost_total_delta_away,player stats,False,True
+pstats_fumbles_lost_total_delta_home,player stats,False,True
+pstats_fumbles_lost_total_home,player stats,False,True
+pstats_fumbles_lost_total_pct_change_away,player stats,False,True
+pstats_fumbles_lost_total_pct_change_home,player stats,False,True
+pstats_fumbles_lost_total_prev_away,player stats,False,True
+pstats_fumbles_lost_total_prev_home,player stats,False,True
+pstats_fumbles_lost_total_rolling3_away,player stats,False,True
+pstats_fumbles_lost_total_rolling3_home,player stats,False,True
+pstats_fumbles_not_forced_away,player stats,False,True
+pstats_fumbles_not_forced_delta_away,player stats,False,True
+pstats_fumbles_not_forced_delta_home,player stats,False,True
+pstats_fumbles_not_forced_home,player stats,False,True
+pstats_fumbles_not_forced_pct_change_away,player stats,False,True
+pstats_fumbles_not_forced_pct_change_home,player stats,False,True
+pstats_fumbles_not_forced_prev_away,player stats,False,True
+pstats_fumbles_not_forced_prev_home,player stats,False,True
+pstats_fumbles_not_forced_rolling3_away,player stats,False,True
+pstats_fumbles_not_forced_rolling3_home,player stats,False,True
+pstats_fumbles_out_of_bounds_away,player stats,False,True
+pstats_fumbles_out_of_bounds_delta_away,player stats,False,True
+pstats_fumbles_out_of_bounds_delta_home,player stats,False,True
+pstats_fumbles_out_of_bounds_home,player stats,False,True
+pstats_fumbles_out_of_bounds_pct_change_away,player stats,False,True
+pstats_fumbles_out_of_bounds_prev_away,player stats,False,True
+pstats_fumbles_out_of_bounds_prev_home,player stats,False,True
+pstats_fumbles_out_of_bounds_rolling3_away,player stats,False,True
+pstats_fumbles_out_of_bounds_rolling3_home,player stats,False,True
+pstats_fumbles_total_away,player stats,False,True
+pstats_fumbles_total_delta_away,player stats,False,True
+pstats_fumbles_total_delta_home,player stats,False,True
+pstats_fumbles_total_home,player stats,False,True
+pstats_fumbles_total_pct_change_away,player stats,False,True
+pstats_fumbles_total_pct_change_home,player stats,False,True
+pstats_fumbles_total_prev_away,player stats,False,True
+pstats_fumbles_total_prev_home,player stats,False,True
+pstats_fumbles_total_rolling3_away,player stats,False,True
+pstats_fumbles_total_rolling3_home,player stats,False,True
+pstats_gwfg_att_away,player stats,False,True
+pstats_gwfg_att_delta_away,player stats,False,True
+pstats_gwfg_att_delta_home,player stats,False,True
+pstats_gwfg_att_home,player stats,False,True
+pstats_gwfg_att_prev_away,player stats,False,True
+pstats_gwfg_att_prev_home,player stats,False,True
+pstats_gwfg_att_rolling3_away,player stats,False,True
+pstats_gwfg_att_rolling3_home,player stats,False,True
+pstats_gwfg_blocked_away,player stats,False,True
+pstats_gwfg_blocked_delta_away,player stats,False,True
+pstats_gwfg_blocked_delta_home,player stats,False,True
+pstats_gwfg_blocked_home,player stats,False,True
+pstats_gwfg_blocked_prev_away,player stats,False,True
+pstats_gwfg_blocked_prev_home,player stats,False,True
+pstats_gwfg_blocked_rolling3_away,player stats,False,True
+pstats_gwfg_blocked_rolling3_home,player stats,False,True
+pstats_gwfg_distance_away,player stats,False,True
+pstats_gwfg_distance_delta_away,player stats,False,True
+pstats_gwfg_distance_delta_home,player stats,False,True
+pstats_gwfg_distance_home,player stats,False,True
+pstats_gwfg_distance_prev_away,player stats,False,True
+pstats_gwfg_distance_prev_home,player stats,False,True
+pstats_gwfg_distance_rolling3_away,player stats,False,True
+pstats_gwfg_distance_rolling3_home,player stats,False,True
+pstats_gwfg_made_away,player stats,False,True
+pstats_gwfg_made_delta_away,player stats,False,True
+pstats_gwfg_made_delta_home,player stats,False,True
+pstats_gwfg_made_home,player stats,False,True
+pstats_gwfg_made_prev_away,player stats,False,True
+pstats_gwfg_made_prev_home,player stats,False,True
+pstats_gwfg_made_rolling3_away,player stats,False,True
+pstats_gwfg_made_rolling3_home,player stats,False,True
+pstats_gwfg_missed_away,player stats,False,True
+pstats_gwfg_missed_delta_away,player stats,False,True
+pstats_gwfg_missed_delta_home,player stats,False,True
+pstats_gwfg_missed_home,player stats,False,True
+pstats_gwfg_missed_prev_away,player stats,False,True
+pstats_gwfg_missed_prev_home,player stats,False,True
+pstats_gwfg_missed_rolling3_away,player stats,False,True
+pstats_gwfg_missed_rolling3_home,player stats,False,True
+pstats_kickoff_return_yards_away,player stats,False,False
+pstats_kickoff_return_yards_delta_away,player stats,False,False
+pstats_kickoff_return_yards_delta_home,player stats,False,False
+pstats_kickoff_return_yards_home,player stats,False,False
+pstats_kickoff_return_yards_pct_change_away,player stats,False,False
+pstats_kickoff_return_yards_pct_change_home,player stats,False,False
+pstats_kickoff_return_yards_prev_away,player stats,False,False
+pstats_kickoff_return_yards_prev_home,player stats,False,False
+pstats_kickoff_return_yards_rolling3_away,player stats,False,False
+pstats_kickoff_return_yards_rolling3_home,player stats,False,False
+pstats_kickoff_returns_away,player stats,False,False
+pstats_kickoff_returns_delta_away,player stats,False,False
+pstats_kickoff_returns_delta_home,player stats,False,False
+pstats_kickoff_returns_home,player stats,False,False
+pstats_kickoff_returns_pct_change_away,player stats,False,False
+pstats_kickoff_returns_pct_change_home,player stats,False,False
+pstats_kickoff_returns_prev_away,player stats,False,False
+pstats_kickoff_returns_prev_home,player stats,False,False
+pstats_kickoff_returns_rolling3_away,player stats,False,False
+pstats_kickoff_returns_rolling3_home,player stats,False,False
+pstats_misc_yards_away,player stats,False,True
+pstats_misc_yards_delta_away,player stats,False,True
+pstats_misc_yards_delta_home,player stats,False,True
+pstats_misc_yards_home,player stats,False,True
+pstats_misc_yards_prev_away,player stats,False,True
+pstats_misc_yards_prev_home,player stats,False,True
+pstats_misc_yards_rolling3_away,player stats,False,True
+pstats_misc_yards_rolling3_home,player stats,False,True
+pstats_pacr_away,player stats,False,True
+pstats_pacr_delta_away,player stats,False,True
+pstats_pacr_delta_home,player stats,False,True
+pstats_pacr_home,player stats,False,True
+pstats_pacr_pct_change_away,player stats,False,True
+pstats_pacr_pct_change_home,player stats,False,True
+pstats_pacr_prev_away,player stats,False,True
+pstats_pacr_prev_home,player stats,False,True
+pstats_pacr_rolling3_away,player stats,False,True
+pstats_pacr_rolling3_home,player stats,False,True
+pstats_passing_10_away,player stats,False,True
+pstats_passing_10_delta_away,player stats,False,True
+pstats_passing_10_delta_home,player stats,False,True
+pstats_passing_10_home,player stats,False,True
+pstats_passing_10_pct_change_away,player stats,False,True
+pstats_passing_10_pct_change_home,player stats,False,True
+pstats_passing_10_prev_away,player stats,False,True
+pstats_passing_10_prev_home,player stats,False,True
+pstats_passing_10_rolling3_away,player stats,False,True
+pstats_passing_10_rolling3_home,player stats,False,True
+pstats_passing_16_away,player stats,False,True
+pstats_passing_16_delta_away,player stats,False,True
+pstats_passing_16_delta_home,player stats,False,True
+pstats_passing_16_home,player stats,False,True
+pstats_passing_16_pct_change_away,player stats,False,True
+pstats_passing_16_pct_change_home,player stats,False,True
+pstats_passing_16_prev_away,player stats,False,True
+pstats_passing_16_prev_home,player stats,False,True
+pstats_passing_16_rolling3_away,player stats,False,True
+pstats_passing_16_rolling3_home,player stats,False,True
+pstats_passing_20_away,player stats,False,True
+pstats_passing_20_delta_away,player stats,False,True
+pstats_passing_20_delta_home,player stats,False,True
+pstats_passing_20_home,player stats,False,True
+pstats_passing_20_pct_change_away,player stats,False,True
+pstats_passing_20_pct_change_home,player stats,False,True
+pstats_passing_20_prev_away,player stats,False,True
+pstats_passing_20_prev_home,player stats,False,True
+pstats_passing_20_rolling3_away,player stats,False,True
+pstats_passing_20_rolling3_home,player stats,False,True
+pstats_passing_2pt_conversions_away,player stats,False,True
+pstats_passing_2pt_conversions_delta_away,player stats,False,True
+pstats_passing_2pt_conversions_delta_home,player stats,False,True
+pstats_passing_2pt_conversions_home,player stats,False,True
+pstats_passing_2pt_conversions_prev_away,player stats,False,True
+pstats_passing_2pt_conversions_prev_home,player stats,False,True
+pstats_passing_2pt_conversions_rolling3_away,player stats,False,True
+pstats_passing_2pt_conversions_rolling3_home,player stats,False,True
+pstats_passing_40_away,player stats,False,True
+pstats_passing_40_delta_away,player stats,False,True
+pstats_passing_40_delta_home,player stats,False,True
+pstats_passing_40_home,player stats,False,True
+pstats_passing_40_pct_change_away,player stats,False,True
+pstats_passing_40_prev_away,player stats,False,True
+pstats_passing_40_prev_home,player stats,False,True
+pstats_passing_40_rolling3_away,player stats,False,True
+pstats_passing_40_rolling3_home,player stats,False,True
+pstats_passing_air_yards_away,player stats,False,True
+pstats_passing_air_yards_delta_away,player stats,False,True
+pstats_passing_air_yards_delta_home,player stats,False,True
+pstats_passing_air_yards_home,player stats,False,True
+pstats_passing_air_yards_pct_change_away,player stats,False,True
+pstats_passing_air_yards_pct_change_home,player stats,False,True
+pstats_passing_air_yards_prev_away,player stats,False,True
+pstats_passing_air_yards_prev_home,player stats,False,True
+pstats_passing_air_yards_rolling3_away,player stats,False,True
+pstats_passing_air_yards_rolling3_home,player stats,False,True
+pstats_passing_cpoe_away,player stats,False,True
+pstats_passing_cpoe_delta_away,player stats,False,True
+pstats_passing_cpoe_delta_home,player stats,False,True
+pstats_passing_cpoe_home,player stats,False,True
+pstats_passing_cpoe_pct_change_away,player stats,False,True
+pstats_passing_cpoe_pct_change_home,player stats,False,True
+pstats_passing_cpoe_prev_away,player stats,False,True
+pstats_passing_cpoe_prev_home,player stats,False,True
+pstats_passing_cpoe_rolling3_away,player stats,False,True
+pstats_passing_cpoe_rolling3_home,player stats,False,True
+pstats_passing_epa_away,player stats,False,True
+pstats_passing_epa_delta_away,player stats,False,True
+pstats_passing_epa_delta_home,player stats,False,True
+pstats_passing_epa_home,player stats,False,True
+pstats_passing_epa_pct_change_away,player stats,False,True
+pstats_passing_epa_pct_change_home,player stats,False,True
+pstats_passing_epa_prev_away,player stats,False,True
+pstats_passing_epa_prev_home,player stats,False,True
+pstats_passing_epa_rolling3_away,player stats,False,True
+pstats_passing_epa_rolling3_home,player stats,False,True
+pstats_passing_first_downs_away,player stats,False,True
+pstats_passing_first_downs_delta_away,player stats,False,True
+pstats_passing_first_downs_delta_home,player stats,False,True
+pstats_passing_first_downs_home,player stats,False,True
+pstats_passing_first_downs_pct_change_away,player stats,False,True
+pstats_passing_first_downs_pct_change_home,player stats,False,True
+pstats_passing_first_downs_prev_away,player stats,False,True
+pstats_passing_first_downs_prev_home,player stats,False,True
+pstats_passing_first_downs_rolling3_away,player stats,False,True
+pstats_passing_first_downs_rolling3_home,player stats,False,True
+pstats_passing_interceptions_away,player stats,False,True
+pstats_passing_interceptions_delta_away,player stats,False,True
+pstats_passing_interceptions_delta_home,player stats,False,True
+pstats_passing_interceptions_home,player stats,False,True
+pstats_passing_interceptions_pct_change_away,player stats,False,True
+pstats_passing_interceptions_pct_change_home,player stats,False,True
+pstats_passing_interceptions_prev_away,player stats,False,True
+pstats_passing_interceptions_prev_home,player stats,False,True
+pstats_passing_interceptions_rolling3_away,player stats,False,True
+pstats_passing_interceptions_rolling3_home,player stats,False,True
+pstats_passing_tds_away,player stats,False,True
+pstats_passing_tds_delta_away,player stats,False,True
+pstats_passing_tds_delta_home,player stats,False,True
+pstats_passing_tds_home,player stats,False,True
+pstats_passing_tds_pct_change_away,player stats,False,True
+pstats_passing_tds_pct_change_home,player stats,False,True
+pstats_passing_tds_prev_away,player stats,False,True
+pstats_passing_tds_prev_home,player stats,False,True
+pstats_passing_tds_rolling3_away,player stats,False,True
+pstats_passing_tds_rolling3_home,player stats,False,True
+pstats_passing_yards_after_catch_away,player stats,False,True
+pstats_passing_yards_after_catch_delta_away,player stats,False,True
+pstats_passing_yards_after_catch_delta_home,player stats,False,True
+pstats_passing_yards_after_catch_home,player stats,False,True
+pstats_passing_yards_after_catch_pct_change_away,player stats,False,True
+pstats_passing_yards_after_catch_pct_change_home,player stats,False,True
+pstats_passing_yards_after_catch_prev_away,player stats,False,True
+pstats_passing_yards_after_catch_prev_home,player stats,False,True
+pstats_passing_yards_after_catch_rolling3_away,player stats,False,True
+pstats_passing_yards_after_catch_rolling3_home,player stats,False,True
+pstats_passing_yards_away,player stats,False,True
+pstats_passing_yards_delta_away,player stats,False,True
+pstats_passing_yards_delta_home,player stats,False,True
+pstats_passing_yards_home,player stats,False,True
+pstats_passing_yards_pct_change_away,player stats,False,True
+pstats_passing_yards_pct_change_home,player stats,False,True
+pstats_passing_yards_prev_away,player stats,False,True
+pstats_passing_yards_prev_home,player stats,False,True
+pstats_passing_yards_rolling3_away,player stats,False,True
+pstats_passing_yards_rolling3_home,player stats,False,True
+pstats_pat_att_away,player stats,False,True
+pstats_pat_att_delta_away,player stats,False,True
+pstats_pat_att_delta_home,player stats,False,True
+pstats_pat_att_home,player stats,False,True
+pstats_pat_att_pct_change_away,player stats,False,True
+pstats_pat_att_pct_change_home,player stats,False,True
+pstats_pat_att_prev_away,player stats,False,True
+pstats_pat_att_prev_home,player stats,False,True
+pstats_pat_att_rolling3_away,player stats,False,True
+pstats_pat_att_rolling3_home,player stats,False,True
+pstats_pat_blocked_away,player stats,False,True
+pstats_pat_blocked_delta_away,player stats,False,True
+pstats_pat_blocked_delta_home,player stats,False,True
+pstats_pat_blocked_home,player stats,False,True
+pstats_pat_blocked_prev_away,player stats,False,True
+pstats_pat_blocked_prev_home,player stats,False,True
+pstats_pat_blocked_rolling3_away,player stats,False,True
+pstats_pat_blocked_rolling3_home,player stats,False,True
+pstats_pat_made_away,player stats,False,True
+pstats_pat_made_delta_away,player stats,False,True
+pstats_pat_made_delta_home,player stats,False,True
+pstats_pat_made_home,player stats,False,True
+pstats_pat_made_pct_change_away,player stats,False,True
+pstats_pat_made_pct_change_home,player stats,False,True
+pstats_pat_made_prev_away,player stats,False,True
+pstats_pat_made_prev_home,player stats,False,True
+pstats_pat_made_rolling3_away,player stats,False,True
+pstats_pat_made_rolling3_home,player stats,False,True
+pstats_pat_missed_away,player stats,False,True
+pstats_pat_missed_delta_away,player stats,False,True
+pstats_pat_missed_delta_home,player stats,False,True
+pstats_pat_missed_home,player stats,False,True
+pstats_pat_missed_prev_away,player stats,False,True
+pstats_pat_missed_prev_home,player stats,False,True
+pstats_pat_missed_rolling3_away,player stats,False,True
+pstats_pat_missed_rolling3_home,player stats,False,True
+pstats_pat_pct_away,player stats,False,True
+pstats_pat_pct_delta_away,player stats,False,True
+pstats_pat_pct_delta_home,player stats,False,True
+pstats_pat_pct_home,player stats,False,True
+pstats_pat_pct_pct_change_away,player stats,False,True
+pstats_pat_pct_pct_change_home,player stats,False,True
+pstats_pat_pct_prev_away,player stats,False,True
+pstats_pat_pct_prev_home,player stats,False,True
+pstats_pat_pct_rolling3_away,player stats,False,True
+pstats_pat_pct_rolling3_home,player stats,False,True
+pstats_penalties_away,player stats,False,True
+pstats_penalties_delta_away,player stats,False,True
+pstats_penalties_delta_home,player stats,False,True
+pstats_penalties_home,player stats,False,True
+pstats_penalties_pct_change_away,player stats,False,True
+pstats_penalties_pct_change_home,player stats,False,True
+pstats_penalties_prev_away,player stats,False,True
+pstats_penalties_prev_home,player stats,False,True
+pstats_penalties_rolling3_away,player stats,False,True
+pstats_penalties_rolling3_home,player stats,False,True
+pstats_penalty_yards_away,player stats,False,True
+pstats_penalty_yards_delta_away,player stats,False,True
+pstats_penalty_yards_delta_home,player stats,False,True
+pstats_penalty_yards_home,player stats,False,True
+pstats_penalty_yards_pct_change_away,player stats,False,True
+pstats_penalty_yards_pct_change_home,player stats,False,True
+pstats_penalty_yards_prev_away,player stats,False,True
+pstats_penalty_yards_prev_home,player stats,False,True
+pstats_penalty_yards_rolling3_away,player stats,False,True
+pstats_penalty_yards_rolling3_home,player stats,False,True
+pstats_pt_att_away,player stats,False,True
+pstats_pt_att_delta_away,player stats,False,True
+pstats_pt_att_delta_home,player stats,False,True
+pstats_pt_att_home,player stats,False,True
+pstats_pt_att_pct_change_away,player stats,False,True
+pstats_pt_att_pct_change_home,player stats,False,True
+pstats_pt_att_prev_away,player stats,False,True
+pstats_pt_att_prev_home,player stats,False,True
+pstats_pt_att_rolling3_away,player stats,False,True
+pstats_pt_att_rolling3_home,player stats,False,True
+pstats_pt_blocked_away,player stats,False,True
+pstats_pt_blocked_delta_away,player stats,False,True
+pstats_pt_blocked_delta_home,player stats,False,True
+pstats_pt_blocked_home,player stats,False,True
+pstats_pt_blocked_prev_away,player stats,False,True
+pstats_pt_blocked_prev_home,player stats,False,True
+pstats_pt_blocked_rolling3_away,player stats,False,True
+pstats_pt_blocked_rolling3_home,player stats,False,True
+pstats_pt_downed_away,player stats,False,True
+pstats_pt_downed_delta_away,player stats,False,True
+pstats_pt_downed_delta_home,player stats,False,True
+pstats_pt_downed_home,player stats,False,True
+pstats_pt_downed_pct_change_away,player stats,False,True
+pstats_pt_downed_prev_away,player stats,False,True
+pstats_pt_downed_prev_home,player stats,False,True
+pstats_pt_downed_rolling3_away,player stats,False,True
+pstats_pt_downed_rolling3_home,player stats,False,True
+pstats_pt_fair_caught_away,player stats,False,True
+pstats_pt_fair_caught_delta_away,player stats,False,True
+pstats_pt_fair_caught_delta_home,player stats,False,True
+pstats_pt_fair_caught_home,player stats,False,True
+pstats_pt_fair_caught_pct_change_away,player stats,False,True
+pstats_pt_fair_caught_pct_change_home,player stats,False,True
+pstats_pt_fair_caught_prev_away,player stats,False,True
+pstats_pt_fair_caught_prev_home,player stats,False,True
+pstats_pt_fair_caught_rolling3_away,player stats,False,True
+pstats_pt_fair_caught_rolling3_home,player stats,False,True
+pstats_pt_inside_20_away,player stats,False,True
+pstats_pt_inside_20_delta_away,player stats,False,True
+pstats_pt_inside_20_delta_home,player stats,False,True
+pstats_pt_inside_20_home,player stats,False,True
+pstats_pt_inside_20_pct_change_away,player stats,False,True
+pstats_pt_inside_20_pct_change_home,player stats,False,True
+pstats_pt_inside_20_prev_away,player stats,False,True
+pstats_pt_inside_20_prev_home,player stats,False,True
+pstats_pt_inside_20_rolling3_away,player stats,False,True
+pstats_pt_inside_20_rolling3_home,player stats,False,True
+pstats_pt_long_away,player stats,False,True
+pstats_pt_long_delta_away,player stats,False,True
+pstats_pt_long_delta_home,player stats,False,True
+pstats_pt_long_home,player stats,False,True
+pstats_pt_long_pct_change_away,player stats,False,True
+pstats_pt_long_pct_change_home,player stats,False,True
+pstats_pt_long_prev_away,player stats,False,True
+pstats_pt_long_prev_home,player stats,False,True
+pstats_pt_long_rolling3_away,player stats,False,True
+pstats_pt_long_rolling3_home,player stats,False,True
+pstats_pt_net_yards_away,player stats,False,True
+pstats_pt_net_yards_delta_away,player stats,False,True
+pstats_pt_net_yards_delta_home,player stats,False,True
+pstats_pt_net_yards_home,player stats,False,True
+pstats_pt_net_yards_pct_change_away,player stats,False,True
+pstats_pt_net_yards_pct_change_home,player stats,False,True
+pstats_pt_net_yards_prev_away,player stats,False,True
+pstats_pt_net_yards_prev_home,player stats,False,True
+pstats_pt_net_yards_rolling3_away,player stats,False,True
+pstats_pt_net_yards_rolling3_home,player stats,False,True
+pstats_pt_out_of_bounds_away,player stats,False,True
+pstats_pt_out_of_bounds_delta_away,player stats,False,True
+pstats_pt_out_of_bounds_delta_home,player stats,False,True
+pstats_pt_out_of_bounds_home,player stats,False,True
+pstats_pt_out_of_bounds_pct_change_home,player stats,False,True
+pstats_pt_out_of_bounds_prev_away,player stats,False,True
+pstats_pt_out_of_bounds_prev_home,player stats,False,True
+pstats_pt_out_of_bounds_rolling3_away,player stats,False,True
+pstats_pt_out_of_bounds_rolling3_home,player stats,False,True
+pstats_pt_return_tds_away,player stats,False,True
+pstats_pt_return_tds_delta_away,player stats,False,True
+pstats_pt_return_tds_delta_home,player stats,False,True
+pstats_pt_return_tds_home,player stats,False,True
+pstats_pt_return_tds_prev_away,player stats,False,True
+pstats_pt_return_tds_prev_home,player stats,False,True
+pstats_pt_return_tds_rolling3_away,player stats,False,True
+pstats_pt_return_tds_rolling3_home,player stats,False,True
+pstats_pt_return_yards_away,player stats,False,True
+pstats_pt_return_yards_delta_away,player stats,False,True
+pstats_pt_return_yards_delta_home,player stats,False,True
+pstats_pt_return_yards_home,player stats,False,True
+pstats_pt_return_yards_pct_change_away,player stats,False,True
+pstats_pt_return_yards_pct_change_home,player stats,False,True
+pstats_pt_return_yards_prev_away,player stats,False,True
+pstats_pt_return_yards_prev_home,player stats,False,True
+pstats_pt_return_yards_rolling3_away,player stats,False,True
+pstats_pt_return_yards_rolling3_home,player stats,False,True
+pstats_pt_returned_away,player stats,False,True
+pstats_pt_returned_delta_away,player stats,False,True
+pstats_pt_returned_delta_home,player stats,False,True
+pstats_pt_returned_home,player stats,False,True
+pstats_pt_returned_pct_change_away,player stats,False,True
+pstats_pt_returned_pct_change_home,player stats,False,True
+pstats_pt_returned_prev_away,player stats,False,True
+pstats_pt_returned_prev_home,player stats,False,True
+pstats_pt_returned_rolling3_away,player stats,False,True
+pstats_pt_returned_rolling3_home,player stats,False,True
+pstats_pt_touchback_away,player stats,False,True
+pstats_pt_touchback_delta_away,player stats,False,True
+pstats_pt_touchback_delta_home,player stats,False,True
+pstats_pt_touchback_home,player stats,False,True
+pstats_pt_touchback_pct_change_home,player stats,False,True
+pstats_pt_touchback_prev_away,player stats,False,True
+pstats_pt_touchback_prev_home,player stats,False,True
+pstats_pt_touchback_rolling3_away,player stats,False,True
+pstats_pt_touchback_rolling3_home,player stats,False,True
+pstats_pt_yards_away,player stats,False,True
+pstats_pt_yards_delta_away,player stats,False,True
+pstats_pt_yards_delta_home,player stats,False,True
+pstats_pt_yards_home,player stats,False,True
+pstats_pt_yards_pct_change_away,player stats,False,True
+pstats_pt_yards_pct_change_home,player stats,False,True
+pstats_pt_yards_prev_away,player stats,False,True
+pstats_pt_yards_prev_home,player stats,False,True
+pstats_pt_yards_rolling3_away,player stats,False,True
+pstats_pt_yards_rolling3_home,player stats,False,True
+pstats_punt_return_yards_away,player stats,False,True
+pstats_punt_return_yards_delta_away,player stats,False,True
+pstats_punt_return_yards_delta_home,player stats,False,True
+pstats_punt_return_yards_home,player stats,False,True
+pstats_punt_return_yards_pct_change_away,player stats,False,True
+pstats_punt_return_yards_pct_change_home,player stats,False,True
+pstats_punt_return_yards_prev_away,player stats,False,True
+pstats_punt_return_yards_prev_home,player stats,False,True
+pstats_punt_return_yards_rolling3_away,player stats,False,True
+pstats_punt_return_yards_rolling3_home,player stats,False,True
+pstats_punt_returns_away,player stats,False,True
+pstats_punt_returns_delta_away,player stats,False,True
+pstats_punt_returns_delta_home,player stats,False,True
+pstats_punt_returns_home,player stats,False,True
+pstats_punt_returns_pct_change_away,player stats,False,True
+pstats_punt_returns_pct_change_home,player stats,False,True
+pstats_punt_returns_prev_away,player stats,False,True
+pstats_punt_returns_prev_home,player stats,False,True
+pstats_punt_returns_rolling3_away,player stats,False,True
+pstats_punt_returns_rolling3_home,player stats,False,True
+pstats_racr_away,player stats,False,True
+pstats_racr_delta_away,player stats,False,True
+pstats_racr_delta_home,player stats,False,True
+pstats_racr_home,player stats,False,True
+pstats_racr_pct_change_away,player stats,False,True
+pstats_racr_pct_change_home,player stats,False,True
+pstats_racr_prev_away,player stats,False,True
+pstats_racr_prev_home,player stats,False,True
+pstats_racr_rolling3_away,player stats,False,True
+pstats_racr_rolling3_home,player stats,False,True
+pstats_receiving_10_away,player stats,False,True
+pstats_receiving_10_delta_away,player stats,False,True
+pstats_receiving_10_delta_home,player stats,False,True
+pstats_receiving_10_home,player stats,False,True
+pstats_receiving_10_pct_change_away,player stats,False,True
+pstats_receiving_10_pct_change_home,player stats,False,True
+pstats_receiving_10_prev_away,player stats,False,True
+pstats_receiving_10_prev_home,player stats,False,True
+pstats_receiving_10_rolling3_away,player stats,False,True
+pstats_receiving_10_rolling3_home,player stats,False,True
+pstats_receiving_16_away,player stats,False,True
+pstats_receiving_16_delta_away,player stats,False,True
+pstats_receiving_16_delta_home,player stats,False,True
+pstats_receiving_16_home,player stats,False,True
+pstats_receiving_16_pct_change_away,player stats,False,True
+pstats_receiving_16_pct_change_home,player stats,False,True
+pstats_receiving_16_prev_away,player stats,False,True
+pstats_receiving_16_prev_home,player stats,False,True
+pstats_receiving_16_rolling3_away,player stats,False,True
+pstats_receiving_16_rolling3_home,player stats,False,True
+pstats_receiving_20_away,player stats,False,True
+pstats_receiving_20_delta_away,player stats,False,True
+pstats_receiving_20_delta_home,player stats,False,True
+pstats_receiving_20_home,player stats,False,True
+pstats_receiving_20_pct_change_away,player stats,False,True
+pstats_receiving_20_pct_change_home,player stats,False,True
+pstats_receiving_20_prev_away,player stats,False,True
+pstats_receiving_20_prev_home,player stats,False,True
+pstats_receiving_20_rolling3_away,player stats,False,True
+pstats_receiving_20_rolling3_home,player stats,False,True
+pstats_receiving_2pt_conversions_away,player stats,False,True
+pstats_receiving_2pt_conversions_delta_away,player stats,False,True
+pstats_receiving_2pt_conversions_delta_home,player stats,False,True
+pstats_receiving_2pt_conversions_home,player stats,False,True
+pstats_receiving_2pt_conversions_prev_away,player stats,False,True
+pstats_receiving_2pt_conversions_prev_home,player stats,False,True
+pstats_receiving_2pt_conversions_rolling3_away,player stats,False,True
+pstats_receiving_2pt_conversions_rolling3_home,player stats,False,True
+pstats_receiving_40_away,player stats,False,True
+pstats_receiving_40_delta_away,player stats,False,True
+pstats_receiving_40_delta_home,player stats,False,True
+pstats_receiving_40_home,player stats,False,True
+pstats_receiving_40_pct_change_away,player stats,False,True
+pstats_receiving_40_pct_change_home,player stats,False,True
+pstats_receiving_40_prev_away,player stats,False,True
+pstats_receiving_40_prev_home,player stats,False,True
+pstats_receiving_40_rolling3_away,player stats,False,True
+pstats_receiving_40_rolling3_home,player stats,False,True
+pstats_receiving_air_yards_away,player stats,False,True
+pstats_receiving_air_yards_delta_away,player stats,False,True
+pstats_receiving_air_yards_delta_home,player stats,False,True
+pstats_receiving_air_yards_home,player stats,False,True
+pstats_receiving_air_yards_pct_change_away,player stats,False,True
+pstats_receiving_air_yards_pct_change_home,player stats,False,True
+pstats_receiving_air_yards_prev_away,player stats,False,True
+pstats_receiving_air_yards_prev_home,player stats,False,True
+pstats_receiving_air_yards_rolling3_away,player stats,False,True
+pstats_receiving_air_yards_rolling3_home,player stats,False,True
+pstats_receiving_epa_away,player stats,False,True
+pstats_receiving_epa_delta_away,player stats,False,True
+pstats_receiving_epa_delta_home,player stats,False,True
+pstats_receiving_epa_home,player stats,False,True
+pstats_receiving_epa_pct_change_away,player stats,False,True
+pstats_receiving_epa_pct_change_home,player stats,False,True
+pstats_receiving_epa_prev_away,player stats,False,True
+pstats_receiving_epa_prev_home,player stats,False,True
+pstats_receiving_epa_rolling3_away,player stats,False,True
+pstats_receiving_epa_rolling3_home,player stats,False,True
+pstats_receiving_first_downs_away,player stats,False,True
+pstats_receiving_first_downs_delta_away,player stats,False,True
+pstats_receiving_first_downs_delta_home,player stats,False,True
+pstats_receiving_first_downs_home,player stats,False,True
+pstats_receiving_first_downs_pct_change_away,player stats,False,True
+pstats_receiving_first_downs_pct_change_home,player stats,False,True
+pstats_receiving_first_downs_prev_away,player stats,False,True
+pstats_receiving_first_downs_prev_home,player stats,False,True
+pstats_receiving_first_downs_rolling3_away,player stats,False,True
+pstats_receiving_first_downs_rolling3_home,player stats,False,True
+pstats_receiving_fumbles_away,player stats,False,True
+pstats_receiving_fumbles_delta_away,player stats,False,True
+pstats_receiving_fumbles_delta_home,player stats,False,True
+pstats_receiving_fumbles_home,player stats,False,True
+pstats_receiving_fumbles_lost_away,player stats,False,True
+pstats_receiving_fumbles_lost_delta_away,player stats,False,True
+pstats_receiving_fumbles_lost_delta_home,player stats,False,True
+pstats_receiving_fumbles_lost_home,player stats,False,True
+pstats_receiving_fumbles_lost_prev_away,player stats,False,True
+pstats_receiving_fumbles_lost_prev_home,player stats,False,True
+pstats_receiving_fumbles_lost_rolling3_away,player stats,False,True
+pstats_receiving_fumbles_lost_rolling3_home,player stats,False,True
+pstats_receiving_fumbles_pct_change_home,player stats,False,True
+pstats_receiving_fumbles_prev_away,player stats,False,True
+pstats_receiving_fumbles_prev_home,player stats,False,True
+pstats_receiving_fumbles_rolling3_away,player stats,False,True
+pstats_receiving_fumbles_rolling3_home,player stats,False,True
+pstats_receiving_tds_away,player stats,False,True
+pstats_receiving_tds_delta_away,player stats,False,True
+pstats_receiving_tds_delta_home,player stats,False,True
+pstats_receiving_tds_home,player stats,False,True
+pstats_receiving_tds_pct_change_away,player stats,False,True
+pstats_receiving_tds_pct_change_home,player stats,False,True
+pstats_receiving_tds_prev_away,player stats,False,True
+pstats_receiving_tds_prev_home,player stats,False,True
+pstats_receiving_tds_rolling3_away,player stats,False,True
+pstats_receiving_tds_rolling3_home,player stats,False,True
+pstats_receiving_yards_after_catch_away,player stats,False,True
+pstats_receiving_yards_after_catch_delta_away,player stats,False,True
+pstats_receiving_yards_after_catch_delta_home,player stats,False,True
+pstats_receiving_yards_after_catch_home,player stats,False,True
+pstats_receiving_yards_after_catch_pct_change_away,player stats,False,True
+pstats_receiving_yards_after_catch_pct_change_home,player stats,False,True
+pstats_receiving_yards_after_catch_prev_away,player stats,False,True
+pstats_receiving_yards_after_catch_prev_home,player stats,False,True
+pstats_receiving_yards_after_catch_rolling3_away,player stats,False,True
+pstats_receiving_yards_after_catch_rolling3_home,player stats,False,True
+pstats_receiving_yards_away,player stats,False,True
+pstats_receiving_yards_delta_away,player stats,False,True
+pstats_receiving_yards_delta_home,player stats,False,True
+pstats_receiving_yards_home,player stats,False,True
+pstats_receiving_yards_pct_change_away,player stats,False,True
+pstats_receiving_yards_pct_change_home,player stats,False,True
+pstats_receiving_yards_prev_away,player stats,False,True
+pstats_receiving_yards_prev_home,player stats,False,True
+pstats_receiving_yards_rolling3_away,player stats,False,True
+pstats_receiving_yards_rolling3_home,player stats,False,True
+pstats_receptions_away,player stats,False,True
+pstats_receptions_delta_away,player stats,False,True
+pstats_receptions_delta_home,player stats,False,True
+pstats_receptions_home,player stats,False,True
+pstats_receptions_pct_change_away,player stats,False,True
+pstats_receptions_pct_change_home,player stats,False,True
+pstats_receptions_prev_away,player stats,False,True
+pstats_receptions_prev_home,player stats,False,True
+pstats_receptions_rolling3_away,player stats,False,True
+pstats_receptions_rolling3_home,player stats,False,True
+pstats_rushing_10_away,player stats,False,True
+pstats_rushing_10_delta_away,player stats,False,True
+pstats_rushing_10_delta_home,player stats,False,True
+pstats_rushing_10_home,player stats,False,True
+pstats_rushing_10_pct_change_away,player stats,False,True
+pstats_rushing_10_pct_change_home,player stats,False,True
+pstats_rushing_10_prev_away,player stats,False,True
+pstats_rushing_10_prev_home,player stats,False,True
+pstats_rushing_10_rolling3_away,player stats,False,True
+pstats_rushing_10_rolling3_home,player stats,False,True
+pstats_rushing_12_away,player stats,False,True
+pstats_rushing_12_delta_away,player stats,False,True
+pstats_rushing_12_delta_home,player stats,False,True
+pstats_rushing_12_home,player stats,False,True
+pstats_rushing_12_pct_change_away,player stats,False,True
+pstats_rushing_12_pct_change_home,player stats,False,True
+pstats_rushing_12_prev_away,player stats,False,True
+pstats_rushing_12_prev_home,player stats,False,True
+pstats_rushing_12_rolling3_away,player stats,False,True
+pstats_rushing_12_rolling3_home,player stats,False,True
+pstats_rushing_20_away,player stats,False,True
+pstats_rushing_20_delta_away,player stats,False,True
+pstats_rushing_20_delta_home,player stats,False,True
+pstats_rushing_20_home,player stats,False,True
+pstats_rushing_20_pct_change_away,player stats,False,True
+pstats_rushing_20_pct_change_home,player stats,False,True
+pstats_rushing_20_prev_away,player stats,False,True
+pstats_rushing_20_prev_home,player stats,False,True
+pstats_rushing_20_rolling3_away,player stats,False,True
+pstats_rushing_20_rolling3_home,player stats,False,True
+pstats_rushing_2pt_conversions_away,player stats,False,True
+pstats_rushing_2pt_conversions_delta_away,player stats,False,True
+pstats_rushing_2pt_conversions_delta_home,player stats,False,True
+pstats_rushing_2pt_conversions_home,player stats,False,True
+pstats_rushing_2pt_conversions_prev_away,player stats,False,True
+pstats_rushing_2pt_conversions_prev_home,player stats,False,True
+pstats_rushing_2pt_conversions_rolling3_away,player stats,False,True
+pstats_rushing_2pt_conversions_rolling3_home,player stats,False,True
+pstats_rushing_40_away,player stats,False,True
+pstats_rushing_40_delta_away,player stats,False,True
+pstats_rushing_40_delta_home,player stats,False,True
+pstats_rushing_40_home,player stats,False,True
+pstats_rushing_40_prev_away,player stats,False,True
+pstats_rushing_40_prev_home,player stats,False,True
+pstats_rushing_40_rolling3_away,player stats,False,True
+pstats_rushing_40_rolling3_home,player stats,False,True
+pstats_rushing_epa_away,player stats,False,True
+pstats_rushing_epa_delta_away,player stats,False,True
+pstats_rushing_epa_delta_home,player stats,False,True
+pstats_rushing_epa_home,player stats,False,True
+pstats_rushing_epa_pct_change_away,player stats,False,True
+pstats_rushing_epa_pct_change_home,player stats,False,True
+pstats_rushing_epa_prev_away,player stats,False,True
+pstats_rushing_epa_prev_home,player stats,False,True
+pstats_rushing_epa_rolling3_away,player stats,False,True
+pstats_rushing_epa_rolling3_home,player stats,False,True
+pstats_rushing_first_downs_away,player stats,False,True
+pstats_rushing_first_downs_delta_away,player stats,False,True
+pstats_rushing_first_downs_delta_home,player stats,False,True
+pstats_rushing_first_downs_home,player stats,False,True
+pstats_rushing_first_downs_pct_change_away,player stats,False,True
+pstats_rushing_first_downs_pct_change_home,player stats,False,True
+pstats_rushing_first_downs_prev_away,player stats,False,True
+pstats_rushing_first_downs_prev_home,player stats,False,True
+pstats_rushing_first_downs_rolling3_away,player stats,False,True
+pstats_rushing_first_downs_rolling3_home,player stats,False,True
+pstats_rushing_fumbles_away,player stats,False,True
+pstats_rushing_fumbles_delta_away,player stats,False,True
+pstats_rushing_fumbles_delta_home,player stats,False,True
+pstats_rushing_fumbles_home,player stats,False,True
+pstats_rushing_fumbles_lost_away,player stats,False,True
+pstats_rushing_fumbles_lost_delta_away,player stats,False,True
+pstats_rushing_fumbles_lost_delta_home,player stats,False,True
+pstats_rushing_fumbles_lost_home,player stats,False,True
+pstats_rushing_fumbles_lost_pct_change_home,player stats,False,True
+pstats_rushing_fumbles_lost_prev_away,player stats,False,True
+pstats_rushing_fumbles_lost_prev_home,player stats,False,True
+pstats_rushing_fumbles_lost_rolling3_away,player stats,False,True
+pstats_rushing_fumbles_lost_rolling3_home,player stats,False,True
+pstats_rushing_fumbles_pct_change_away,player stats,False,True
+pstats_rushing_fumbles_pct_change_home,player stats,False,True
+pstats_rushing_fumbles_prev_away,player stats,False,True
+pstats_rushing_fumbles_prev_home,player stats,False,True
+pstats_rushing_fumbles_rolling3_away,player stats,False,True
+pstats_rushing_fumbles_rolling3_home,player stats,False,True
+pstats_rushing_tds_away,player stats,False,True
+pstats_rushing_tds_delta_away,player stats,False,True
+pstats_rushing_tds_delta_home,player stats,False,True
+pstats_rushing_tds_home,player stats,False,True
+pstats_rushing_tds_pct_change_away,player stats,False,True
+pstats_rushing_tds_pct_change_home,player stats,False,True
+pstats_rushing_tds_prev_away,player stats,False,True
+pstats_rushing_tds_prev_home,player stats,False,True
+pstats_rushing_tds_rolling3_away,player stats,False,True
+pstats_rushing_tds_rolling3_home,player stats,False,True
+pstats_rushing_yards_away,player stats,False,True
+pstats_rushing_yards_delta_away,player stats,False,True
+pstats_rushing_yards_delta_home,player stats,False,True
+pstats_rushing_yards_home,player stats,False,True
+pstats_rushing_yards_pct_change_away,player stats,False,True
+pstats_rushing_yards_pct_change_home,player stats,False,True
+pstats_rushing_yards_prev_away,player stats,False,True
+pstats_rushing_yards_prev_home,player stats,False,True
+pstats_rushing_yards_rolling3_away,player stats,False,True
+pstats_rushing_yards_rolling3_home,player stats,False,True
+pstats_sack_fumbles_away,player stats,False,True
+pstats_sack_fumbles_delta_away,player stats,False,True
+pstats_sack_fumbles_delta_home,player stats,False,True
+pstats_sack_fumbles_home,player stats,False,True
+pstats_sack_fumbles_lost_away,player stats,False,True
+pstats_sack_fumbles_lost_delta_away,player stats,False,True
+pstats_sack_fumbles_lost_delta_home,player stats,False,True
+pstats_sack_fumbles_lost_home,player stats,False,True
+pstats_sack_fumbles_lost_pct_change_away,player stats,False,True
+pstats_sack_fumbles_lost_pct_change_home,player stats,False,True
+pstats_sack_fumbles_lost_prev_away,player stats,False,True
+pstats_sack_fumbles_lost_prev_home,player stats,False,True
+pstats_sack_fumbles_lost_rolling3_away,player stats,False,True
+pstats_sack_fumbles_lost_rolling3_home,player stats,False,True
+pstats_sack_fumbles_pct_change_away,player stats,False,True
+pstats_sack_fumbles_pct_change_home,player stats,False,True
+pstats_sack_fumbles_prev_away,player stats,False,True
+pstats_sack_fumbles_prev_home,player stats,False,True
+pstats_sack_fumbles_rolling3_away,player stats,False,True
+pstats_sack_fumbles_rolling3_home,player stats,False,True
+pstats_sack_yards_lost_away,player stats,False,True
+pstats_sack_yards_lost_delta_away,player stats,False,True
+pstats_sack_yards_lost_delta_home,player stats,False,True
+pstats_sack_yards_lost_home,player stats,False,True
+pstats_sack_yards_lost_pct_change_away,player stats,False,True
+pstats_sack_yards_lost_pct_change_home,player stats,False,True
+pstats_sack_yards_lost_prev_away,player stats,False,True
+pstats_sack_yards_lost_prev_home,player stats,False,True
+pstats_sack_yards_lost_rolling3_away,player stats,False,True
+pstats_sack_yards_lost_rolling3_home,player stats,False,True
+pstats_sacks_suffered_away,player stats,False,True
+pstats_sacks_suffered_delta_away,player stats,False,True
+pstats_sacks_suffered_delta_home,player stats,False,True
+pstats_sacks_suffered_home,player stats,False,True
+pstats_sacks_suffered_pct_change_away,player stats,False,True
+pstats_sacks_suffered_pct_change_home,player stats,False,True
+pstats_sacks_suffered_prev_away,player stats,False,True
+pstats_sacks_suffered_prev_home,player stats,False,True
+pstats_sacks_suffered_rolling3_away,player stats,False,True
+pstats_sacks_suffered_rolling3_home,player stats,False,True
+pstats_season_type_away,player stats,False,True
+pstats_season_type_delta_away,player stats,False,True
+pstats_season_type_delta_home,player stats,False,True
+pstats_season_type_home,player stats,False,True
+pstats_season_type_pct_change_away,player stats,False,True
+pstats_season_type_pct_change_home,player stats,False,True
+pstats_season_type_prev_away,player stats,False,True
+pstats_season_type_prev_home,player stats,False,True
+pstats_season_type_rolling3_away,player stats,False,True
+pstats_season_type_rolling3_home,player stats,False,True
+pstats_special_teams_tds_away,player stats,False,True
+pstats_special_teams_tds_delta_away,player stats,False,True
+pstats_special_teams_tds_delta_home,player stats,False,True
+pstats_special_teams_tds_home,player stats,False,True
+pstats_special_teams_tds_prev_away,player stats,False,True
+pstats_special_teams_tds_prev_home,player stats,False,True
+pstats_special_teams_tds_rolling3_away,player stats,False,True
+pstats_special_teams_tds_rolling3_home,player stats,False,True
+pstats_target_share_away,player stats,False,True
+pstats_target_share_delta_away,player stats,False,True
+pstats_target_share_delta_home,player stats,False,True
+pstats_target_share_home,player stats,False,True
+pstats_target_share_pct_change_away,player stats,False,True
+pstats_target_share_pct_change_home,player stats,False,True
+pstats_target_share_prev_away,player stats,False,True
+pstats_target_share_prev_home,player stats,False,True
+pstats_target_share_rolling3_away,player stats,False,True
+pstats_target_share_rolling3_home,player stats,False,True
+pstats_targets_away,player stats,False,True
+pstats_targets_delta_away,player stats,False,True
+pstats_targets_delta_home,player stats,False,True
+pstats_targets_home,player stats,False,True
+pstats_targets_pct_change_away,player stats,False,True
+pstats_targets_pct_change_home,player stats,False,True
+pstats_targets_prev_away,player stats,False,True
+pstats_targets_prev_home,player stats,False,True
+pstats_targets_rolling3_away,player stats,False,True
+pstats_targets_rolling3_home,player stats,False,True
+pstats_wopr_away,player stats,False,True
+pstats_wopr_delta_away,player stats,False,True
+pstats_wopr_delta_home,player stats,False,True
+pstats_wopr_home,player stats,False,True
+pstats_wopr_pct_change_away,player stats,False,True
+pstats_wopr_pct_change_home,player stats,False,True
+pstats_wopr_prev_away,player stats,False,True
+pstats_wopr_prev_home,player stats,False,True
+pstats_wopr_rolling3_away,player stats,False,True
+pstats_wopr_rolling3_home,player stats,False,True
+rz_td_rate_against_away,pbp,False,True
+rz_td_rate_against_diff,pbp,False,True
+rz_td_rate_against_home,pbp,False,True
+rz_td_rate_against_rolling3_away,pbp,False,True
+rz_td_rate_against_rolling3_diff,pbp,True,True
+rz_td_rate_against_rolling3_home,pbp,False,True
+rz_td_rate_for_away,pbp,False,True
+rz_td_rate_for_diff,pbp,False,True
+rz_td_rate_for_home,pbp,False,True
+rz_td_rate_for_rolling3_away,pbp,False,True
+rz_td_rate_for_rolling3_diff,pbp,True,True
+rz_td_rate_for_rolling3_home,pbp,False,True
+rz_tds_against_away,pbp,False,True
+rz_tds_against_diff,pbp,False,True
+rz_tds_against_home,pbp,False,True
+rz_tds_for_away,pbp,False,True
+rz_tds_for_diff,pbp,False,True
+rz_tds_for_home,pbp,False,True
+rz_trips_against_away,pbp,False,True
+rz_trips_against_diff,pbp,False,True
+rz_trips_against_home,pbp,False,True
+rz_trips_against_rolling3_away,pbp,False,True
+rz_trips_against_rolling3_diff,pbp,True,True
+rz_trips_against_rolling3_home,pbp,False,True
+rz_trips_for_away,pbp,False,True
+rz_trips_for_diff,pbp,False,True
+rz_trips_for_home,pbp,False,True
+rz_trips_for_rolling3_away,pbp,False,True
+rz_trips_for_rolling3_diff,pbp,True,True
+rz_trips_for_rolling3_home,pbp,False,True
+sack_rate_allowed_away,pbp,False,True
+sack_rate_allowed_diff,pbp,False,True
+sack_rate_allowed_home,pbp,False,True
+sack_rate_allowed_rolling3_away,pbp,False,True
+sack_rate_allowed_rolling3_diff,pbp,True,True
+sack_rate_allowed_rolling3_home,pbp,False,True
+sack_rate_generated_away,pbp,False,True
+sack_rate_generated_diff,pbp,False,True
+sack_rate_generated_home,pbp,False,True
+sack_rate_generated_rolling3_away,pbp,False,True
+sack_rate_generated_rolling3_diff,pbp,True,True
+sack_rate_generated_rolling3_home,pbp,False,True
+sr_defense_forced_fumbles_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_forced_fumbles_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_forced_fumbles_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_forced_fumbles_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_fumble_recoveries_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_fumble_recoveries_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_fumble_recoveries_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_fumble_recoveries_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_interceptions_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_interceptions_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_interceptions_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_interceptions_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_qb_hits_mean_away,pbp (sr_ aggregates built from pbp),False,False
+sr_defense_qb_hits_mean_home,pbp (sr_ aggregates built from pbp),False,False
+sr_defense_qb_hits_sum_away,pbp (sr_ aggregates built from pbp),False,False
+sr_defense_qb_hits_sum_home,pbp (sr_ aggregates built from pbp),False,False
+sr_defense_sacks_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_sacks_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_sacks_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_sacks_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_tloss_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_touchdowns_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_touchdowns_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_touchdowns_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_defense_touchdowns_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_games_sampled_away,pbp (sr_ aggregates built from pbp),False,True
+sr_games_sampled_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_epa_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_epa_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_epa_per_play_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_epa_per_play_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_epa_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_epa_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_pass_rate_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_pass_rate_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_plays_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_plays_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_plays_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_plays_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_success_rate_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_success_rate_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_successful_plays_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_successful_plays_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_successful_plays_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_successful_plays_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_offense_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_air_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_air_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_air_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_air_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_attempts_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_attempts_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_attempts_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_attempts_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_avg_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_avg_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_cmp_pct_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_cmp_pct_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_completions_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_completions_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_completions_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_completions_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_first_downs_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_first_downs_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_first_downs_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_first_downs_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_interceptions_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_interceptions_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_interceptions_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_interceptions_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sack_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sack_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sack_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sack_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sacks_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sacks_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sacks_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_sacks_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_touchdowns_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_touchdowns_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_touchdowns_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_touchdowns_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_after_catch_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_after_catch_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_after_catch_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_after_catch_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_passing_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_attempts_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_attempts_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_attempts_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_attempts_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_avg_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_avg_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_first_downs_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_first_downs_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_first_downs_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_first_downs_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_tlost_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_touchdowns_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_touchdowns_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_touchdowns_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_touchdowns_sum_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_yards_mean_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_yards_mean_home,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_yards_sum_away,pbp (sr_ aggregates built from pbp),False,True
+sr_rushing_yards_sum_home,pbp (sr_ aggregates built from pbp),False,True
+yards_allowed_away,pbp,False,True
+yards_allowed_home,pbp,False,True
+yards_away,pbp,False,True
+yards_home,pbp,False,True
+yards_per_play_away,pbp,False,True
+yards_per_play_home,pbp,False,True
+ypp_allowed_away,pbp,False,True
+ypp_allowed_home,pbp,False,True
+ypp_diff,pbp,False,True

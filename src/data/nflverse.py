@@ -23,8 +23,9 @@ assets or provider-specific helper behavior.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -178,8 +179,69 @@ def _drop_refetched_seasons(existing: pd.DataFrame, new_df: pd.DataFrame, label:
     return existing.loc[keep].reset_index(drop=True)
 
 
+INJURY_HISTORY_DIRNAME = Path("history") / "nfl_injuries"
+INJURY_MANIFEST = "manifest.csv"
+
+
+def _content_hash(df: pd.DataFrame) -> str:
+    """Row-order independent hash of a frame's contents."""
+    text = df.astype("string").fillna("<NA>")
+    text = text.reindex(sorted(text.columns), axis=1)
+    lines = sorted("\x1f".join(row) for row in text.itertuples(index=False, name=None))
+    payload = "\x1e".join(["\x1f".join(text.columns), *lines])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def log_injury_download(new_df: pd.DataFrame, history_dir: Path, *, fetched_at: datetime | None = None) -> list[Path]:
+    """Keep each distinct injury download per season with its UTC fetch time.
+
+    nflverse revises a week's injury rows as new practice and game-status reports
+    come out, and the 2026 rows carry no modification time. Saving every distinct
+    download with the time we fetched it lets features use only the version that
+    was available at a game's pick time. A download identical to the last saved
+    one for its season (same content hash) is skipped.
+    """
+    if new_df is None or new_df.empty or "season" not in new_df.columns:
+        return []
+    fetched_at = (fetched_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    stamp = fetched_at.strftime("%Y%m%dT%H%M%SZ")
+    history_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = history_dir / INJURY_MANIFEST
+    manifest = pd.read_csv(manifest_path) if manifest_path.exists() else pd.DataFrame(
+        columns=["fetched_at_utc", "season", "rows", "sha256", "file"]
+    )
+    seasons = pd.to_numeric(new_df["season"], errors="coerce")
+    written: list[Path] = []
+    new_entries = []
+    for season in sorted(int(s) for s in seasons.dropna().unique()):
+        part = new_df.loc[seasons == season].reset_index(drop=True)
+        digest = _content_hash(part)
+        previous = manifest.loc[pd.to_numeric(manifest["season"], errors="coerce") == season]
+        if not previous.empty and str(previous.iloc[-1]["sha256"]) == digest:
+            continue
+        name = f"injuries_{season}_{stamp}.parquet"
+        part.to_parquet(history_dir / name, index=False)
+        written.append(history_dir / name)
+        new_entries.append(
+            {"fetched_at_utc": fetched_at.isoformat(), "season": season, "rows": len(part), "sha256": digest, "file": name}
+        )
+    if new_entries:
+        manifest = pd.concat([manifest, pd.DataFrame(new_entries)], ignore_index=True)
+        manifest.to_csv(manifest_path, index=False, lineterminator="\n")
+    for path in written:
+        print(f"[nflverse] injuries: logged new download version -> {path}")
+    if not written:
+        print("[nflverse] injuries: download unchanged since last logged version (not saved)")
+    return written
+
+
 def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -> Path:
     """Append new rows onto cached dataset and write back to disk."""
+    if path.name == "nfl_injuries.parquet":
+        try:
+            log_injury_download(new_df, path.parent / INJURY_HISTORY_DIRNAME)
+        except Exception as exc:  # logging must never block the data refresh
+            print(f"[nflverse] injuries: download log failed ({exc}); continuing")
     if path.name == "nfl_player_stats.parquet":
         if not existing.empty:
             existing = _normalize_player_stats(existing)
