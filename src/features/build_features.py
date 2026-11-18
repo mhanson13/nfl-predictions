@@ -5047,6 +5047,14 @@ def _augment_team_week_features(
     # Injuries
 
     inj = load_raw("nfl_injuries.parquet")
+    # Use each game's injury rows as downloaded before its pick, not the week's final report.
+    try:
+        from src.data.injury_versions import injuries_as_of_pick
+
+        inj, inj_asof = injuries_as_of_pick(inj, sched_df)
+        print(inj_asof.line())
+    except Exception as exc:  # fall back to the cached rows
+        print(f"[injuries] as-of-pick selection skipped: {exc}")
 
     if not inj.empty and "season" in inj.columns:
 
