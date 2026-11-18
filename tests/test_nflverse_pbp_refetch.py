@@ -20,8 +20,8 @@ def test_refetched_season_replaces_cached_rows(tmp_path, monkeypatch):
     assert sorted(out.loc[out.season == 2026, "epa"].tolist()) == [-0.25, 0.3, 0.55]
 
 
-@pytest.mark.parametrize("name", ["nfl_player_stats.parquet"])
-def test_player_stats_replace_the_refetched_season(tmp_path, monkeypatch, name):
+@pytest.mark.parametrize("name", ["nfl_player_stats.parquet", "nfl_injuries.parquet"])
+def test_player_stats_and_injuries_replace_the_refetched_season(tmp_path, monkeypatch, name):
     written = {}
     monkeypatch.setattr(nflverse, "write_df", lambda df, path: written.setdefault("df", df) is not None and path)
     cached = pd.DataFrame({"season": [2025, 2026, 2026], "week": [1, 1, 1], "player_id": ["a", "b", "b"],
@@ -33,7 +33,3 @@ def test_player_stats_replace_the_refetched_season(tmp_path, monkeypatch, name):
     assert sorted(out.loc[out.season == 2026, "value"].tolist()) == [2.6, 3.0]
     assert out.loc[out.season == 2025, "value"].tolist() == [1.0]
 
-
-def test_injuries_still_append_until_dedupe_is_validated(tmp_path, monkeypatch):
-    # Deduping injuries scored worse in the 2026 walk-forward; kept out on purpose.
-    assert "nfl_injuries.parquet" not in nflverse.REPLACE_ON_REFETCH

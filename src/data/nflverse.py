@@ -158,12 +158,11 @@ def _normalize_pbp_columns(df: pd.DataFrame) -> pd.DataFrame:
 # Datasets nflverse revises in place during a season (EPA/WP on plays, stat
 # corrections). A refetched season replaces its cached slice; appending kept
 # every revision as a near-duplicate row (2026 PBP had ~3x its real play count,
-# player stats 1,638 repeated keys). nfl_injuries.parquet has the same problem
-# (1,917 repeated keys) but deduping it scored worse in walk-forward, so it stays
-# on append until that is understood (branch fix/injuries-replace).
+# player stats 1,638 and injuries 1,917 repeated keys).
 REPLACE_ON_REFETCH = {
     "nfl_pbp.parquet": "PBP",
     "nfl_player_stats.parquet": "player stats",
+    "nfl_injuries.parquet": "injuries",
 }
 
 
