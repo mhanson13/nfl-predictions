@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from sklearn.exceptions import InconsistentVersionWarning
 
+from src.player_props.display_names import DEFAULT_PLAYER_STATS_PATH, apply_display_names, load_display_names
 from src.player_props.features import (
     COUNT_MARKETS,
     NOVELTY_MARKETS,
@@ -3137,6 +3138,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--injuries", type=Path, default=DEFAULT_INJURIES_PATH)
     parser.add_argument("--bdl-injuries", type=Path, default=DEFAULT_BDL_INJURIES_PATH)
     parser.add_argument("--rosters", type=Path, default=DEFAULT_ROSTERS_PATH)
+    parser.add_argument("--player-stats", type=Path, default=DEFAULT_PLAYER_STATS_PATH)
     parser.add_argument("--qb-output", type=Path, default=DEFAULT_QB_OUTPUT)
     parser.add_argument("--offense-output", type=Path, default=DEFAULT_OFFENSE_OUTPUT)
     parser.add_argument("--defense-output", type=Path, default=DEFAULT_DEFENSE_OUTPUT)
@@ -3194,6 +3196,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         season=args.season,
         week=args.week,
     )
+    display_names = load_display_names(args.player_stats, args.rosters)
+    qb, offense, defense, novelty = (apply_display_names(frame, display_names) for frame in (qb, offense, defense, novelty))
     _write_output(qb, args.qb_output)
     _write_output(offense, args.offense_output)
     _write_output(defense, args.defense_output)
