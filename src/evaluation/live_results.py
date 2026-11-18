@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass
+import dataclasses
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -32,6 +33,21 @@ DEFAULT_PICKS_DIR = por.OUT_DIR
 DEFAULT_SOURCE_ORDER = ("picks_of_record", "published_override", "mtb_archive", "locked_log")
 SOURCE_TYPES = ("picks_of_record", "published_override", "mtb_archive", "locked_log")
 GRADABLE_PICK_STATUSES = ("locked", "late")
+# A final game with no pick published before kickoff (or only a faulty one) gets a row
+# with its score and blank pick/grade columns. It never counts toward any record or metric.
+NO_PICK_SOURCE = "no_pick_of_record"
+NO_PICK_COLUMNS = (
+    "season", "week", "game_id", "home_team", "away_team",
+    "home_score", "away_score", "home_margin", "actual_winner", "actual_home_win",
+)
+# Committed list of games known to have no pick of record (game_id, reason). A final game
+# missing from the published picks and not on this list still gets a score-only row, but
+# grading raises an ALERT: it may be a newly dropped game.
+DEFAULT_KNOWN_NO_PICK_DIR = Path("docs/checks")
+KNOWN_NO_PICK_TEMPLATE = "no_pick_of_record_{season}.csv"
+UNLISTED_NO_PICK_ALERT = (
+    "ALERT: final game with no pick of record, not on the known list -- check the archive history: {games}"
+)
 EXIT_NOT_FINAL = 3  # CLI exit code: the week's games are not all final yet
 
 WEEKLY_DETAIL_TEMPLATE = "live_prediction_vs_actual_week_{week:02d}.csv"
@@ -208,6 +224,7 @@ class LiveResultArtifacts:
     summary_path: Path
     cumulative_summary_path: Path
     segments_path: Path | None
+    unlisted_no_pick: tuple[str, ...] = ()
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -234,6 +251,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--schedule-path", type=Path, default=DEFAULT_SCHEDULE_PATH)
     parser.add_argument("--picks-dir", type=Path, default=DEFAULT_PICKS_DIR)
+    parser.add_argument(
+        "--known-no-pick-dir",
+        type=Path,
+        default=DEFAULT_KNOWN_NO_PICK_DIR,
+        help="Directory with no_pick_of_record_<season>.csv (games known to have no pick of record).",
+    )
     parser.add_argument("--report-json", type=Path, default=None, help="Write the grading report as JSON.")
     parser.add_argument("--features-path", type=Path, default=DEFAULT_FEATURES_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -621,6 +644,54 @@ def build_prediction_vs_actual(
     return _order_detail_columns(merged)
 
 
+def load_known_no_picks(season: int, known_dir: Path = DEFAULT_KNOWN_NO_PICK_DIR) -> dict[str, str]:
+    """game_id -> reason for games known to have no pick of record (empty if no list)."""
+    path = known_dir / KNOWN_NO_PICK_TEMPLATE.format(season=season)
+    if not path.exists():
+        return {}
+    known = pd.read_csv(path, dtype=str).fillna("")
+    return dict(zip(known["game_id"].str.strip(), known["reason"].str.strip()))
+
+
+def unlisted_no_pick_games(detail: pd.DataFrame, known: Iterable[str]) -> list[str]:
+    """No-pick rows whose game is not on the known list."""
+    if detail.empty or "prediction_source_type" not in detail.columns:
+        return []
+    rows = detail[detail["prediction_source_type"].astype(str).eq(NO_PICK_SOURCE)]
+    return sorted(set(rows["game_id"].astype(str)) - set(known))
+
+
+def append_no_pick_rows(detail: pd.DataFrame, actuals: pd.DataFrame) -> pd.DataFrame:
+    """Add a score-only row for each final game that has no pick of record.
+
+    Pick and grade columns stay blank, so the row never counts. Graded rows are untouched,
+    and summaries are computed before this runs. Callers alert on rows whose game is not
+    on the known no-pick list (``unlisted_no_pick_games``).
+    """
+    if actuals is None or actuals.empty:
+        return detail
+    graded = set(detail["game_id"].astype(str)) if "game_id" in detail.columns else set()
+    missing = actuals[~actuals["game_id"].astype(str).isin(graded)]
+    if missing.empty:
+        return detail
+    rows = missing[[c for c in NO_PICK_COLUMNS if c in missing.columns]].copy()
+    rows["prediction_source_type"] = NO_PICK_SOURCE
+    rows["graded_at_utc"] = datetime.now(timezone.utc).isoformat()
+    if detail.empty:
+        return rows.reset_index(drop=True)
+    return pd.concat([detail, rows], ignore_index=True, sort=False)[
+        list(detail.columns) + [c for c in rows.columns if c not in detail.columns]
+    ]
+
+
+def has_pick(detail: pd.DataFrame) -> pd.Series:
+    """Rows that carry a pick (no-pick rows have a blank ``model_pick_team``)."""
+    if "model_pick_team" not in detail.columns:
+        return pd.Series(True, index=detail.index)
+    team = detail["model_pick_team"]
+    return team.notna() & team.astype(str).str.strip().ne("")
+
+
 def attach_market_clv_detail(frame: pd.DataFrame, clv_detail: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     _ensure_clv_columns(out)
@@ -775,6 +846,7 @@ def build_and_write_live_results(
     picks_dir: Path = DEFAULT_PICKS_DIR,
     actuals: pd.DataFrame | None = None,
     now: datetime | None = None,
+    known_no_pick_dir: Path = DEFAULT_KNOWN_NO_PICK_DIR,
 ) -> LiveResultArtifacts:
     prediction_source = load_prediction_source(
         season=season,
@@ -797,7 +869,11 @@ def build_and_write_live_results(
         )
     summary = summarize_detail(detail)
     segments = summarize_segments(detail)
-    return write_artifacts(
+    detail = append_no_pick_rows(detail, actuals)
+    unlisted = unlisted_no_pick_games(detail, load_known_no_picks(season, known_no_pick_dir))
+    if unlisted:
+        print(f"[live_results] {UNLISTED_NO_PICK_ALERT.format(games=', '.join(unlisted))}")
+    artifacts = write_artifacts(
         detail=detail,
         summary=summary,
         segments=segments,
@@ -805,6 +881,7 @@ def build_and_write_live_results(
         season=season,
         week=week,
     )
+    return dataclasses.replace(artifacts, unlisted_no_pick=tuple(unlisted))
 
 
 @dataclass
@@ -817,12 +894,15 @@ class WeekGrade:
     su_wins: int = 0
     su_losses: int = 0
     sources: dict | None = None
+    alerts: list[str] = field(default_factory=list)
 
     def line(self) -> str:
         if self.status == "graded":
             src = ", ".join(f"{k}={v}" for k, v in sorted((self.sources or {}).items()))
-            return f"week {self.week:2d}: graded {self.games} games, SU {self.su_wins}-{self.su_losses} ({src})"
-        return f"week {self.week:2d}: not graded -- {self.detail}"
+            text = f"week {self.week:2d}: graded {self.games} games, SU {self.su_wins}-{self.su_losses} ({src})"
+        else:
+            text = f"week {self.week:2d}: not graded -- {self.detail}"
+        return "\n".join([text, *self.alerts])
 
 
 def grade_week(
@@ -851,6 +931,7 @@ def grade_week(
     except Exception as exc:
         return WeekGrade(season, week, "error", f"{exc.__class__.__name__}: {exc}")
     detail = pd.read_csv(artifacts.detail_path)
+    detail = detail[has_pick(detail)]
     result = detail["su_result"].astype(str)
     published = int(len(detail))
     note = f"{published}/{scheduled} games had a published pick" if published < scheduled else "all games"
@@ -863,6 +944,11 @@ def grade_week(
         su_wins=int(result.eq("win").sum()),
         su_losses=int(result.eq("loss").sum()),
         sources=detail["prediction_source_type"].value_counts().to_dict(),
+        alerts=(
+            [UNLISTED_NO_PICK_ALERT.format(games=", ".join(artifacts.unlisted_no_pick))]
+            if artifacts.unlisted_no_pick
+            else []
+        ),
     )
 
 
@@ -883,11 +969,14 @@ def season_record(output_dir: Path, season: int) -> dict[str, object]:
     """Straight-up record across every graded week in the cumulative detail file."""
     path = output_dir / CUMULATIVE_DETAIL_NAME
     if not path.exists():
-        return {"weeks": [], "games": 0, "su_wins": 0, "su_losses": 0, "su_pushes": 0}
+        return {"weeks": [], "games": 0, "su_wins": 0, "su_losses": 0, "su_pushes": 0, "no_pick_games": 0}
     detail = pd.read_csv(path)
     detail = detail[pd.to_numeric(detail["season"], errors="coerce") == season]
+    no_pick = int((~has_pick(detail)).sum())
+    detail = detail[has_pick(detail)]
     result = detail["su_result"].astype(str)
     return {
+        "no_pick_games": no_pick,
         "weeks": sorted(int(w) for w in detail["week"].unique()),
         "games": int(len(detail)),
         "su_wins": int(result.eq("win").sum()),
@@ -905,6 +994,7 @@ def format_report(grades: Sequence[WeekGrade], record: dict[str, object], season
     lines.append(
         f"{season} season straight-up: {w}-{l}{push}{pct} over {record['games']} graded games, "
         f"weeks {record['weeks']}"
+        + (f"; {record['no_pick_games']} final games with no pick of record (not counted)" if record.get("no_pick_games") else "")
     )
     return "\n".join(lines)
 
@@ -1288,6 +1378,7 @@ def _main_graded(args: argparse.Namespace) -> int:
         predictions_log_dir=args.predictions_log_dir,
         source_order=args.source_order,
         picks_dir=args.picks_dir,
+        known_no_pick_dir=args.known_no_pick_dir,
     )
     if args.completed_weeks:
         grades = grade_completed_weeks(season=args.season, schedule=schedule, **kwargs)
