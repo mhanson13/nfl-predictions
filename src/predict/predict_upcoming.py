@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dateutil import tz
 from src.utils.io import RAW_DIR, PROC_DIR, df_path_exists, read_df
+from src.player_props.display_names import apply_display_names, load_display_names
 from src.utils.logging_config import setup_logging
 from src.utils.odds import ODDS_API_FREE_KEY_SECRET, fetch_odds, get_odds_api_free_key
 from src.utils.teams import get_team_abbr_from_name
@@ -329,6 +330,23 @@ OFFENSE_PLAYER_PROJECTION_COLUMNS = [
 ]
 
 
+_DISPLAY_NAMES: pd.Series | None = None
+
+
+def _with_display_names(frame: pd.DataFrame) -> pd.DataFrame:
+    """Full player names ("Lamar Jackson", not "L.Jackson") for the projection CSVs."""
+    global _DISPLAY_NAMES
+    if frame is None or frame.empty:
+        return frame
+    if _DISPLAY_NAMES is None:
+        try:
+            _DISPLAY_NAMES = load_display_names()
+        except Exception as exc:  # display-only; never block a run
+            print(f"[predict][players] display-name lookup failed: {exc}")
+            _DISPLAY_NAMES = pd.Series(dtype="object")
+    return apply_display_names(frame, _DISPLAY_NAMES)
+
+
 def _write_player_projection_csv(
     frame: pd.DataFrame,
     save_path: str,
@@ -338,7 +356,7 @@ def _write_player_projection_csv(
     debug: bool = False,
 ) -> pd.DataFrame:
     """Write player projection output, including explicit empty current-week files."""
-    output = frame.copy()
+    output = _with_display_names(frame.copy())
     for col in columns:
         if col not in output.columns:
             output[col] = pd.NA
@@ -3537,7 +3555,7 @@ def _player_defense_predictions(
 
         return None
 
-    df_def = pd.DataFrame(results)
+    df_def = _with_display_names(pd.DataFrame(results))
 
     _backup_existing_file(Path(save_path))
 
