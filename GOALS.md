@@ -319,6 +319,7 @@ As of 2026-11-14. Remove items when done; move lasting results into the sections
 | Xweather keep/drop decision | Around Week 13 | After 3-4 weeks of trial snapshots; see [docs/weather_sources_review.md](docs/weather_sources_review.md). |
 | Home-vs-market bias watch | Every run | `[market_bias]` lines in the debug log; see [docs/market_bias_watch.md](docs/market_bias_watch.md). 2026-11-15 Week 10 Sunday slate: WATCH, home below market in 12/12 games, mean -2.2 pts (t=-7.4); season (-0.6 pts, t=-3.8) and last 8 weeks also WATCH; all history -0.45 pts (INFO). Decide on a home-gap correction if it persists for another slate. |
 | Close the 2026 AUC gap to the market | Ongoing | Next model work: Step 5 feature pruning. |
+| News features cut off at midnight UTC on game day | Low priority; not started | Found 2026-11-20 (TB_MIA follow-up). Player and team news features measure hours from the schedule's `gameday` (a date, so midnight UTC), not kickoff, so Sunday-morning news never reaches Sunday picks, inactive lists included. Test: use the actual kickoff from `gameday` + `gametime` (ET) minus a 1-2 h safety margin, and keep it only if walk-forward vs market improves under the model ship rule (5+ paired seeds). Code: `_build_player_news_features` / `_build_team_news_features` in `src/features/build_features.py`. |
 | ESPN player news speed-up | Optional | Shorten the ESPN player news fetch. |
 | 3 weather rows missing coordinates | Minor | Data cleanup. |
 | `test_rolling_average_properties` failure | Minor | Fails on main too. |
