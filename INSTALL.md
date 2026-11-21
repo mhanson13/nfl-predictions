@@ -215,7 +215,6 @@ The commands above mirror the README and `tools/run_pipeline.py`. Adjust season 
 - **Tests**: `python -m pytest` runs the unit tests under `tests/`. Use `PYTEST_ADDOPTS="-m 'not slow'"` if needed.
 - **Linting**: `ruff check .` (matches `.github/workflows/ci.yml`).
 - **Doc agent**: `python scripts/doc_agent.py --base origin/main --head HEAD` issues warnings when README/docstrings drift.
-- **Streamlit dashboard**: `streamlit run streamlit_app.py`.
 
 ## Uninstall / Clean
 

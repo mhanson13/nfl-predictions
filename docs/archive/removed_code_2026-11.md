@@ -45,3 +45,23 @@ The April 2026 "enhancement phase 2" layer: generic fetchers, loaders and resili
 
 Moved to `docs/archive/`: `DEVELOPER_ONBOARDING.md` and ADRs 0001-0003, which describe this layer.
 Dropped dependencies (used only by the removed code): `sportsdataverse`, `httpx`, `aiofiles`, `pandera`.
+
+## PR C: Phase 1-5 validation suite and Streamlit (restore from 4c72cc1)
+
+Superseded by `src.evaluation`: `market_comparison` (walk-forward vs market), `picks_of_record` and `live_results` (grading). None of these were run by the pipeline.
+
+| Path | What it did |
+|---|---|
+| `analysis/walk_forward_validation.py`, `analysis/forward_validation.py` | Phase 1 rolling-window walk-forward validation |
+| `analysis/live_tracking.py` | Phase 2: locked predictions into `predictions_log/<season>/week_NN_predictions.csv` and graded them. Grading still reads such files as a last fallback, but none exist for 2026 |
+| `analysis/benchmark_comparison.py` | Phase 3: McNemar/DeLong/paired tests vs nfelo, Vegas and baselines |
+| `analysis/paper_trading.py` | Phase 4: Kelly-sized paper-trading simulation |
+| `analysis/calibration_monitor.py` | Phase 5: calibration drift monitoring |
+| `analysis/clv_tracker.py` | Standalone CLV tracker. The pipeline's CLV comes from `analysis.market_clv` (kept) |
+| `analysis/feature_lift.py` | One-off feature-lift study |
+| `analysis/{benchmark_comparison,calibration_monitoring,clv_tracking,paper_trading,walk_forward_validation}/README.md` | Output-folder notes for the modules above |
+| `streamlit_app.py`, `run_validation.bat` | Streamlit command-center dashboard and the validation-suite launcher |
+| Tests: `test_benchmark_comparison`, `test_calibration_monitor`, `test_clv_tracker`, `test_live_tracking`, `test_paper_trading`, `test_walk_forward` | Tests of the modules above |
+| `docs/PHASE_1..5_*.md`, `docs/VALIDATION_METHODOLOGY.md`, `docs/AUTOMATED_VALIDATION_GUIDE.md`, `docs/STREAMLIT_USER_GUIDE.md` | Guides for the modules above |
+
+Dropped dependency: `streamlit`. `predictions_log/README.md` now describes the grading inputs instead of the live-tracking workflow.
