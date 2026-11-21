@@ -124,7 +124,7 @@ Current read: Brier and LogLoss are slightly better than the market overall; AUC
 0.001 overall and by about 0.009 in 2026 (150 games, within noise at that size). The AUC gap, mostly
 in 2026 and late-season weeks, is the main thing to close. Note that live heavy-favorite picks are
 held at the 0.85 cap (Open Items: live win-probability cap), which walk-forward does not apply the same way. Calibration currently
-selects `none` (walk-forward Brier 0.2108 none / 0.2117 sigmoid / 0.2135 isotonic).
+selects `none` (2026-11-14 run: walk-forward Brier 0.2108 none / 0.2117 sigmoid / 0.2135 isotonic).
 
 Live published-pick record (graded on what MTB showed, `live_prediction_vs_actual.csv`): 2026 weeks 2-10,
 85-45-1 straight-up (65.4%) over 131 graded games, 3 no-pick games not counted (pick-of-record rule);
