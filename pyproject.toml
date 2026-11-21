@@ -161,7 +161,7 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-norecursedirs = ["tests/_backups_20260730_091618", "_backups_*", ".git", ".venv", "venv"]
+norecursedirs = ["_backups_*", ".git", ".venv", "venv"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

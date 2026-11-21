@@ -18,6 +18,8 @@ Archived 2026-11-14:
 | [PHASE_2A_GITHUB_ISSUES.md](PHASE_2A_GITHUB_ISSUES.md) | Draft GitHub issues for Phase 2A |
 | [GITHUB_ISSUES_CREATION_GUIDE.md](GITHUB_ISSUES_CREATION_GUIDE.md) | How to create the Phase 2A issues |
 
+Removed code and files (2026-11 cleanup), with what each did and how to restore it: [removed_code_2026-11.md](removed_code_2026-11.md).
+
 Still current, in [`docs/`](../): the module guides `PHASE_1`-`PHASE_5` (walk-forward validation, live
 tracking, benchmark comparison, paper trading, calibration monitoring), `VALIDATION_METHODOLOGY.md`,
 `ASYNC_FETCHER_GUIDE.md`, `DEVELOPER_ONBOARDING.md`, `AUTOMATED_VALIDATION_GUIDE.md`,
