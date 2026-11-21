@@ -39,7 +39,7 @@ The April 2026 "enhancement phase 2" layer: generic fetchers, loaders and resili
 | `src/data/nflsdv.py` | SportsDataverse ESPN schedules/PBP fetcher. `src.data.nflverse` supplies both; cached `espn_schedule*.parquet` files are still read as a fallback |
 | `src/data/espn_team_defense.py` | ESPN team-defense scraper |
 | `src/data/sportradar.py`, `src/data/sportradar_transform.py`, `tools/sportradar_report.py` | Sportradar fetcher, transform and report. `build_features` still reads previously saved `data/processed/sportradar/*` files as a legacy fallback |
-| `tools/enrich_weather_csv.py` | One-off 2025 weather CSV enrichment |
+| `tools/enrich_weather_csv.py` | Hand-run tool that added weather columns (kickoff, roof, venue) to a `predictions_full.csv` from `weather_games.parquet`; the pipeline now writes them itself |
 | Tests: `test_async_data_fetchers`, `test_async_pipeline`, `test_data_fetchers`, `test_data_loaders`, `test_retry_circuit_breaker`, `test_schemas`, `test_sportradar`, `test_sportradar_report`, `test_sportradar_transform`; the cache, schema, checkpoint, rate-limit, performance and HTTP sections of `test_utils_coverage`, `test_api_contracts`, `test_integration_pipeline`, `test_manual_verification`, `test_property_based` | Tests of the modules above |
 | `docs/ASYNC_FETCHER_GUIDE.md` | Guide to the async layer |
 
