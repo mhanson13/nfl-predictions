@@ -293,8 +293,6 @@ Key reference documents in [`docs/`](docs/):
 
 | Document | Description |
 |----------|-------------|
-| [DEVELOPER_ONBOARDING.md](docs/DEVELOPER_ONBOARDING.md) | Getting started guide for new contributors |
-| [ASYNC_FETCHER_GUIDE.md](docs/ASYNC_FETCHER_GUIDE.md) | How the async data-fetching layer works |
 | [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) | End-to-end validation methodology |
 | [AUTOMATED_VALIDATION_GUIDE.md](docs/AUTOMATED_VALIDATION_GUIDE.md) | Running the automated validation suite |
 | [STREAMLIT_USER_GUIDE.md](docs/STREAMLIT_USER_GUIDE.md) | Using the Streamlit command-center dashboard |
@@ -312,7 +310,7 @@ Key reference documents in [`docs/`](docs/):
 
 Current roadmap, status and open items: [GOALS.md](GOALS.md).
 
-Architecture decision records live in [`docs/adr/`](docs/adr/).
+Older architecture decision records are archived in [`docs/archive/adr/`](docs/archive/adr/).
 
 ## License
 

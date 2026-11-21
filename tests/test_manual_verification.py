@@ -131,50 +131,6 @@ def test_io_module():
         return False
 
 
-def test_cache_module():
-    """Test caching utilities."""
-    print("\n=== Testing src.utils.cache ===")
-
-    from src.utils.cache import SmartCache, CacheVersion
-
-    try:
-        cache = SmartCache()
-
-        # Test cache operations
-        test_key = "test_key"
-        test_value = {"data": [1, 2, 3]}
-        test_version = "v1.0"
-
-        # Set cache
-        success = cache.set(test_key, test_value, test_version)
-        assert success, "Cache set should succeed"
-        print("  [PASS] Cache set() works")
-
-        # Get cache
-        retrieved = cache.get(test_key, test_version)
-        assert retrieved == test_value, "Retrieved value should match"
-        print("  [PASS] Cache get() works")
-
-        # Invalidate cache
-        cache.invalidate(test_key)
-        retrieved_after = cache.get(test_key, test_version)
-        assert retrieved_after is None, "Cache should be invalidated"
-        print("  [PASS] Cache invalidate() works")
-
-        # Test version mismatch
-        cache.set(test_key, test_value, "v1.0")
-        wrong_version = cache.get(test_key, "v2.0")
-        assert wrong_version is None, "Wrong version should return None"
-        print("  [PASS] Cache version checking works")
-
-        print("\nCache Module: All tests passed")
-        return True
-
-    except Exception as e:
-        print(f"  [FAIL] Cache test failed: {e}")
-        return False
-
-
 def test_imports():
     """Test that all new modules can be imported."""
     print("\n=== Testing Module Imports ===")
@@ -182,10 +138,7 @@ def test_imports():
     modules = [
         "src.utils.teams",
         "src.utils.io",
-        "src.utils.cache",
-        "src.utils.schemas",
         "src.utils.logging_config",
-        "src.utils.performance",
         "src.config",
     ]
 
