@@ -91,6 +91,7 @@ predictions/*.migration_*
 # Temp files
 temp_*.txt
 tmp_*.txt
+tmp/
 
 # Backup files
 *.bak
