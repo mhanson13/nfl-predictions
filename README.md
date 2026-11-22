@@ -198,45 +198,11 @@ Auxiliary signals: weather deltas (wx_temp_delta, wx_wind_delta, wx_rain_index_d
 | C:\Code\mtb\data\prediction-csvs\current\*.csv | Published CSV copies for the local MattyTheBookie site when `--publish-mtb` is used. |
 | C:\Code\mtb\data\predictions\current.json | Normalized MattyTheBookie prediction JSON refreshed after CSV publish unless `--skip-mtb-import` is used. |
 
-## 8. Validation Infrastructure
+## 8. Validation
 
-The platform includes comprehensive validation infrastructure for rigorous model testing:
-
-### Live Validation Phases
-
-1. **Walk-Forward Validation** ([Phase 1](docs/PHASE_1_WALK_FORWARD_VALIDATION.md))
-   - Rolling 5-year training windows with future season testing
-   - Tests across 5+ independent seasons (2021-2025)
-   - Prevents data leakage with strict temporal splits
-   - Module: `analysis/walk_forward_validation.py`
-
-2. **Live Prediction Tracking** ([Phase 2](docs/PHASE_2_LIVE_TRACKING.md))
-   - Locks predictions with timestamps before games
-   - Fetches actual results after games complete
-   - Full audit trail prevents retroactive changes
-   - Module: `analysis/live_tracking.py`
-
-   The current archive-to-results implementation is `src.evaluation.live_results`. It prefers MTB season/week CSV snapshots, falls back to `predictions_log`, joins optional CLV detail when pick-time and close/latest snapshots match, and writes regenerated result overlays for weekly review.
-
-3. **Benchmark Comparison** ([Phase 3](docs/PHASE_3_BENCHMARK_COMPARISON.md))
-   - Statistical tests vs nfelo, Vegas, baselines
-   - McNemar, DeLong, and paired t-tests
-   - Identifies model strengths and weaknesses
-   - Module: `analysis/benchmark_comparison.py`
-
-4. **Paper Trading** ([Phase 4](docs/PHASE_4_PAPER_TRADING.md))
-   - Kelly criterion bet sizing (10%, 25%, 50%, 100%)
-   - Risk-free strategy testing on historical data
-   - ROI, Sharpe ratio, max drawdown tracking
-   - Module: `analysis/paper_trading.py`
-
-5. **Calibration Monitoring** ([Phase 5](docs/PHASE_5_CALIBRATION_MONITORING.md))
-   - Real-time calibration drift detection
-   - Brier score decomposition
-   - Automated recalibration triggers
-   - Module: `analysis/calibration_monitor.py`
-
-See [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) for comprehensive methodology documentation.
+- **Walk-forward vs market** (the canonical metric): `src.evaluation.market_comparison` writes `predictions/evaluation/walk_forward_vs_market.csv`, comparing the final published probability with the no-vig market by season and week bucket (AUC, Brier, LogLoss).
+- **Picks of record and grading**: `src.evaluation.picks_of_record` records each live run's picks; `src.evaluation.live_results` grades every completed week on the pick MTB published (picks of record, then `predictions_log` overrides, then the MTB archive CSV) and writes the result overlays. See [docs/automation.md](docs/automation.md).
+- The older Phase 1-5 validation modules (walk-forward validation, live tracking, benchmark comparison, paper trading, calibration monitoring) and the Streamlit dashboard were removed in the 2026-11 cleanup; see [docs/archive/removed_code_2026-11.md](docs/archive/removed_code_2026-11.md).
 
 ## 9. Post-run Analysis
 
@@ -255,16 +221,7 @@ After every successful evaluation, the pipeline triggers:
 
 Failures in these optional steps are reported as warnings so the main pipeline still completes.
 
-## 10. Streamlit Command Center
-
-Launch via streamlit run streamlit_app.py. Tabs:
-
-1. **Pipeline Ops** - trigger individual jobs or the entire pipeline, monitor latest run metrics, and see API caching status.
-2. **Transparency** - KPI cards (accuracy, AUC, Brier, LogLoss, MAE/RMSE) with hover tooltips, summary of generated `analysis/` outputs, and explanations of dataset roles.
-3. **Predictions** - current-week leaderboards for team win probabilities, player projections, player props, defensive sacks, and touchdown markets with filters for games sampled and rank thresholds; Mountain Time kickoffs are displayed inline.
-4. **Performance Retro** - week-level accuracy/MAE charts plus offense/QB/defense evaluation tables; dropdown lets you select prior weeks, and the data table sorts by season/week.
-
-## 11. Troubleshooting & Tips
+## 10. Troubleshooting & Tips
 
 - **Windows stack overflow (0xC0000409)** - caused by PyArrow tearing down GPU contexts; the pipeline now ignores this code for predict_upcoming if outputs exist. If you see the error elsewhere, re-run the command manually to capture stdout.
 - **Missing raw files** - delete the corrupt parquet and re-run the corresponding fetcher. The scripts will re-download and overwrite caches.
@@ -273,7 +230,7 @@ Launch via streamlit run streamlit_app.py. Tabs:
 - **Dirty Git status after pipeline runs** - `data/`, `models/`, `predictions/`, and generated `analysis` artifacts are ignored. If Git is dirty after a run, it should usually be source/docs/tests rather than regenerated outputs.
 - **Large README edits** - written in UTF-8; avoid non-ASCII characters unless necessary.
 
-## 12. Contributing
+## 11. Contributing
 
 1. Create or activate the `nflgpu` environment.
 2. Run formatting/linting if desired (`ruff`, `black`, etc. - not enforced here).
@@ -293,17 +250,7 @@ Key reference documents in [`docs/`](docs/):
 
 | Document | Description |
 |----------|-------------|
-| [DEVELOPER_ONBOARDING.md](docs/DEVELOPER_ONBOARDING.md) | Getting started guide for new contributors |
-| [ASYNC_FETCHER_GUIDE.md](docs/ASYNC_FETCHER_GUIDE.md) | How the async data-fetching layer works |
-| [VALIDATION_METHODOLOGY.md](docs/VALIDATION_METHODOLOGY.md) | End-to-end validation methodology |
-| [AUTOMATED_VALIDATION_GUIDE.md](docs/AUTOMATED_VALIDATION_GUIDE.md) | Running the automated validation suite |
-| [STREAMLIT_USER_GUIDE.md](docs/STREAMLIT_USER_GUIDE.md) | Using the Streamlit command-center dashboard |
 | [PLAYER_PROP_PREDICTION_PLAN.md](docs/PLAYER_PROP_PREDICTION_PLAN.md) | Player prop prediction goals, target markets, novelty bets, and implementation plan |
-| [PHASE_1_WALK_FORWARD_VALIDATION.md](docs/PHASE_1_WALK_FORWARD_VALIDATION.md) | Walk-forward validation design |
-| [PHASE_2_LIVE_TRACKING.md](docs/PHASE_2_LIVE_TRACKING.md) | Live prediction tracking |
-| [PHASE_3_BENCHMARK_COMPARISON.md](docs/PHASE_3_BENCHMARK_COMPARISON.md) | Benchmark comparison (nfelo, Vegas, baselines) |
-| [PHASE_4_PAPER_TRADING.md](docs/PHASE_4_PAPER_TRADING.md) | Paper trading / Kelly criterion simulation |
-| [PHASE_5_CALIBRATION_MONITORING.md](docs/PHASE_5_CALIBRATION_MONITORING.md) | Calibration drift monitoring |
 | [automation.md](docs/automation.md) | Unattended game-day runs, picks of record, results grading |
 | [weekly_run.md](docs/weekly_run.md) | Week-aware runner and debug log |
 | [market_bias_watch.md](docs/market_bias_watch.md) | Home win probability vs market watch item |
@@ -312,7 +259,7 @@ Key reference documents in [`docs/`](docs/):
 
 Current roadmap, status and open items: [GOALS.md](GOALS.md).
 
-Architecture decision records live in [`docs/adr/`](docs/adr/).
+Older architecture decision records are archived in [`docs/archive/adr/`](docs/archive/adr/).
 
 ## License
 

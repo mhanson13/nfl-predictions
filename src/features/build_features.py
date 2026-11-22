@@ -3007,7 +3007,7 @@ def main():
 
         raise FileNotFoundError(
 
-            f"Expected schedule at {sched_path}. Run: python -m src.data.nflsdv --season ... --schedules"
+            f"Expected schedule at {sched_path}. Run: python -m src.data.nflverse --season ... --schedules"
 
         )
 

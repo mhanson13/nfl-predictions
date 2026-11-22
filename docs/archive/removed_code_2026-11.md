@@ -21,3 +21,59 @@ git checkout <commit> -- <path>     # restore
 | `docker-compose.yml` | Milvus / etcd / MinIO stack | Not part of this project |
 | `.github/ISSUE_TEMPLATE/phase2a-week1-issue1.md` | Phase 2A issue draft | Phase 2A plans are archived |
 | `test_years.bat` | Echoed the list of years from 2002 to now | Did nothing else |
+
+## PR B: unused framework layer and Sportradar (restore from 4c72cc1)
+
+The April 2026 "enhancement phase 2" layer: generic fetchers, loaders and resilience helpers that the pipeline never adopted. The live fetchers in `src/data/` use `requests` directly. Only their own tests used these modules.
+
+| Path | What it did |
+|---|---|
+| `src/utils/async_pipeline.py`, `src/utils/async_fetcher.py`, `src/data/async_base_fetcher.py` | Async (httpx/aiofiles) fetch pipeline. `tools.run_pipeline --use-async` uses its own asyncio subprocess runner, not this |
+| `src/data/base_fetcher.py` | Abstract API/file fetcher base classes (ADR 0002) |
+| `src/utils/data_loader.py`, `src/utils/cache.py`, `src/utils/schemas.py` | Data loader factory (ADR 0001), versioned file cache, pandera schemas |
+| `src/utils/retry.py`, `src/utils/circuit_breaker.py`, `src/utils/rate_limit.py`, `src/utils/http.py`, `src/utils/http_pool.py` | Retry decorator (ADR 0003), circuit breaker, token-bucket limiter, Sportradar HTTP client, pooled HTTP session |
+| `src/utils/batch_processor.py`, `src/utils/pipeline_recovery.py`, `src/utils/error_context.py`, `src/utils/memory_profiler.py`, `src/utils/performance.py`, `src/utils/checkpoints.py` | Batch runner, checkpoint/recovery, error context, memory and timing helpers |
+| `src/utils/logging.py` | Deprecated shim over `src/utils/logging_config.py` (kept) |
+| `src/utils/column_docs.py` | Column documentation helper |
+| `src/predict/model_strategy.py` | Strategy-pattern model wrapper |
+| `src/data/nflsdv.py` | SportsDataverse ESPN schedules/PBP fetcher. `src.data.nflverse` supplies both; cached `espn_schedule*.parquet` files are still read as a fallback |
+| `src/data/espn_team_defense.py` | ESPN team-defense scraper |
+| `src/data/sportradar.py`, `src/data/sportradar_transform.py`, `tools/sportradar_report.py` | Sportradar fetcher, transform and report. `build_features` still reads previously saved `data/processed/sportradar/*` files as a legacy fallback |
+| `tools/enrich_weather_csv.py` | Hand-run tool that added weather columns (kickoff, roof, venue) to a `predictions_full.csv` from `weather_games.parquet`; the pipeline now writes them itself |
+| Tests: `test_async_data_fetchers`, `test_async_pipeline`, `test_data_fetchers`, `test_data_loaders`, `test_retry_circuit_breaker`, `test_schemas`, `test_sportradar`, `test_sportradar_report`, `test_sportradar_transform`; the cache, schema, checkpoint, rate-limit, performance and HTTP sections of `test_utils_coverage`, `test_api_contracts`, `test_integration_pipeline`, `test_manual_verification`, `test_property_based` | Tests of the modules above |
+| `docs/ASYNC_FETCHER_GUIDE.md` | Guide to the async layer |
+
+Moved to `docs/archive/`: `DEVELOPER_ONBOARDING.md` and ADRs 0001-0003, which describe this layer.
+Dropped dependencies (used only by the removed code): `sportsdataverse`, `httpx`, `aiofiles`, `pandera`.
+
+## PR C: Phase 1-5 validation suite and Streamlit (restore from 4c72cc1)
+
+Superseded by `src.evaluation`: `market_comparison` (walk-forward vs market), `picks_of_record` and `live_results` (grading). None of these were run by the pipeline.
+
+| Path | What it did |
+|---|---|
+| `analysis/walk_forward_validation.py`, `analysis/forward_validation.py` | Phase 1 rolling-window walk-forward validation |
+| `analysis/live_tracking.py` | Phase 2: locked predictions into `predictions_log/<season>/week_NN_predictions.csv` and graded them. Grading still reads such files as a last fallback, but none exist for 2026 |
+| `analysis/benchmark_comparison.py` | Phase 3: McNemar/DeLong/paired tests vs nfelo, Vegas and baselines |
+| `analysis/paper_trading.py` | Phase 4: Kelly-sized paper-trading simulation |
+| `analysis/calibration_monitor.py` | Phase 5: calibration drift monitoring |
+| `analysis/clv_tracker.py` | Standalone CLV tracker. The pipeline's CLV comes from `analysis.market_clv` (kept) |
+| `analysis/feature_lift.py` | One-off feature-lift study |
+| `analysis/{benchmark_comparison,calibration_monitoring,clv_tracking,paper_trading,walk_forward_validation}/README.md` | Output-folder notes for the modules above |
+| `streamlit_app.py`, `run_validation.bat` | Streamlit command-center dashboard and the validation-suite launcher |
+| Tests: `test_benchmark_comparison`, `test_calibration_monitor`, `test_clv_tracker`, `test_live_tracking`, `test_paper_trading`, `test_walk_forward` | Tests of the modules above |
+| `docs/PHASE_1..5_*.md`, `docs/VALIDATION_METHODOLOGY.md`, `docs/AUTOMATED_VALIDATION_GUIDE.md`, `docs/STREAMLIT_USER_GUIDE.md` | Guides for the modules above |
+
+Dropped dependency: `streamlit`. `predictions_log/README.md` now describes the grading inputs instead of the live-tracking workflow.
+
+## PR D: shelved long-memory strength experiment (restore from 4c72cc1)
+
+Roadmap Step 6 (long-memory team strength) was shelved because it gave no lift. `build_features` never called it, so no `strength_*` column exists in `matchup_features.parquet` and the model never used one.
+
+| Path | What it did |
+|---|---|
+| `src/features/team_strength.py` | `add_team_strength_features`: margin-adjusted Elo, EWM point differential, EWM offensive/defensive dropback EPA and season games played, from earlier weeks only, with off-season regression to the mean |
+| `tests/test_team_strength.py` | Its tests (no-leak, regression, diffs) |
+| `"strength_"` entry in `PREGAME_DIFF_PREFIXES` (`src/models/feature_columns.py`) | Allowed the experiment's `*_diff` columns as model inputs. Removing it changes no selection (checked on the live feature table) |
+
+To retry the experiment, restore both files, put back the prefix and call `add_team_strength_features` in `build_features`. Then test it under the model ship rule (5+ paired seeds).

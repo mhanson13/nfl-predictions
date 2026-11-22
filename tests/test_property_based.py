@@ -259,28 +259,6 @@ class TestDateTimeOperations:
         assert (dt1 - dt1).days == 0
 
 
-class TestCachingInvariants:
-    """Property-based tests for caching behavior."""
-    
-    @given(st.text(min_size=1, max_size=100), st.integers(min_value=1, max_value=1000))
-    def test_cache_key_deterministic(self, key, value):
-        """Test that cache keys are deterministic."""
-        from src.utils.cache import get_cache
-        
-        cache = get_cache()
-        
-        # Set value
-        version = "property-test"
-        cache.set(key, value, version)
-        
-        # Get value multiple times
-        val1 = cache.get(key, version)
-        val2 = cache.get(key, version)
-        
-        # Should be the same
-        assert val1 == val2 == value
-
-
 # Configure hypothesis settings for faster tests
 settings.register_profile("ci", max_examples=50, deadline=1000)
 settings.register_profile("dev", max_examples=10, deadline=500)

@@ -293,8 +293,8 @@ moneyline +4.49 units; against the spread (graded from week 5) 39-36-3 (52%), ab
 ## Current Gaps
 
 - `GOALS.md` is the source of current roadmap truth. Older plans and status reviews with stale metrics were moved to `docs/archive/` on 2026-11-14.
-- The model still trails the market on 2026 AUC (0.718 vs 0.727). See Team Model Improvement below.
-- Live tracking, paper trading, calibration monitoring, and benchmark modules exist, but their generated artifacts are not all currently maintained as live weekly outputs. CLV detail/summary CSVs are now generated in the weekly pipeline from local pick-time and close/latest odds snapshots.
+- The model still trails the market on 2026 AUC (0.733 vs 0.742, 150 games; 0.7241 vs 0.7250 overall). See Team Model Improvement below.
+- The Phase 1-5 validation modules (live tracking, paper trading, calibration monitoring, benchmark comparison) and the Streamlit dashboard were removed on 2026-11-21 (cleanup PR C); `src.evaluation` (walk-forward vs market, picks of record, live results) replaces them. CLV detail/summary CSVs are now generated in the weekly pipeline from local pick-time and close/latest odds snapshots.
 - Current measured coverage is low. Treat any old >70% coverage claim as stale until a fresh full-suite coverage run proves otherwise.
 - Player prop labels, split feature tables, baseline scoring, trained-model evaluation, weekly trained-model CSV exports, optional PropLine sportsbook ingestion, historical line joins, market-aware over-probability diagnostics, and first edge-threshold backtests now exist for the core yardage/sacks markets. Direct QB/RB/WRTE touchdown markets and anytime TD scorer are now published as projections; first/last/2+/3+ TD scorer novelty markets now have PBP-derived labels, a separate novelty feature/model family, and research-only weekly output. QB passing TD and anytime TD have exact current line coverage; RB rushing TD and WR/TE receiving TD now have non-bettable anytime-TD fallback lines and explicit `research_only` publish reasons, but still need true exact sportsbook line coverage before recommendation gates can use them. Remaining prop gaps are confidence-tier calibration, broader defensive-sack sportsbook/vendor coverage, historical touchdown line calibration, profitable edge validation, historical novelty-market calibration, and closing coverage gaps where offered PropLine player/game/market pairs sit outside the prediction universe.
 - Current-week roster validation is integrated and needs ongoing production-output review for false positives, missing ESPN matches, and player-name/team alias mismatches. Week 5 currently has 0 unknown roster rows, 15 team mismatches, and 168 inactive/practice-squad roster exclusions.
@@ -326,7 +326,7 @@ As of 2026-11-21. Remove items when done; move lasting results into the sections
 | Home-vs-market bias watch | Every run | `[market_bias]` lines in the debug log; see [docs/market_bias_watch.md](docs/market_bias_watch.md). 2026-11-15 Week 10 Sunday slate: WATCH, home below market in 12/12 games, mean -2.2 pts (t=-7.4); season (-0.6 pts, t=-3.8) and last 8 weeks also WATCH; all history -0.45 pts (INFO). Decide on a home-gap correction if it persists for another slate. |
 | Close the 2026 AUC gap to the market | Ongoing | Next model work: Step 5 feature pruning. |
 | News features cut off at midnight UTC on game day | Low priority; not started | Found 2026-11-20 (TB_MIA follow-up). Player and team news features measure hours from the schedule's `gameday` (a date, so midnight UTC), not kickoff, so Sunday-morning news never reaches Sunday picks, inactive lists included. Test: use the actual kickoff from `gameday` + `gametime` (ET) minus a 1-2 h safety margin, and keep it only if walk-forward vs market improves under the model ship rule (5+ paired seeds). Code: `_build_player_news_features` / `_build_team_news_features` in `src/features/build_features.py`. |
-| Unused-code cleanup (PRs A-D) | In progress; PR A open | Started 2026-11-21. An import graph from the pipeline, dispatcher and publish entry points found modules nothing runs. Plan, in four PRs: A tracked junk (`tmp/`, old test backups, root `tuning.db`, `docker-compose.yml`); B the unused April 2026 framework layer (async pipeline, base fetchers, data loader, cache, retry, circuit breaker and similar) plus Sportradar; C the Phase 1-5 validation suite and Streamlit app (replaced by `src.evaluation`); D the shelved long-memory strength experiment (Step 6). Files are deleted, not moved; each is listed with its restore commit in [`docs/archive/removed_code_2026-11.md`](docs/archive/removed_code_2026-11.md). Pipeline outputs must not change; B and C merge after Week 11 grading and never during a dispatcher slot. |
+| Unused-code cleanup (PRs A-D) | A merged 2026-11-21 (#26, f79f11a); B #27, C #28, D #29 open. Merge in order after Week 11 grading, never during a dispatcher slot; before deleting a merged branch, retarget the next PR to `main` (deleting #26's branch closed #27 until it was reopened). Then pull the dispatcher checkout and remove the `C:/Code/nfl-cleanup` worktree | Started 2026-11-21. An import graph from the pipeline, dispatcher and publish entry points found modules nothing runs. Plan, in four PRs: A tracked junk (`tmp/`, old test backups, root `tuning.db`, `docker-compose.yml`); B the unused April 2026 framework layer (async pipeline, base fetchers, data loader, cache, retry, circuit breaker and similar) plus Sportradar; C the Phase 1-5 validation suite and Streamlit app (replaced by `src.evaluation`); D the shelved long-memory strength experiment (Step 6). Files are deleted, not moved; each is listed with its restore commit in [`docs/archive/removed_code_2026-11.md`](docs/archive/removed_code_2026-11.md). Pipeline outputs must not change; B and C merge after Week 11 grading and never during a dispatcher slot. |
 | ESPN player news speed-up | Optional | Shorten the ESPN player news fetch. |
 | 3 weather rows missing coordinates | Minor | Data cleanup. |
 | `test_rolling_average_properties` failure | Minor | Fails on main too. |
@@ -386,7 +386,7 @@ Market-gap plan (started 2026-11-12). Metric: walk-forward AUC/Brier/LogLoss vs 
 | 3. Market-anchored win + spread models | Done (PR #1) |
 | 4. Pick-time lines | Partial: Wednesday line history backfilled; pick-time vs closing-line gap not yet reported (needs 2-3 weeks of picks-of-record ledger data, from Week 10) |
 | 5. Prune features | Not started |
-| 6. Long-memory team strength | Shelved (no lift) |
+| 6. Long-memory team strength | Shelved (no lift); code removed 2026-11-21 (cleanup PR D), restore steps in `docs/archive/removed_code_2026-11.md` |
 | 7. Calibration simplification | Done: walk-forward selection (currently `none`); volatility shrinks toward market (PR #2) |
 | 8. Hygiene | Partial: weekly runner + debug log done; `train.py` / `predict_upcoming.py` size untouched |
 | Data quality | Done: injury grid, LA odds, Visual Crossing refresh, actual venue + kickoff, 2025 international venues, travel. Open: Xweather decision, home-bias watch |
@@ -622,14 +622,10 @@ Implementation details live in `docs/PLAYER_PROP_PREDICTION_PLAN.md`.
 
 - [x] Evaluation pipeline writes weekly and overall metrics.
 - [x] Run comparison pipeline writes leaderboard and metric trend charts.
-- [x] Live tracking module exists.
-- [x] CLV, paper trading, calibration monitoring, benchmark comparison modules exist.
+- [x] Live tracking and the Phase 1-5 validation modules: replaced by `src.evaluation` and removed 2026-11-21 (cleanup PR C).
 - [x] Weekly CLV detail/summary artifacts are generated, exported to model metrics, included in the main pipeline, and published to MattyTheBookie CSVs.
-- [ ] Refresh live tracking artifacts for the active 2026 season.
 - [x] Re-run CLV reports with current predictions and odds data.
-- [ ] Re-run paper trading reports after CLV artifacts are current.
-- [ ] Re-run benchmark comparison with current-schema predictions.
-- [ ] Decide whether validation outputs should be generated by the main weekly pipeline or a separate scheduled validation command.
+- [x] Decide whether validation outputs should be generated by the main weekly pipeline or a separate scheduled validation command: the main pipeline (`src.evaluation`); the separate validation suite was removed 2026-11-21 (cleanup PR C).
 - [x] Make a dying data job or run-log wrapper leave a clear error in the debug log: decoded exit status, one retry for required data jobs, every failed job named, wrapper failures logged with the traceback and the pipeline stopped ([docs/automation.md](docs/automation.md#when-something-dies), 2026-11-15).
 - [ ] Decide whether data jobs need a timeout. A hung job currently blocks the run until the dispatcher's `--pipeline-timeout-min` (120 min).
 

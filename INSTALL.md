@@ -89,7 +89,6 @@ SPORTSDATAIO_API_KEY=...
 VISUAL_CROSSING_API_KEY=...
 TOMORROW_API_KEY=...           # or TOMORROWIO_API_KEY
 ODDS_API_KEY=...
-SPORTSRADAR_NFL_API_KEY=...    # optional; only needed for Sportradar fetches
 NOAA_CONTACT_EMAIL=you@example.com
 YAHOO_APP_ID=...
 YAHOO_CLIENT_ID=...
@@ -107,9 +106,6 @@ YAHOO_ACCESS_TOKEN_SECRET=...
 Ingestion scripts write parquet files under `data/raw`. Each script accepts `--help` for full options. Typical commands:
 
 ```bash
-# ESPN schedules + play-by-play via SportsDataverse cache
-python -m src.data.nflsdv --season 2024 2025 --schedules --pbp
-
 # nflverse bundles (rosters, injuries, snaps, participation, players, PFR tables)
 python -m src.data.nflverse --season 2024 2025 \
   --schedules --rosters --injuries --snaps --participation --players \
@@ -219,7 +215,6 @@ The commands above mirror the README and `tools/run_pipeline.py`. Adjust season 
 - **Tests**: `python -m pytest` runs the unit tests under `tests/`. Use `PYTEST_ADDOPTS="-m 'not slow'"` if needed.
 - **Linting**: `ruff check .` (matches `.github/workflows/ci.yml`).
 - **Doc agent**: `python scripts/doc_agent.py --base origin/main --head HEAD` issues warnings when README/docstrings drift.
-- **Streamlit dashboard**: `streamlit run streamlit_app.py`.
 
 ## Uninstall / Clean
 

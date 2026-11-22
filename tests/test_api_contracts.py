@@ -359,34 +359,6 @@ class TestDataTransformationContracts:
         assert isinstance(prediction['predicted_total'], (int, float))
 
 
-class TestCacheContract:
-    """Test cache interface contracts."""
-    
-    def test_cache_get_set_contract(self):
-        """Test cache get/set interface contract."""
-        from src.utils.cache import get_cache
-        
-        cache = get_cache()
-        
-        # Test set returns boolean
-        result = cache.set('test_key', {'data': 'value'}, version='v1')
-        assert isinstance(result, bool)
-        
-        # Test get returns value or None
-        value = cache.get('test_key', version='v1')
-        assert value is None or isinstance(value, dict)
-    
-    def test_cache_invalidate_contract(self):
-        """Test cache invalidation interface contract."""
-        from src.utils.cache import get_cache
-        
-        cache = get_cache()
-        
-        # Test invalidate returns boolean
-        result = cache.invalidate('test_key')
-        assert isinstance(result, bool)
-
-
 class TestConfigContract:
     """Test configuration interface contracts."""
     

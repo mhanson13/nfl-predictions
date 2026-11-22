@@ -4,7 +4,6 @@ Purpose and architecture
 - Builds NFL game predictions by combining multiple data sources, feature engineering, and two models (win probability classifier, point spread regressor).
 - Data ingestion: `src/data/`
   - `nflverse.py` (nfl_data_py): schedules, PBP, rosters/injuries/snaps/depth-charts/player stats, with release-download fallbacks.
-  - `nflsdv.py` (sportsdataverse): ESPN schedules + PBP, stored per-season caches.
   - `nflcom.py`: NFL.com team season aggregates (passing/rushing/receiving/scoring/downs) via `pandas.read_html` with per-year caches.
   - `espn_players.py`: ESPN player stats pages scraped and normalized; later aggregated to team-season.
   - `weather.py`: Tomorrow.io hourly forecast near kickoff → game-level `weather_*` features; reads API key from TOMORROW_API_KEY or `secrets.env`.
@@ -41,7 +40,7 @@ Developer workflows (Windows PowerShell)
 - All scripts run quietly by default; append `--debug` (or run `run_pipeline.bat --debug`) when you need verbose diagnostics and intermediate logging.
 - Set `ODDS_API_KEY` in `secrets.env` (or environment) so prediction runs can fetch bookmaker spreads from The Odds API and append them to the outputs.
 - Player projections leverage season-to-date `nfl_player_stats.parquet` averages; refresh this dataset so `--save-players` produces top-5 per-team projections.
-- - `run_pipeline.bat` also accepts `--start_year YYYY` (defaults to 2023) to automatically include every season through the current year.`r`n- Streamlit UI: streamlit run streamlit_app.py (loads predictions.csv by default).
+- - `run_pipeline.bat` also accepts `--start_year YYYY` (defaults to 2023) to automatically include every season through the current year.
 
 Non-obvious details and gotchas
 - Schedules/PBP may come from either nflverse or ESPN; `build_features` handles schema drift and fills scores from PBP when schedule lacks them.
@@ -52,7 +51,7 @@ Non-obvious details and gotchas
 - Avoid adding features that leak outcomes (scores/margins/wins); the trainer auto-filters by substrings but keep naming clean.
 
 Where to look for examples
-- Data fetch: `src/data/nflverse.py:main`, `src/data/nflsdv.py:main`, `src/data/nflcom.py:main`, `src/data/espn_players.py:main`.
+- Data fetch: `src/data/nflverse.py:main`, `src/data/nflcom.py:main`, `src/data/espn_players.py:main`.
 - Feature build: `src/features/build_features.py` (schedule normalization, team-season merges, weather integration, def-allowed fallbacks).
 - Modeling: `src/models/train.py` (diff creation, feature selection, calibration), artifacts in `models/`.
 - Prediction and exports: `src/predict/predict_upcoming.py` (week auto-select, clipping, curated columns, odds conversions).
