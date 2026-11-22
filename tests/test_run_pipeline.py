@@ -671,6 +671,30 @@ class TestBuildMtbPublishJob:
 
         assert "--overwrite-archive" in job.command
 
+    def test_mtb_publish_plan_flag_defaults_off(self):
+        assert self.rp.parse_args([]).mtb_publish_plan is None
+        args = self.rp.parse_args(["--publish-mtb", "--mtb-publish-plan", "logs/plan.json"])
+        assert args.mtb_publish_plan == Path("logs/plan.json")
+
+    def test_write_mtb_publish_plan_resolves_python(self, tmp_path):
+        import json
+
+        jobs = [
+            self.rp.build_mtb_publish_job(repo_dir=Path("C:/Code/mtb"), dest_dir=Path("data/prediction-csvs"),
+                                          current_year=2026, prediction_week="11", current_only=False,
+                                          strict=False),
+            self.rp.build_mtb_import_job(repo_dir=Path("C:/Code/mtb")),
+        ]
+        plan_path = tmp_path / "sub" / "plan.json"
+        self.rp.write_mtb_publish_plan(plan_path, jobs)
+
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        assert [j["name"] for j in plan["jobs"]] == ["publish_mtb_csvs", "import_mtb_predictions"]
+        for written, job in zip(plan["jobs"], jobs):
+            # exactly what run_job would run: "python" -> PYTHON_EXECUTABLE, everything else unchanged
+            assert written["command"] == [self.rp.PYTHON_EXECUTABLE] + [str(p) for p in job.command[1:]]
+        assert not (tmp_path / "sub" / "plan.json.tmp").exists()
+
 
 # ---------------------------------------------------------------------------
 # run_jobs_parallel — async branch routing

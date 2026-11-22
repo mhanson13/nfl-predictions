@@ -12,7 +12,8 @@ run, and sends an alert.
 | `tools/dispatcher.py` | Decides whether a game-day slot is due; runs it; keeps `logs/dispatcher/state.json`. |
 | `tools/weekly_run.py` | Runs `tools.run_pipeline` for the slot's season/week with the debug log. |
 | `src/evaluation/picks_of_record.py` | Pipeline job: per-game ledger + picks of record (`predictions/picks_of_record/`). |
-| MTB `scripts/publish_site.py` | Import, lint/typecheck/test/build, commit, push, GKE deploy. Only after a successful run. |
+| MTB `scripts/publish_site.py` | Import, lint/typecheck/test/build, commit, push, GKE deploy. Only after a successful run, inside MTB's publish lock (below). |
+| `src/utils/publish_lock.py` | MTB's shared publish lock (`C:\Code\mtb\.publish.lock`), vendored from MTB `scripts/publish_lock.py` (PR #22, e7df1ea). |
 | `tools/review_run.py` + `tools/review_prompt.md` | Facts from the log/ledger + read-only Claude review → `logs/reviews/<season>/<slot>_review.md`. |
 | `src/utils/alerts.py` | Alert to `logs/alerts/` always; email via Bird SMTP (or SendGrid) when configured. |
 
@@ -29,6 +30,36 @@ run, and sends an alert.
 - A run takes ~30 min, so picks are published ~2.5–3h before kickoff.
 - Each game's **pick of record** = latest ledger row recorded ≥ 2h before *its* kickoff.
   Thursday's game is locked by the Thursday run, Sunday's games by the Sunday run, etc.
+
+## MTB publish lock
+
+NFL and MLB both publish from `C:\Code\mtb`, so every publish holds MTB's shared lock
+(`.publish.lock` in the MTB repo root; format and rules in MTB `docs/publish-lock.md`).
+The dispatcher holds it from the first write into MTB until `publish_site.py` finishes:
+
+1. `weekly_run` runs the pipeline with `--mtb-publish-plan logs/dispatcher/<slot>_mtb_publish_plan.json`.
+   `run_pipeline` then does **not** run its last two jobs (`tools.publish_mtb_csvs`, the CSV copy,
+   and `tools.import_mtb_predictions`); it writes their exact commands to the plan once every
+   other job has succeeded. (A manual `weekly_run` / `run_pipeline` without the flag still runs
+   them itself, unlocked; avoid that while MLB may be publishing.)
+2. The dispatcher takes the lock (`sport=nfl`, `stale_after_minutes=90`, no waiting), runs the
+   plan's copy and import (output appended to the run's debug log, 10 min timeout each), then
+   `publish_site.py` with the token in `MTB_PUBLISH_LOCK_TOKEN`, and releases the lock in a
+   `finally` (failure, timeout or exception). Grading does the same around
+   `publish_mtb_csvs --results-only` and `publish_site.py`.
+3. **Lock busy**, or `publish_site.py` exits **75**: nothing is copied (or nothing more runs), the
+   slot's state becomes `publish_pending`, no attempt is used and no alert is sent. The next tick
+   publishes the same run without re-running the pipeline, unless one of the slot's games has
+   kicked off since that run; then the pipeline runs again so started games stay out. A slot still
+   `publish_pending` when its launch window closes is marked failed with an alert. A grading week
+   in `publish_pending` is retried on the next tick (no hourly wait, no failure counted).
+4. `publish_site.py` exit **77** (it rejected the token) is a failure with an alert.
+5. Before MTB PR #22 merges, `publish_site.py` ignores the lock and the token, so the only change
+   is the lock file appearing in `C:\Code\mtb` during a publish (`main`'s `publish_site.py` stages
+   only `data/...`, so it is never committed).
+6. A hard-killed dispatcher leaves the lock until it goes stale (90 min). If its `pid` is gone,
+   delete `C:\Code\mtb\.publish.lock` by hand, especially before a Thursday publish.
+   `python -m tools.dispatcher --dry-run` shows whether the lock is held and by whom.
 
 ## Grading results
 
@@ -87,8 +118,9 @@ Get-Content logs\dispatcher\dispatcher.log -Tail 50
 pwsh -File tools\install_dispatcher_task.ps1 -Uninstall    # stop automation
 ```
 
-- Re-run a failed slot by hand: `python -m tools.weekly_run --season 2026 --week 10`,
-  or delete the slot from `logs/dispatcher/state.json` to let the dispatcher retry.
+- Re-run a failed slot by hand: `python -m tools.weekly_run --season 2026 --week 10`
+  (copies into MTB without the publish lock, see above), or delete the slot from
+  `logs/dispatcher/state.json` to let the dispatcher retry (it publishes under the lock).
 - The task runs only while you are logged on (keeps git/gh/npm credentials working).
   Leave the PC signed in (locking the screen is fine); it may sleep — the task wakes it.
 - Email: set `BIRD_ACCESS_KEY` (Bird API key with the emails scope; it is the SMTP password for

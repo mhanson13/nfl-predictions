@@ -461,6 +461,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="When --publish-mtb is used, skip running the MattyTheBookie JSON importer after CSV publishing.",
     )
+    parser.add_argument(
+        "--mtb-publish-plan",
+        type=Path,
+        default=None,
+        help=(
+            "With --publish-mtb: do not run the MTB CSV copy/import; write their commands to this "
+            "JSON file once every other job has succeeded (tools.dispatcher runs them under MTB's "
+            "publish lock)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1876,6 +1886,33 @@ def build_mtb_import_job(*, repo_dir: Path, overwrite_archive: bool = False) -> 
     return Job("import_mtb_predictions", command)
 
 
+def write_mtb_publish_plan(path: Path, jobs: Sequence[Job]) -> None:
+    """Write the MTB copy/import commands for a caller that runs them itself.
+
+    tools.dispatcher passes ``--mtb-publish-plan`` so it can run these jobs inside
+    MTB's shared publish lock, together with scripts/publish_site.py. Commands are
+    written exactly as ``run_job`` would run them ("python" resolved).
+    """
+    import json
+
+    plan = {
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "jobs": [
+            {
+                "name": job.name,
+                "command": [PYTHON_EXECUTABLE if i == 0 and part == "python" else str(part)
+                            for i, part in enumerate(job.command)],
+            }
+            for job in jobs
+        ],
+    }
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(plan, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
 
 
 def resolve_auto_week(args: argparse.Namespace, now: datetime | None = None) -> str:
@@ -2228,8 +2265,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if picks_job is not None:
         sequential_jobs.append(picks_job)
+    mtb_jobs: list[Job] = []
     if args.publish_mtb:
-        sequential_jobs.append(
+        mtb_jobs.append(
             build_mtb_publish_job(
                 repo_dir=args.mtb_repo_dir,
                 dest_dir=args.mtb_csv_dir,
@@ -2242,17 +2280,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         if not args.skip_mtb_import:
-            sequential_jobs.append(
+            mtb_jobs.append(
                 build_mtb_import_job(
                     repo_dir=args.mtb_repo_dir,
                     overwrite_archive=args.mtb_overwrite_week_archive,
                 )
             )
+    if args.mtb_publish_plan is None:
+        sequential_jobs.extend(mtb_jobs)
     print(f"[pipeline] Running {len(sequential_jobs)} sequential jobs")
     run_jobs_sequential(sequential_jobs, env=env, dry_run=args.dry_run)
 
     if not args.dry_run:
         run_post_run_analysis()
+
+    if args.mtb_publish_plan is not None and mtb_jobs:
+        # Written last, so the plan exists only when every job above succeeded.
+        write_mtb_publish_plan(args.mtb_publish_plan, mtb_jobs)
+        print(f"[pipeline] MTB copy/import deferred to the caller: {args.mtb_publish_plan}")
 
     print("[pipeline] Pipeline complete")
     return 0
