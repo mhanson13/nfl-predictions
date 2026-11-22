@@ -40,7 +40,7 @@ Developer workflows (Windows PowerShell)
 - All scripts run quietly by default; append `--debug` (or run `run_pipeline.bat --debug`) when you need verbose diagnostics and intermediate logging.
 - Set `ODDS_API_KEY` in `secrets.env` (or environment) so prediction runs can fetch bookmaker spreads from The Odds API and append them to the outputs.
 - Player projections leverage season-to-date `nfl_player_stats.parquet` averages; refresh this dataset so `--save-players` produces top-5 per-team projections.
-- - `run_pipeline.bat` also accepts `--start_year YYYY` (defaults to 2023) to automatically include every season through the current year.`r`n- Streamlit UI: streamlit run streamlit_app.py (loads predictions.csv by default).
+- - `run_pipeline.bat` also accepts `--start_year YYYY` (defaults to 2023) to automatically include every season through the current year.
 
 Non-obvious details and gotchas
 - Schedules/PBP may come from either nflverse or ESPN; `build_features` handles schema drift and fills scores from PBP when schedule lacks them.
