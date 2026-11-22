@@ -65,3 +65,15 @@ Superseded by `src.evaluation`: `market_comparison` (walk-forward vs market), `p
 | `docs/PHASE_1..5_*.md`, `docs/VALIDATION_METHODOLOGY.md`, `docs/AUTOMATED_VALIDATION_GUIDE.md`, `docs/STREAMLIT_USER_GUIDE.md` | Guides for the modules above |
 
 Dropped dependency: `streamlit`. `predictions_log/README.md` now describes the grading inputs instead of the live-tracking workflow.
+
+## PR D: shelved long-memory strength experiment (restore from 4c72cc1)
+
+Roadmap Step 6 (long-memory team strength) was shelved because it gave no lift. `build_features` never called it, so no `strength_*` column exists in `matchup_features.parquet` and the model never used one.
+
+| Path | What it did |
+|---|---|
+| `src/features/team_strength.py` | `add_team_strength_features`: margin-adjusted Elo, EWM point differential, EWM offensive/defensive dropback EPA and season games played, from earlier weeks only, with off-season regression to the mean |
+| `tests/test_team_strength.py` | Its tests (no-leak, regression, diffs) |
+| `"strength_"` entry in `PREGAME_DIFF_PREFIXES` (`src/models/feature_columns.py`) | Allowed the experiment's `*_diff` columns as model inputs. Removing it changes no selection (checked on the live feature table) |
+
+To retry the experiment, restore both files, put back the prefix and call `add_team_strength_features` in `build_features`. Then test it under the model ship rule (5+ paired seeds).

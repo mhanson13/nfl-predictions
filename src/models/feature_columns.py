@@ -41,8 +41,6 @@ PREGAME_DIFF_PREFIXES = (
     "rivalry_",
     "crowd_noise_",
     "fan_hostility_",
-    # Long-memory ratings built only from earlier weeks (src.features.team_strength).
-    "strength_",
 )
 ROLLING_PERFORMANCE_PREFIXES = (
     "pass_epa_",
