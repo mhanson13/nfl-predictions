@@ -16,7 +16,7 @@ if not exist "pyproject.toml" (
 )
 
 echo [1/5] Installing development dependencies...
-pip install pytest pytest-cov pytest-xdist hypothesis black ruff mypy pre-commit pandera ipython jupyter bandit
+pip install pytest pytest-cov pytest-xdist hypothesis black ruff mypy pre-commit ipython jupyter bandit
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Failed to install dependencies
     pause
@@ -33,7 +33,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo [3/5] Verifying installation...
-python -c "import pandas; import xgboost; import pandera; import pytest; print('✓ All core imports successful')"
+python -c "import pandas; import xgboost; import pytest; print('✓ All core imports successful')"
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Import verification failed
     pause

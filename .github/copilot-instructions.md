@@ -4,7 +4,6 @@ Purpose and architecture
 - Builds NFL game predictions by combining multiple data sources, feature engineering, and two models (win probability classifier, point spread regressor).
 - Data ingestion: `src/data/`
   - `nflverse.py` (nfl_data_py): schedules, PBP, rosters/injuries/snaps/depth-charts/player stats, with release-download fallbacks.
-  - `nflsdv.py` (sportsdataverse): ESPN schedules + PBP, stored per-season caches.
   - `nflcom.py`: NFL.com team season aggregates (passing/rushing/receiving/scoring/downs) via `pandas.read_html` with per-year caches.
   - `espn_players.py`: ESPN player stats pages scraped and normalized; later aggregated to team-season.
   - `weather.py`: Tomorrow.io hourly forecast near kickoff → game-level `weather_*` features; reads API key from TOMORROW_API_KEY or `secrets.env`.
@@ -52,7 +51,7 @@ Non-obvious details and gotchas
 - Avoid adding features that leak outcomes (scores/margins/wins); the trainer auto-filters by substrings but keep naming clean.
 
 Where to look for examples
-- Data fetch: `src/data/nflverse.py:main`, `src/data/nflsdv.py:main`, `src/data/nflcom.py:main`, `src/data/espn_players.py:main`.
+- Data fetch: `src/data/nflverse.py:main`, `src/data/nflcom.py:main`, `src/data/espn_players.py:main`.
 - Feature build: `src/features/build_features.py` (schedule normalization, team-season merges, weather integration, def-allowed fallbacks).
 - Modeling: `src/models/train.py` (diff creation, feature selection, calibration), artifacts in `models/`.
 - Prediction and exports: `src/predict/predict_upcoming.py` (week auto-select, clipping, curated columns, odds conversions).
