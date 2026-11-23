@@ -80,10 +80,14 @@ GRADE_EXIT_NOT_FINAL = 3                # src.evaluation.live_results EXIT_NOT_F
 PUBLISH_LOCK_OWNER = "nfl-predictions dispatcher"
 PUBLISH_LOCK_SPORT = "nfl"
 PUBLISH_LOCK_STALE_MIN = 90             # must cover copy + import + the whole site publish
+PUBLISH_LOCK_WAIT_SEC = 300             # wait this long for a busy lock before deferring (--publish-lock-wait-sec)
 PUBLISH_LOCK_TOKEN_ENV = "MTB_PUBLISH_LOCK_TOKEN"
 PUBLISH_LOCK_PATH_ENV = "MTB_PUBLISH_LOCK_PATH"  # tests only, same as MTB's publish_site.py
 PUBLISH_COPY_TIMEOUT = 10 * 60          # each MTB copy/import step
 PUBLISH_PENDING = "publish_pending"     # lock busy / exit 75: retried next tick, no attempt used
+# Clock and sleep for the lock wait; tests swap them for a fake clock so no test really waits.
+_lock_clock: Callable[[], float] = time.time
+_lock_sleep: Callable[[float], None] = time.sleep
 
 
 @dataclass(frozen=True)
@@ -260,7 +264,8 @@ def publish_lock_path(repo_dir: Path) -> Path:
     return Path(os.environ.get(PUBLISH_LOCK_PATH_ENV) or Path(repo_dir) / publish_lock.LOCK_FILE_NAME)
 
 
-def run_locked_publish(steps: Sequence[dict], repo_dir: Path, *, runner: Callable) -> dict:
+def run_locked_publish(steps: Sequence[dict], repo_dir: Path, *, runner: Callable,
+                       wait_seconds: float = PUBLISH_LOCK_WAIT_SEC) -> dict:
     """Run ``steps`` (copy into MTB, then publish_site.py) inside MTB's shared publish lock.
 
     Each step is ``{"cmd": [...], **runner_kwargs}``. The lock is taken before the first
@@ -268,17 +273,22 @@ def run_locked_publish(steps: Sequence[dict], repo_dir: Path, *, runner: Callabl
     exception). Every step gets the lock token in ``MTB_PUBLISH_LOCK_TOKEN``, so
     publish_site.py runs inside this hold instead of waiting on it.
 
+    A busy lock is waited on for up to ``wait_seconds`` (polling every few seconds) before
+    giving up for this tick.
+
     Returns ``{"outcome": "success" | "failed" | PUBLISH_PENDING, "rc": ..., "note": ...}``.
-    PUBLISH_PENDING means nothing could publish now (the lock is busy, or publish_site.py
+    PUBLISH_PENDING means nothing could publish now (the lock stayed busy, or publish_site.py
     exited 75); the caller retries on its next tick. Exit 77 (token rejected) is a failure.
     """
     path = publish_lock_path(repo_dir)
     log = lambda msg: print(f"[dispatcher] {msg}", flush=True)  # noqa: E731
     try:
         record = publish_lock.acquire(path, owner=PUBLISH_LOCK_OWNER, sport=PUBLISH_LOCK_SPORT,
-                                      stale_minutes=PUBLISH_LOCK_STALE_MIN, wait_seconds=0, log=log)
+                                      stale_minutes=PUBLISH_LOCK_STALE_MIN, wait_seconds=wait_seconds,
+                                      clock=_lock_clock, sleep=_lock_sleep, log=log)
     except publish_lock.LockHeld as exc:
-        log(f"{exc} Nothing copied or published; retrying on the next tick.")
+        log(f"{exc} Still held after waiting {int(wait_seconds)}s. Nothing copied or published; "
+            "retrying on the next tick.")
         return {"outcome": PUBLISH_PENDING, "rc": None, "note": f"publish lock busy: {exc}"}
     except OSError as exc:
         log(f"could not take the publish lock {path}: {exc}")
@@ -308,6 +318,10 @@ def run_locked_publish(steps: Sequence[dict], repo_dir: Path, *, runner: Callabl
     if rc in (None, 0):
         return {"outcome": "success", "rc": rc, "note": None}
     return {"outcome": "failed", "rc": rc, "note": f"{failed_step} exited {rc}; later publish steps were skipped"}
+
+
+def _lock_wait(args: argparse.Namespace) -> float:
+    return float(getattr(args, "publish_lock_wait_sec", PUBLISH_LOCK_WAIT_SEC))
 
 
 def _step_name(cmd: Sequence) -> str:
@@ -357,7 +371,7 @@ def run_grading(season: int, week: int, args: argparse.Namespace, *, runner: Opt
                                   f"Publish graded results {season} week {week}"],
                           "cwd": args.mtb_repo_dir, "timeout": args.publish_timeout_min * 60, "log": site_log})
             result["publish_log"] = str(site_log)
-        pub = run_locked_publish(steps, args.mtb_repo_dir, runner=runner)
+        pub = run_locked_publish(steps, args.mtb_repo_dir, runner=runner, wait_seconds=_lock_wait(args))
         result.update(publish_rc=pub["rc"], status=pub["outcome"])
         if pub["note"]:
             result["publish_note"] = pub["note"]
@@ -548,7 +562,7 @@ def run_slot(slot: Slot, args: argparse.Namespace, *, runner: Callable = _run,
                     "log": publish_log.resolve(),
                 })
                 result["publish_log"] = str(publish_log)
-            pub = run_locked_publish(steps, args.mtb_repo_dir, runner=runner)
+            pub = run_locked_publish(steps, args.mtb_repo_dir, runner=runner, wait_seconds=_lock_wait(args))
             status = pub["outcome"]
             result["publish_rc"] = pub["rc"]
             if pub["note"]:
@@ -672,6 +686,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--last-start-lead-min", type=int, default=int(LAST_START_LEAD.total_seconds() // 60))
     p.add_argument("--pipeline-timeout-min", type=int, default=120)
     p.add_argument("--publish-timeout-min", type=int, default=30)
+    p.add_argument("--publish-lock-wait-sec", type=int, default=PUBLISH_LOCK_WAIT_SEC,
+                   help="Wait this long for MTB's busy publish lock before deferring to the next tick.")
     p.add_argument("--review-timeout-min", type=int, default=15)
     p.add_argument("--no-publish", action="store_true", help="Run and record picks, but publish nothing.")
     p.add_argument("--no-site-deploy", action="store_true", help="Copy CSVs to MTB but do not commit/push/deploy.")
@@ -706,7 +722,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         lock_path = publish_lock_path(args.mtb_repo_dir)
         holder = publish_lock.read_lock(lock_path) if lock_path.exists() else None
         print(f"[dispatcher] publish lock {lock_path}: "
-              + (f"held by {holder}" if lock_path.exists() else "free"))
+              + (f"held by {holder}" if lock_path.exists() else "free")
+              + f" (a publish waits up to {args.publish_lock_wait_sec}s for it)")
         for s in expired_deferred_publishes(slots, state, now, start_lead=start_lead, last_start_lead=last_lead):
             print(f"[dispatcher] would mark {s.slot_id} failed: deferred publish outlived its window")
         grade = None if args.no_grading else due_grading(slots, state, now)

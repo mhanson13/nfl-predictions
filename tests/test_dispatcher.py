@@ -1,9 +1,11 @@
 import argparse
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src.utils import alerts
 from tools import dispatcher as d
@@ -345,6 +347,34 @@ def test_no_quick_retry_after_the_window_closes(tmp_path, monkeypatch):
 
 # ---- MTB shared publish lock ----
 
+class _FakeLockTime:
+    """Stands in for the dispatcher's lock-wait clock/sleep: sleeping only advances the clock."""
+
+    def __init__(self):
+        self.start = self.now = time.time()
+        self.on_sleep = None  # optional hook, e.g. the other holder releasing the lock
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep(self.now - self.start)
+
+    @property
+    def waited(self):
+        return self.now - self.start
+
+
+@pytest.fixture(autouse=True)
+def lock_time(monkeypatch):
+    fake = _FakeLockTime()
+    monkeypatch.setattr(d, "_lock_clock", fake.clock)
+    monkeypatch.setattr(d, "_lock_sleep", fake.sleep)
+    return fake
+
+
 def _lock(tmp_path):
     return tmp_path / ".publish.lock"
 
@@ -568,3 +598,59 @@ def test_grading_exit_75_is_pending_not_a_failure(tmp_path, monkeypatch):
     rec = d.handle_grading(2026, 10, _grade_args(tmp_path), {}, _utc("2026-11-17T10:00:00"), runner=runner,
                            alert=lambda *a, **kw: alerts_sent.append(a))
     assert rec["status"] == d.PUBLISH_PENDING and not rec.get("failures") and not alerts_sent
+
+
+def test_lock_wait_defaults_to_300s_and_is_configurable():
+    assert d.PUBLISH_LOCK_WAIT_SEC == 300
+    assert d.parse_args([]).publish_lock_wait_sec == 300
+    assert d.parse_args(["--publish-lock-wait-sec", "60"]).publish_lock_wait_sec == 60
+
+
+def test_busy_lock_that_frees_within_the_wait_publishes_in_the_same_tick(tmp_path, monkeypatch, lock_time):
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    slot = d.build_slots(_schedule())[2]
+    _other_holder(tmp_path)
+    # MLB's site build finishes ~2 minutes into our wait
+    lock_time.on_sleep = lambda waited: _lock(tmp_path).unlink() if waited >= 120 and _lock(tmp_path).exists() else None
+    calls = []
+    res = d.run_slot(slot, _args(tmp_path), runner=_locked_runner(tmp_path, calls))
+    assert res["status"] == "success" and "publish_note" not in res
+    assert calls == [("weekly_run", None), ("tools.publish_mtb_csvs", True),
+                     ("tools.import_mtb_predictions", True), ("scripts/publish_site.py", True)]
+    assert 120 <= lock_time.waited < d.PUBLISH_LOCK_WAIT_SEC
+    assert not _lock(tmp_path).exists()
+
+
+def test_lock_busy_longer_than_the_wait_defers_without_copying(tmp_path, monkeypatch, lock_time):
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(d, "save_state", lambda state, path=None: None)
+    slot = d.build_slots(_schedule())[2]
+    other = _other_holder(tmp_path)
+    calls, alerts_sent, state = [], [], {}
+    res = d.run_slot_attempts(slot, _args(tmp_path), state, runner=_locked_runner(tmp_path, calls),
+                              clock=_Clock(_utc("2026-11-15T15:00:00")), sleep=lambda s: None,
+                              alert=lambda *a: alerts_sent.append(a))
+    assert res["status"] == d.PUBLISH_PENDING and "publish lock busy" in res["publish_note"]
+    assert state[slot.slot_id]["attempts"] == 0 and not alerts_sent
+    assert calls == [("weekly_run", None)]  # nothing copied into MTB
+    assert json.loads(_lock(tmp_path).read_text()) == other  # other holder's lock untouched
+    assert d.PUBLISH_LOCK_WAIT_SEC <= lock_time.waited < d.PUBLISH_LOCK_WAIT_SEC + 10
+
+
+def test_lock_wait_comes_from_args(tmp_path, monkeypatch, lock_time):
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    slot = d.build_slots(_schedule())[2]
+    _other_holder(tmp_path)
+    res = d.run_slot(slot, _args(tmp_path, publish_lock_wait_sec=0), runner=_locked_runner(tmp_path, []))
+    assert res["status"] == d.PUBLISH_PENDING and lock_time.waited == 0
+
+
+def test_grading_waits_for_the_lock_too(tmp_path, monkeypatch, lock_time):
+    monkeypatch.setattr(d, "STATE_DIR", tmp_path)
+    _other_holder(tmp_path)
+    lock_time.on_sleep = lambda waited: _lock(tmp_path).unlink() if waited >= 60 and _lock(tmp_path).exists() else None
+    calls = []
+    rec = d.handle_grading(2026, 10, _grade_args(tmp_path), {}, _utc("2026-11-17T10:00:00"),
+                           runner=_grade_runner(calls), alert=lambda *a, **kw: None)
+    assert rec["status"] == "success" and 60 <= lock_time.waited < d.PUBLISH_LOCK_WAIT_SEC
+    assert any("tools.publish_mtb_csvs" in " ".join(c) for c in calls) and not _lock(tmp_path).exists()

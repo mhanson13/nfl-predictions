@@ -42,22 +42,30 @@ The dispatcher holds it from the first write into MTB until `publish_site.py` fi
    and `tools.import_mtb_predictions`); it writes their exact commands to the plan once every
    other job has succeeded. (A manual `weekly_run` / `run_pipeline` without the flag still runs
    them itself, unlocked; avoid that while MLB may be publishing.)
-2. The dispatcher takes the lock (`sport=nfl`, `stale_after_minutes=90`, no waiting), runs the
-   plan's copy and import (output appended to the run's debug log, 10 min timeout each), then
+2. The dispatcher takes the lock (`sport=nfl`, `stale_after_minutes=90`). If it is busy, it waits
+   up to **300 s** (`--publish-lock-wait-sec`; default `PUBLISH_LOCK_WAIT_SEC` in `tools/dispatcher.py`,
+   the same wait MLB uses), so an MLB publish that is partway through its ~8-10 min usually finishes
+   inside the wait instead of costing a tick. Then it runs the plan's copy and import (output appended to the run's debug log, 10 min timeout each), then
    `publish_site.py` with the token in `MTB_PUBLISH_LOCK_TOKEN`, and releases the lock in a
    `finally` (failure, timeout or exception). Grading does the same around
    `publish_mtb_csvs --results-only` and `publish_site.py`.
-3. **Lock busy**, or `publish_site.py` exits **75**: nothing is copied (or nothing more runs), the
+3. **Lock still busy after the wait**, or `publish_site.py` exits **75**: nothing is copied (or nothing more runs), the
    slot's state becomes `publish_pending`, no attempt is used and no alert is sent. The next tick
    publishes the same run without re-running the pipeline, unless one of the slot's games has
    kicked off since that run; then the pipeline runs again so started games stay out. A slot still
    `publish_pending` when its launch window closes is marked failed with an alert. A grading week
    in `publish_pending` is retried on the next tick (no hourly wait, no failure counted).
 4. `publish_site.py` exit **77** (it rejected the token) is a failure with an alert.
-5. Before MTB PR #22 merges, `publish_site.py` ignores the lock and the token, so the only change
+5. **Timing:** the wait happens after a slot has launched, so it never moves the 2h45m launch
+   cutoff (checked when a tick starts). NFL has no site freeze like MLB's `lock_utc - 20 min`;
+   a game's pick of record is the ledger row recorded during the pipeline >= 2h before kickoff,
+   so the wait cannot change which row counts, and even the worst case (5 min wait + 10 + 10 min
+   copy/import + 30 min publish timeouts) publishes it >1 h before kickoff.
+   No cap on the wait is needed for that reason.
+6. Before MTB PR #22 merges, `publish_site.py` ignores the lock and the token, so the only change
    is the lock file appearing in `C:\Code\mtb` during a publish (`main`'s `publish_site.py` stages
    only `data/...`, so it is never committed).
-6. A hard-killed dispatcher leaves the lock until it goes stale (90 min). If its `pid` is gone,
+7. A hard-killed dispatcher leaves the lock until it goes stale (90 min). If its `pid` is gone,
    delete `C:\Code\mtb\.publish.lock` by hand, especially before a Thursday publish.
    `python -m tools.dispatcher --dry-run` shows whether the lock is held and by whom.
 
