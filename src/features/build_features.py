@@ -4414,6 +4414,40 @@ def _build_schedule_team_features(
 
 
 
+# News features count stories published before the game's *pick time*, not before
+# midnight UTC of game day: the dispatcher starts a game day's slot 3h30 before its first
+# kickoff (tools/dispatcher.py START_LEAD), and morning international games get their own
+# earlier slot. Using the slot start keeps walk-forward on the same news a live pick sees.
+NEWS_PICK_LEAD = pd.Timedelta(hours=3, minutes=30)
+NEWS_EARLY_CUTOFF_HOUR_ET = 12
+
+
+def _news_pick_time_utc(sched: pd.DataFrame) -> pd.Series:
+    """Per game: its dispatcher slot's start (first kickoff of the slot minus 3h30), UTC.
+
+    Falls back to the old reference (``start_date``, else ``gameday`` at midnight UTC)
+    where the kickoff can't be read.
+    """
+    if "start_date" in sched.columns:
+        old = pd.to_datetime(sched["start_date"], errors="coerce", utc=True)
+    elif "gameday" in sched.columns:
+        old = pd.to_datetime(sched["gameday"], errors="coerce", utc=True)
+    else:
+        return pd.Series(pd.NaT, index=sched.index, dtype="datetime64[ns, UTC]")
+    if "gameday" not in sched.columns:
+        return old
+    from src.utils.venues import EASTERN, kickoff_utc
+
+    kick = kickoff_utc(sched)
+    local = kick.dt.tz_convert(EASTERN)
+    day = local.dt.strftime("%Y-%m-%d")
+    early = local.dt.hour < NEWS_EARLY_CUTOFF_HOUR_ET
+    mixed = early.groupby(day).transform("any") & ~early.groupby(day).transform("all")
+    slot = day + np.where(mixed & early, "-early", "")
+    first = kick.groupby(slot).transform("min")
+    return (first - NEWS_PICK_LEAD).where(kick.notna(), old)
+
+
 def _build_player_news_features(
 
     news_df: pd.DataFrame,
@@ -4492,7 +4526,7 @@ def _build_player_news_features(
 
         return pd.DataFrame()
 
-    sched["game_start"] = pd.to_datetime(sched.get("start_date", sched.get("gameday")), errors="coerce", utc=True)
+    sched["game_start"] = _news_pick_time_utc(sched)
 
     home = (
 
@@ -4724,16 +4758,8 @@ def _build_team_news_features(
 
         return pd.DataFrame()
 
-    if "start_date" in sched.columns:
-
-        sched["game_start"] = pd.to_datetime(sched["start_date"], errors="coerce", utc=True)
-
-    elif "gameday" in sched.columns:
-
-        sched["game_start"] = pd.to_datetime(sched["gameday"], errors="coerce", utc=True)
-
-    else:
-
+    sched["game_start"] = _news_pick_time_utc(sched)
+    if sched["game_start"].isna().all():
         return pd.DataFrame()
 
     home_col = "home_abbreviation" if "home_abbreviation" in sched.columns else ("home_team" if "home_team" in sched.columns else None)
