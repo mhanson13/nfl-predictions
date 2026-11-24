@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
+import json
 
 import numpy as np
 import pandas as pd
 
 from src.utils.nfl_calendar import EASTERN
-from tools import weekly_run
+from tools import dispatcher, weekly_run
 
 
 def _write_schedule(tmp_path):
@@ -71,3 +72,101 @@ def test_issue_scanner_flags_log_lines_and_rate_limits_but_not_tables():
 def test_offseason_plan_has_no_command(tmp_path):
     plan = _plan(tmp_path, "2026-12-01T10:00")
     assert plan.phase == "offseason" and plan.command == []
+
+
+# --- MTB publish lock for manual runs -------------------------------------------------------------
+
+COPY = ["py", "-m", "tools.publish_mtb_csvs", "--repo-dir", "mtb"]
+IMPORT = ["py", "-m", "tools.import_mtb_predictions", "--repo-dir", "mtb"]
+
+
+def _write_plan(path, *cmds):
+    path.write_text(json.dumps({"jobs": [{"name": c[2], "command": c} for c in cmds]}), encoding="utf-8")
+    return path
+
+
+def _lock(repo):
+    return repo / ".publish.lock"
+
+
+def _recording_runner(repo, calls, rc_for=lambda cmd: 0):
+    def run(cmd, **kw):
+        held = json.loads(_lock(repo).read_text()) if _lock(repo).exists() else None
+        token = (kw.get("env") or {}).get(dispatcher.PUBLISH_LOCK_TOKEN_ENV)
+        calls.append((cmd[2], held is not None and held["token"] == token and held["sport"] == "nfl"))
+        return rc_for(cmd)
+    return run
+
+
+def test_manual_publishing_run_defers_mtb_jobs_to_a_plan(tmp_path):
+    plan = _plan(tmp_path, "2026-11-10T10:00")
+    cmd = plan.command
+    assert "--publish-mtb" in cmd
+    assert plan.publish_plan is not None and plan.publish_plan.name.endswith("_mtb_publish_plan.json")
+    assert cmd[cmd.index("--mtb-publish-plan") + 1] == str(plan.publish_plan)
+    assert plan.publish_plan.parent == plan.log_path.parent.resolve()
+
+
+def test_dispatcher_and_no_publish_runs_are_unchanged(tmp_path):
+    dispatched = _plan(tmp_path, "2026-11-10T10:00", "--", "--mtb-publish-plan", "slot_plan.json")
+    assert dispatched.publish_plan is None
+    assert dispatched.command.count("--mtb-publish-plan") == 1 and dispatched.command[-1] == "slot_plan.json"
+    no_publish = _plan(tmp_path, "2026-11-10T10:00", "--no-publish")
+    assert no_publish.publish_plan is None and "--mtb-publish-plan" not in no_publish.command
+
+
+def test_publish_locked_runs_every_step_inside_the_lock(tmp_path, monkeypatch):
+    monkeypatch.delenv(dispatcher.PUBLISH_LOCK_PATH_ENV, raising=False)
+    plan = _write_plan(tmp_path / "plan.json", COPY, IMPORT)
+    calls = []
+    rc = weekly_run.publish_locked(plan, tmp_path, runner=_recording_runner(tmp_path, calls))
+    assert rc == 0
+    assert calls == [("tools.publish_mtb_csvs", True), ("tools.import_mtb_predictions", True)]
+    assert not _lock(tmp_path).exists()
+
+
+def test_busy_lock_copies_nothing_and_exits_75(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv(dispatcher.PUBLISH_LOCK_PATH_ENV, raising=False)
+    other = {"owner": "mlb-predictions", "pid": 1, "sport": "mlb", "stale_after_minutes": 90,
+             "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "token": "mlbtoken"}
+    _lock(tmp_path).write_text(json.dumps(other))
+    plan = _write_plan(tmp_path / "plan.json", COPY, IMPORT)
+    calls = []
+    rc = weekly_run.publish_locked(plan, tmp_path, wait_seconds=0, runner=_recording_runner(tmp_path, calls))
+    assert rc == 75 and calls == []
+    assert json.loads(_lock(tmp_path).read_text())["token"] == "mlbtoken"  # left alone
+    assert f"--publish-only {plan}" in capsys.readouterr().out
+
+
+def test_failed_step_and_missing_plan(tmp_path, monkeypatch):
+    monkeypatch.delenv(dispatcher.PUBLISH_LOCK_PATH_ENV, raising=False)
+    plan = _write_plan(tmp_path / "plan.json", COPY, IMPORT)
+    calls = []
+    rc = weekly_run.publish_locked(plan, tmp_path, runner=_recording_runner(
+        tmp_path, calls, rc_for=lambda cmd: 3 if "tools.publish_mtb_csvs" in cmd else 0))
+    assert rc == 3 and [c[0] for c in calls] == ["tools.publish_mtb_csvs"]
+    assert not _lock(tmp_path).exists()
+    assert weekly_run.publish_locked(tmp_path / "missing.json", tmp_path, runner=_recording_runner(tmp_path, [])) == 1
+
+
+def test_main_publishes_after_a_successful_pipeline_only(tmp_path, monkeypatch):
+    published = []
+    fixed_plan = _plan(tmp_path, "2026-11-10T10:00")
+    monkeypatch.setattr(weekly_run, "publish_locked", lambda plan, repo, **kw: published.append(plan) or 0)
+    monkeypatch.setattr(weekly_run, "preflight", lambda schedule: [])
+    monkeypatch.setattr(weekly_run, "build_plan", lambda args, extra: fixed_plan)
+    for pipeline_rc, expect_publish in [(0, True), (1, False)]:
+        published.clear()
+        monkeypatch.setattr(weekly_run, "run_logged", lambda cmd, header, paths, rc=pipeline_rc: rc)
+        assert weekly_run.main(["--mtb-repo-dir", str(tmp_path)]) == pipeline_rc
+        assert bool(published) == expect_publish
+
+
+def test_publish_only_skips_the_pipeline(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(weekly_run, "publish_locked",
+                        lambda plan, repo, **kw: seen.update(plan=plan, repo=repo, **kw) or 75)
+    monkeypatch.setattr(weekly_run, "run_logged", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    rc = weekly_run.main(["--publish-only", str(tmp_path / "p.json"), "--mtb-repo-dir", str(tmp_path),
+                          "--publish-lock-wait-sec", "5"])
+    assert rc == 75 and seen["plan"] == tmp_path / "p.json" and seen["wait_seconds"] == 5.0
