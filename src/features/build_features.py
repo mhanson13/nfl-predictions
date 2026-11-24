@@ -3824,7 +3824,7 @@ def _add_travel_features(feats: pd.DataFrame) -> pd.DataFrame:
 
     enriched = enriched.merge(home_loc, on="home_team", how="left")
 
-    enriched = enriched.merge(away_loc, on="away_team", how="left")
+    enriched = enriched.merge(away_loc, on="away_team", how="left")
     # Travel is measured to the venue actually played at (international and
     # relocated games), with daylight-saving-aware clock shifts per team.
     venue_ctx = _load_venue_travel_context()
