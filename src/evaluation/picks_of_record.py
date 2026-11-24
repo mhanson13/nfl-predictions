@@ -12,7 +12,8 @@ at/after kickoff are never written, and resolution only looks at rows recorded
 before the lock deadline, so a locked pick cannot change after the fact.
 
 Each row also stores the market line at pick time and a fingerprint of the
-game's slow-moving features (everything except odds, injuries, news, weather).
+game's slow-moving model inputs (the saved models' input columns, except odds, injuries,
+news, weather).
 Between a game's first and last pick only those pick-time inputs may change;
 ``static_features_changed`` flags anything else, which would indicate leakage
 from games played earlier in the same week. The fingerprinted values are also kept
@@ -42,6 +43,8 @@ PREDICTIONS_PATH = Path("predictions/predictions.csv")
 FEATURES_PATH = Path("data/processed/matchup_features.parquet")
 SCHEDULE_PATH = Path("data/raw/nfl_schedules.parquet")
 OUT_DIR = Path("predictions/picks_of_record")
+# The run's saved models: the fingerprint covers only the columns they take as input.
+MODEL_BUNDLE_PATHS = (Path("models/winprob_gb.pkl"), Path("models/spread_gb.pkl"))
 DEFAULT_LEAD = timedelta(hours=2)
 SLOT_ENV = "NFL_RUN_SLOT"
 
@@ -139,22 +142,45 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def static_feature_values(features: pd.DataFrame, game_ids) -> pd.DataFrame:
-    """Each game's slow-moving numeric features (excludes pick-time inputs), indexed by game_id."""
+def model_input_columns(paths=MODEL_BUNDLE_PATHS) -> Optional[list[str]]:
+    """The columns the saved win/spread models take as input (tree and logistic parts), or None."""
+    import joblib
+
+    cols: set[str] = set()
+    for path in paths:
+        bundle = joblib.load(path)
+        cols |= set(bundle.get("features") or []) | set(bundle.get("logistic_features") or [])
+    return sorted(cols) or None
+
+
+def static_feature_values(features: pd.DataFrame, game_ids, columns: Optional[list[str]] = None) -> pd.DataFrame:
+    """Each game's slow-moving numeric features (excludes pick-time inputs), indexed by game_id.
+
+    With ``columns`` (the model's inputs), only those are kept; the ``*_diff`` inputs the
+    models build at training time are built here the same way. Without it, every numeric
+    column counts, including ones no model uses (e.g. ``roster_*`` sums of player IDs).
+    """
     rows = features[features["game_id"].astype(str).isin(set(map(str, game_ids)))]
     rows = rows.drop_duplicates("game_id", keep="last").set_index("game_id")
+    if columns is not None:
+        from src.models.feature_columns import make_feature_diffs
+
+        rows = make_feature_diffs(rows)
+        rows = rows.loc[:, ~rows.columns.duplicated()]  # a stored *_diff wins over a rebuilt one
+        wanted = set(columns)
     cols = sorted(
         c for c in rows.columns
         if isinstance(c, str)
+        and (columns is None or c in wanted)
         and not any(m in c.lower() for m in PICK_TIME_MARKERS)
         and pd.api.types.is_numeric_dtype(rows[c])
     )
     return rows[cols].astype(float).round(6)
 
 
-def static_feature_hashes(features: pd.DataFrame, game_ids) -> pd.Series:
+def static_feature_hashes(features: pd.DataFrame, game_ids, columns: Optional[list[str]] = None) -> pd.Series:
     """Fingerprint each game's slow-moving features (excludes pick-time inputs)."""
-    values = static_feature_values(features, game_ids)
+    values = static_feature_values(features, game_ids, columns)
 
     def _hash(row: pd.Series) -> str:
         payload = ",".join("nan" if pd.isna(v) else repr(float(v)) for v in row.to_numpy())
@@ -319,7 +345,8 @@ def _read_schedule(path: Path) -> Optional[pd.DataFrame]:
 
 def record(season: int, week: Optional[int], run_started_at: datetime, *, now: Optional[datetime] = None,
            predictions_path: Path = PREDICTIONS_PATH, features_path: Path = FEATURES_PATH,
-           out_dir: Path = OUT_DIR, slot: Optional[str] = None) -> int:
+           out_dir: Path = OUT_DIR, slot: Optional[str] = None,
+           model_paths=MODEL_BUNDLE_PATHS) -> int:
     mtime = datetime.fromtimestamp(predictions_path.stat().st_mtime, tz=timezone.utc)
     if mtime < run_started_at:
         raise RuntimeError(
@@ -336,12 +363,17 @@ def record(season: int, week: Optional[int], run_started_at: datetime, *, now: O
     hashes = None
     try:
         features = pd.read_parquet(features_path)
-        hashes = static_feature_hashes(features, preds["game_id"])
+        try:
+            columns = model_input_columns(model_paths)
+        except Exception as exc:  # fall back to every column rather than no guard
+            columns = None
+            print(f"[picks_of_record] model inputs unavailable ({exc}); fingerprinting every numeric column")
+        hashes = static_feature_hashes(features, preds["game_id"], columns)
     except Exception as exc:  # fingerprint is a guard, not a requirement
         print(f"[picks_of_record] feature fingerprint unavailable: {exc}")
     else:
         try:
-            save_feature_snapshots(static_feature_values(features, preds["game_id"]), hashes,
+            save_feature_snapshots(static_feature_values(features, preds["game_id"], columns), hashes,
                                    snapshots_path(season, out_dir))
         except Exception as exc:  # diagnostics only
             print(f"[picks_of_record] feature snapshot not saved: {exc}")
