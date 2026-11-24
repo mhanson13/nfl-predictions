@@ -149,7 +149,9 @@ def _normalize_pbp_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize PBP columns that frequently mix numeric and string IDs."""
     if df.empty:
         return df
-    out = df.copy()
+    # Shallow: only the ID columns are replaced, so the other ~370 columns of a
+    # 1M+ row cache are not copied (a deep copy here helped exhaust memory).
+    out = df.copy(deep=False)
     for col in PBP_TEXT_ID_COLUMNS:
         if col in out.columns:
             out[col] = out[col].map(_as_optional_text_id).astype("string")
@@ -169,15 +171,22 @@ REPLACE_ON_REFETCH = {
 
 
 def _drop_refetched_seasons(existing: pd.DataFrame, new_df: pd.DataFrame, label: str = "PBP") -> pd.DataFrame:
-    """``existing`` without the seasons present in ``new_df`` (those are replaced, not appended)."""
+    """``existing`` without the seasons present in ``new_df`` (those are replaced, not appended).
+
+    Drops in place, so the caller's frame loses those rows too and its memory is
+    reused rather than copied (the full PBP cache is over 1M rows; copying it here
+    ran out of memory on 2026-11-23).
+    """
     if existing.empty or "season" not in existing.columns or "season" not in new_df.columns:
         return existing
     fetched = set(pd.to_numeric(new_df["season"], errors="coerce").dropna().astype(int))
-    keep = ~pd.to_numeric(existing["season"], errors="coerce").isin(fetched)
-    dropped = int((~keep).sum())
+    drop = pd.to_numeric(existing["season"], errors="coerce").isin(fetched).to_numpy()
+    dropped = int(drop.sum())
     if dropped:
         print(f"[nflverse] {label}: replacing cached seasons {sorted(fetched)} ({dropped} cached rows dropped)")
-    return existing.loc[keep].reset_index(drop=True)
+        existing.drop(index=existing.index[drop], inplace=True)
+    existing.reset_index(drop=True, inplace=True)
+    return existing
 
 
 INJURY_HISTORY_DIRNAME = Path("history") / "nfl_injuries"
@@ -243,6 +252,10 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
             log_injury_download(new_df, path.parent / INJURY_HISTORY_DIRNAME)
         except Exception as exc:  # logging must never block the data refresh
             print(f"[nflverse] injuries: download log failed ({exc}); continuing")
+    replace = path.name in REPLACE_ON_REFETCH
+    if replace:
+        # Drop the refetched seasons before any normalising, so only the kept rows are touched.
+        existing = _drop_refetched_seasons(existing, new_df, REPLACE_ON_REFETCH[path.name])
     if path.name == "nfl_player_stats.parquet":
         if not existing.empty:
             existing = _normalize_player_stats(existing)
@@ -254,8 +267,11 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
         existing = _normalize_pbp_columns(existing)
         new_df = _normalize_pbp_columns(new_df)
 
-    if path.name in REPLACE_ON_REFETCH:
-        existing = _drop_refetched_seasons(existing, new_df, REPLACE_ON_REFETCH[path.name])
+    if replace:
+        # The kept cached seasons were deduped when they were written and share no
+        # season with new_df, so deduping new_df alone gives the same result as
+        # deduping the whole combined frame, without hashing every cached row.
+        new_df = new_df.drop_duplicates(ignore_index=True)
 
     if existing.empty:
         combined = new_df
@@ -270,8 +286,8 @@ def _merge_and_write(path: Path, existing: pd.DataFrame, new_df: pd.DataFrame) -
     if path.name == "nfl_schedules.parquet":
         combined = _normalize_schedule_columns(_dedupe_schedule_rows(combined))
     elif path.name == "nfl_pbp.parquet":
-        combined = _normalize_pbp_columns(combined.drop_duplicates(ignore_index=True))
-    else:
+        combined = _normalize_pbp_columns(combined if replace else combined.drop_duplicates(ignore_index=True))
+    elif not replace:
         combined = combined.drop_duplicates(ignore_index=True)
     return write_df(combined, path)
 

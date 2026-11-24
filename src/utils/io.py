@@ -92,7 +92,9 @@ def _sanitize_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
-    out = df.copy()
+    # Shallow: every change below assigns a whole column, so a deep copy of a large
+    # frame (the 1M+ row PBP cache) would only cost memory.
+    out = df.copy(deep=False)
     # Ensure columns are unique to avoid DataFrame return on out[col]
     def _dedup_cols(cols):
         seen = {}
@@ -124,8 +126,14 @@ def _sanitize_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
                 # Normalize missing scalars to None
                 out[col] = series.apply(lambda v: None if _is_missing_scalar(v) else v)
 
-    # Replace any remaining NaN/NaT in non-object columns with None (Arrow-friendly)
-    out = out.where(pd.notna(out), None)
+    # Replace any remaining NaN/NaT in non-object columns with None (Arrow-friendly).
+    # Column by column, and only where something is missing: a whole-frame where()
+    # builds a full mask and a full copy at once.
+    for i in range(out.shape[1]):
+        series = out.iloc[:, i]
+        missing = series.isna()
+        if missing.any():
+            out.isetitem(i, series.where(~missing, None))
 
     return out
 
