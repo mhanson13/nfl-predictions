@@ -26,6 +26,8 @@ MARKET_EDGE_POLICY_PATH = Path("analysis/market_edge_policy.csv")
 LIVE_RESULTS_SUMMARY_DIR = Path("predictions/evaluation")
 LIVE_RESULTS_DETAIL_PATH = LIVE_RESULTS_SUMMARY_DIR / "live_prediction_vs_actual.csv"
 SEASON_TO_DATE_SECTION = "live_published_season"
+WALK_FORWARD_MARKET_REPORT_PATH = Path("predictions/evaluation/walk_forward_vs_market.csv")
+WALK_FORWARD_MARKET_SECTION = "walk_forward_vs_market"
 
 
 @dataclass(frozen=True)
@@ -324,6 +326,79 @@ def build_season_to_date_rows(
     return rows
 
 
+def _report_row(report: pd.DataFrame, *, scope: str, segment: str, source: str) -> pd.Series | None:
+    match = report[
+        report["scope"].astype(str).eq(scope)
+        & report["segment"].astype(str).eq(segment)
+        & report["source"].astype(str).eq(source)
+    ]
+    return None if match.empty else match.iloc[-1]
+
+
+def build_walk_forward_market_rows(
+    *,
+    season: int,
+    week: int,
+    generated_at: str,
+    report_path: Path = WALK_FORWARD_MARKET_REPORT_PATH,
+) -> list[MetricRow]:
+    """Model vs no-vig market AUC and Brier on identical walk-forward games.
+
+    Reads ``predict_history``'s market report. The model is ``model_final`` (the published
+    walk-forward probability, after caps and volatility shrink); the market is the no-vig
+    closing line. Rows cover all walk-forward seasons, plus the export season when present.
+    """
+    report = _read_csv_if_exists(report_path)
+    if report.empty or not {"scope", "segment", "source", "n_games", "auc", "brier"}.issubset(report.columns):
+        return []
+    common = {"season": season, "week": week, "generated_at": generated_at,
+              "section": WALK_FORWARD_MARKET_SECTION, "source_artifact": report_path}
+    rows: list[MetricRow] = []
+    overall_model = _report_row(report, scope="overall", segment="all", source="model_final")
+    overall_market = _report_row(report, scope="overall", segment="all", source="market_novig")
+    if overall_model is not None and overall_market is not None:
+        n = int(float(_value(overall_model, "n_games", 0) or 0))
+        _add_metric(rows, **common, sort_order=161, metric_key="wf_vs_market_games",
+                    label="Walk-forward games compared with the market", value=n, display_value=_fmt_count(n),
+                    unit="games", sample_size=n,
+                    description="Completed games with both a walk-forward model probability and a closing line.")
+        for order, key, source_row, metric_key, label, description in [
+            (162, "auc", overall_model, "wf_model_auc", "Model AUC (walk-forward)",
+             "Rank-order separation of the model's walk-forward home-win probabilities."),
+            (163, "auc", overall_market, "wf_market_auc", "Vegas AUC (no-vig close)",
+             "Same measure for the no-vig closing-line probabilities on the same games."),
+            (165, "brier", overall_model, "wf_model_brier", "Model Brier (walk-forward)",
+             "Brier score of the model's walk-forward probabilities; lower is better."),
+            (166, "brier", overall_market, "wf_market_brier", "Vegas Brier (no-vig close)",
+             "Brier score of the no-vig closing-line probabilities on the same games; lower is better."),
+        ]:
+            value = _value(source_row, key)
+            _add_metric(rows, **common, sort_order=order, metric_key=metric_key, label=label, value=value,
+                        display_value=_fmt_decimal(value, 4), unit="decimal", sample_size=n, description=description)
+        gap = _value(overall_model, "auc_minus_market")
+        _add_metric(rows, **common, sort_order=164, metric_key="wf_auc_minus_market",
+                    label="Model AUC minus Vegas AUC", value=gap,
+                    display_value="" if gap is None else f"{float(gap):+.4f}", unit="decimal", sample_size=n,
+                    description="Negative means the market ranks winners better than the model.")
+    season_model = _report_row(report, scope="season", segment=str(season), source="model_final")
+    season_market = _report_row(report, scope="season", segment=str(season), source="market_novig")
+    if season_model is not None and season_market is not None:
+        n = int(float(_value(season_model, "n_games", 0) or 0))
+        for order, value, metric_key, label in [
+            (167, _value(season_model, "auc"), "wf_season_model_auc", f"{season} model AUC (walk-forward)"),
+            (168, _value(season_market, "auc"), "wf_season_market_auc", f"{season} Vegas AUC (no-vig close)"),
+        ]:
+            _add_metric(rows, **common, sort_order=order, metric_key=metric_key, label=label, value=value,
+                        display_value=_fmt_decimal(value, 4), unit="decimal", sample_size=n,
+                        description=f"{season} games only, same games for model and market.")
+        gap = _value(season_model, "auc_minus_market")
+        _add_metric(rows, **common, sort_order=169, metric_key="wf_season_auc_minus_market",
+                    label=f"{season} model AUC minus Vegas AUC", value=gap,
+                    display_value="" if gap is None else f"{float(gap):+.4f}", unit="decimal", sample_size=n,
+                    description=f"{season} games only; negative means the market ranks winners better.")
+    return rows
+
+
 def _fmt_percent(value: float | int | str | None, digits: int = 1) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -416,6 +491,7 @@ def build_model_metrics_rows(
     live_results_summary_path: Path | None = None,
     live_results_summary_dir: Path = LIVE_RESULTS_SUMMARY_DIR,
     live_results_detail_path: Path = LIVE_RESULTS_DETAIL_PATH,
+    walk_forward_market_report_path: Path = WALK_FORWARD_MARKET_REPORT_PATH,
     min_spread_edge_bin_bets: int = 50,
     start_season: int | None = None,
     exclude_from_season: int | None = None,
@@ -637,6 +713,14 @@ def build_model_metrics_rows(
             week=week,
             generated_at=generated_at,
             live_results_detail_path=live_results_detail_path,
+        )
+    )
+    rows.extend(
+        build_walk_forward_market_rows(
+            season=season,
+            week=week,
+            generated_at=generated_at,
+            report_path=walk_forward_market_report_path,
         )
     )
 
