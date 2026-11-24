@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 import pandas as pd
+import pytest
 
 import src.data.weather as weather_module
 
@@ -160,3 +161,53 @@ def test_main_preserves_existing_weather_cache_when_live_refresh_is_empty(tmp_pa
     assert "preserved existing cache rows=1" in output
     assert cache_path.exists()
     assert len(pd.read_parquet(cache_path)) == 1
+
+
+class _Resp:
+    def __init__(self, status_code, headers=None, payload=None):
+        self.status_code = status_code
+        self.reason = {200: "OK", 429: "Too Many Requests"}.get(status_code, "")
+        self.headers = headers or {}
+        self.text = '{"code":429001}'
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_tomorrow_calls_are_spaced_out(monkeypatch):
+    clock = {"t": 100.0}
+    sleeps = []
+    monkeypatch.setattr(weather_module.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(weather_module.time, "sleep", lambda s: (sleeps.append(s), clock.__setitem__("t", clock["t"] + s)))
+    monkeypatch.setattr(weather_module.requests, "get", lambda *a, **k: _Resp(200))
+    monkeypatch.setattr(weather_module, "_tomorrow_last_call", 0.0)
+    weather_module._tomorrow_get("u", {})
+    weather_module._tomorrow_get("u", {})  # immediately after: waits out the interval
+    assert sleeps == [pytest.approx(weather_module.TOMORROW_MIN_INTERVAL_S)]
+
+
+def test_retry_delay_honours_retry_after_then_backs_off():
+    assert weather_module._retry_delay(_Resp(429, {"Retry-After": "3"}), 0, 0.6) == 3.0
+    assert weather_module._retry_delay(_Resp(429, {"Retry-After": "120"}), 0, 0.6) == weather_module.TOMORROW_429_MAX_WAIT_S
+    assert [weather_module._retry_delay(_Resp(429), i, 0.6) for i in range(3)] == [1.0, 2.0, 4.0]
+    assert weather_module._retry_delay(_Resp(503), 1, 0.6) == pytest.approx(1.2)
+
+
+def test_hourly_recovers_after_repeated_429s(monkeypatch):
+    responses = iter([_Resp(429), _Resp(429), _Resp(429),
+                      _Resp(200, payload={"timelines": {"hourly": [{"time": "2026-11-30T18:00:00Z",
+                                                                    "values": {"temperature": 40}}]}})])
+    waits = []
+    monkeypatch.setattr(weather_module, "_tomorrow_get", lambda url, params: next(responses))
+    monkeypatch.setattr(weather_module.time, "sleep", lambda s: waits.append(s))
+    weather_module.WEATHER_REQUEST_DIAGNOSTICS.clear()
+    out = weather_module._tomorrow_forecast_hourly(40.0, -80.0, "k", context="g")
+    assert out is not None and len(out) == 1  # 4th attempt: the 11-23 failure gave up after 3 quick tries
+    assert waits == [1.0, 2.0, 4.0]
+
+
+def test_hourly_skip_threshold_matches_pick_tolerance():
+    # beyond horizon + tolerance the hourly forecast can never give a row within tolerance
+    assert weather_module.TOMORROW_HOURLY_SKIP_AFTER_H > (weather_module.TOMORROW_HOURLY_HORIZON_H
+                                                          + weather_module.HOURLY_MATCH_TOLERANCE_H)
