@@ -131,7 +131,11 @@ class TestDataFrameTransformations:
             if not window_values.isna().all():
                 rolling_val = df['rolling_avg'].iloc[i]
                 if not np.isnan(rolling_val):
-                    assert window_values.min() <= rolling_val <= window_values.max()
+                    # pandas keeps a running sum, so rounding left over from larger
+                    # values earlier in the series can push a tiny window's mean just
+                    # outside [min, max] (seen: ~1e-130 values after ~1 values).
+                    tol = 1e-9 * max(1.0, float(df['value'].iloc[:i + 1].abs().max()))
+                    assert window_values.min() - tol <= rolling_val <= window_values.max() + tol
     
     @given(data_frames([
         column('team_a', dtype=str),

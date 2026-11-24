@@ -2012,6 +2012,8 @@ def _add_per_game_means(df: pd.DataFrame, sum_cols: list[str], denom_col: str) -
 def _load_sr_pbp_subset() -> pd.DataFrame:
     """Load Sportradar play-by-play data with column subset."""
     pbp_path = RAW_DIR / "nfl_pbp.parquet"
+    if not df_path_exists(pbp_path):  # e.g. a fresh checkout or CI: callers handle an empty frame
+        return pd.DataFrame()
     return read_df(pbp_path, columns=PBP_SR_COLUMNS)
 
 
