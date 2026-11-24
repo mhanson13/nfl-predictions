@@ -23,6 +23,9 @@ def _schedule():
 
 def test_noaa_skips_international_venues_and_survives_lookup_errors(tmp_path, monkeypatch, capsys):
     sched = _schedule()
+    # build_noaa_weather checks the schedule file exists before reading it (read_df is stubbed).
+    (tmp_path / "nfl_schedules.parquet").touch()
+    monkeypatch.setattr(noaa, "RAW_DIR", tmp_path)
     monkeypatch.setattr(noaa, "OBS_CACHE_PATH", tmp_path / "noaa.parquet")
     monkeypatch.setattr(noaa, "read_df", lambda path: sched.copy())
     monkeypatch.setattr(noaa, "_load_station_cache", lambda: {})
