@@ -108,6 +108,10 @@ OFFENSE_OUTPUT_MARKETS = frozenset(
     {"rb_rushing_yards", "rb_rushing_tds", "wrte_receiving_yards", "wrte_receiving_tds", "anytime_td"}
 )
 NOVELTY_OUTPUT_MARKETS = NOVELTY_MARKETS
+# Vacated-role review: a teammate starter at the position is Questionable or worse and the
+# book's line is at least this multiple of the model projection (see _attach_vacated_role_flags).
+VACATED_ROLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
+VACATED_ROLE_LINE_RATIO = 2.0
 
 BDL_PROP_TYPE_TO_MARKET = {value: key for key, value in MARKET_TO_BDL_PROP_TYPE.items()}
 
@@ -782,6 +786,22 @@ def _attach_edge_publish_status(predictions: pd.DataFrame) -> pd.DataFrame:
     out.loc[novelty, "edge_publish_status"] = "research_only"
     out.loc[novelty, "edge_reason"] = "Novelty TD market is modeled for research only, not a recommended bet."
 
+    vacated_role = (
+        _as_output_bool(out.get("vacated_role_flag", pd.Series(False, index=out.index)))
+        & ~injury_exclusion
+        & ~no_line
+        & ~fallback_line
+        & ~novelty
+    )
+    vacated_note = out.get("vacated_role_note", pd.Series(pd.NA, index=out.index))
+    out.loc[vacated_role, "edge_publish_status"] = "review"
+    out.loc[vacated_role, "edge_reason"] = (
+        "Starter at this position may not play ("
+        + vacated_note.loc[vacated_role].astype("string").fillna("status unclear")
+        + f"); the line is at least {VACATED_ROLE_LINE_RATIO:g}x the projection, so it may price a bigger "
+        "role than the model sees. Review before betting."
+    )
+
     injury_review = injury_reported & ~injury_exclusion & ~no_line & ~fallback_line
     out.loc[injury_review, "edge_publish_status"] = "review"
     out.loc[injury_review, "edge_reason"] = "Player has an injury report flag; review status before betting."
@@ -952,6 +972,8 @@ def _model_signal_reason(row: pd.Series) -> str:
 
     if public_pick:
         return "Official pick: historical edge policy, roster checks, and current price all passed."
+    if status == "review" and bool(row.get("vacated_role_flag", False)) and not bool(row.get("injury_reported", False)):
+        return "Watchlist only: a starter at this position may not play, and the line prices a bigger role than the model projects."
     if status == "review":
         return "Watchlist only: player availability needs review before this can be treated as playable."
     if line_type in NON_BETTABLE_LINE_TYPES:
@@ -2879,6 +2901,118 @@ def _clear_soft_bdl_injury_reviews_with_clean_availability(predictions: pd.DataF
     return out
 
 
+def _absent_starters(injuries: pd.DataFrame, availability: pd.DataFrame) -> pd.DataFrame:
+    """Depth-chart starters (rank 1) at QB/RB/WR/TE whose status is Questionable or worse.
+
+    Status comes from the injury report (by player_id, then name and team), falling back to
+    the availability frame's own injury status and IR flag.
+    """
+    columns = ["_team_key", "_position", "starter_id", "starter_name_key", "starter_name", "starter_status"]
+    needed = {"depth_chart_position", "depth_chart_rank"}
+    if availability is None or availability.empty or not needed.issubset(availability.columns):
+        return pd.DataFrame(columns=columns)
+    rank = pd.to_numeric(availability["depth_chart_rank"], errors="coerce")
+    position = availability["depth_chart_position"].astype("string").str.upper()
+    starters = availability[rank.eq(1) & position.isin(list(VACATED_ROLE_POSITIONS))].copy()
+    if starters.empty:
+        return pd.DataFrame(columns=columns)
+    team_source = starters["current_team"] if "current_team" in starters.columns else starters.get("team")
+    if team_source is None:
+        return pd.DataFrame(columns=columns)
+    if "team" in starters.columns:
+        team_source = team_source.where(team_source.notna(), starters["team"])
+    starters["_team_key"] = team_source.apply(_clean_team)
+    starters["_position"] = starters["depth_chart_position"].astype("string").str.upper()
+    starters["starter_id"] = _as_text(starters["player_id"]) if "player_id" in starters.columns else pd.NA
+    starters["starter_name"] = starters.get("player_name", pd.Series(pd.NA, index=starters.index))
+    starters["starter_name_key"] = starters["starter_name"].apply(_player_name_key)
+
+    status = pd.Series(pd.NA, index=starters.index, dtype="object")
+    injuries = injuries if injuries is not None else pd.DataFrame()
+    if not injuries.empty and "injury_status" in injuries.columns:
+        if "player_id" in injuries.columns:
+            by_id = injuries.dropna(subset=["player_id"]).drop_duplicates("player_id", keep="last")
+            by_id = by_id.set_index(_as_text(by_id["player_id"]))["injury_status"]
+            status = starters["starter_id"].map(by_id).astype("object")
+        if {"player_name_key", "team"}.issubset(injuries.columns):
+            named = injuries.dropna(subset=["player_name_key", "team"]).copy()
+            named["_key"] = named["player_name_key"].astype(str) + "|" + named["team"].apply(_clean_team).astype(str)
+            by_name = named.drop_duplicates("_key", keep="last").set_index("_key")["injury_status"]
+            name_key = starters["starter_name_key"].astype(str) + "|" + starters["_team_key"].astype(str)
+            status = status.where(status.notna(), name_key.map(by_name))
+    if "injury_status" in starters.columns:
+        status = status.where(status.notna(), starters["injury_status"])
+    if "injured_reserve_flag" in starters.columns:
+        on_ir = starters["injured_reserve_flag"].astype("boolean").fillna(False).astype(bool)
+        status = status.where(status.notna() | ~on_ir, "IR")
+    starters["starter_status"] = status.apply(_clean_injury_text)
+    absent = starters[starters["starter_status"].apply(_injury_severity).ge(2)]
+    return absent[columns].reset_index(drop=True)
+
+
+def _attach_vacated_role_flags(
+    predictions: pd.DataFrame,
+    *,
+    injuries: pd.DataFrame | None,
+    availability: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Flag rows whose team's starter at the position may not play and whose line prices a bigger role.
+
+    Props project from a player's own history and have no feature for a teammate's absence, so a
+    backup whose starter is out gets a backup-sized projection while books price the starter's
+    role. Rows are flagged when a different rank-1 player at the same position on the same team is
+    Questionable or worse and the line is at least ``VACATED_ROLE_LINE_RATIO`` times the projection.
+    """
+    out = predictions.copy()
+    out["vacated_role_flag"] = False
+    out["vacated_role_note"] = pd.NA
+    if out.empty:
+        return out
+    absent = _absent_starters(
+        injuries if injuries is not None else pd.DataFrame(),
+        availability if availability is not None else pd.DataFrame(),
+    )
+    if absent.empty:
+        return out
+
+    depth_position = out.get("depth_chart_position", pd.Series(pd.NA, index=out.index)).astype("string").str.upper()
+    position = depth_position.where(
+        depth_position.isin(list(VACATED_ROLE_POSITIONS)),
+        out.get("position", pd.Series(pd.NA, index=out.index)).astype("string").str.upper(),
+    )
+    team = out.get("team", pd.Series(pd.NA, index=out.index)).apply(_clean_team)
+    player_id = _as_text(out.get("player_id", pd.Series(pd.NA, index=out.index)))
+    name_key = out.get("player_name", pd.Series(pd.NA, index=out.index)).apply(_player_name_key)
+    line = pd.to_numeric(out.get("line", pd.Series(np.nan, index=out.index)), errors="coerce")
+    projection = pd.to_numeric(out.get("projection", pd.Series(np.nan, index=out.index)), errors="coerce")
+    market = out.get("market", pd.Series("", index=out.index)).astype("string")
+    eligible = (
+        line.gt(0)
+        & projection.notna()
+        & line.ge(VACATED_ROLE_LINE_RATIO * projection.clip(lower=0))
+        & ~market.isin(list(NOVELTY_OUTPUT_MARKETS) + ["def_sacks"])
+        & position.isin(list(VACATED_ROLE_POSITIONS))
+    ).fillna(False)
+
+    groups = dict(list(absent.groupby(["_team_key", "_position"])))
+    for idx in out.index[eligible]:
+        starters = groups.get((team.at[idx], position.at[idx]))
+        if starters is None:
+            continue
+        others = starters[
+            starters["starter_id"].ne(player_id.at[idx]).fillna(True)
+            & starters["starter_name_key"].ne(name_key.at[idx]).fillna(True)
+        ]
+        if others.empty:
+            continue
+        out.at[idx, "vacated_role_flag"] = True
+        out.at[idx, "vacated_role_note"] = "; ".join(
+            f"{team.at[idx]} {position.at[idx]}1 {name} is {status}"
+            for name, status in zip(others["starter_name"], others["starter_status"])
+        )
+    return out
+
+
 def _score_market(
     features: pd.DataFrame,
     *,
@@ -3073,6 +3207,7 @@ def predict_player_props(
     predictions = _attach_injury_status(predictions, injuries if injuries is not None else pd.DataFrame())
     predictions = attach_player_availability(predictions, availability if availability is not None else pd.DataFrame())
     predictions = _clear_soft_bdl_injury_reviews_with_clean_availability(predictions)
+    predictions = _attach_vacated_role_flags(predictions, injuries=injuries, availability=availability)
     roster_flag = predictions.get("roster_validation_flag", pd.Series("unknown", index=predictions.index))
     roster_exclusion = roster_flag.isin({"team_mismatch", "inactive_roster", "practice_squad"})
     predictions.loc[roster_flag.eq("team_mismatch"), "prop_quality_flag"] = "roster_mismatch"
