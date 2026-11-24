@@ -186,3 +186,39 @@ def test_warning_names_the_static_features_that_changed(tmp_path, capsys):
     out = capsys.readouterr().out
     assert f"non-pick-time features changed between runs for 1 games: ['{gid}']" in out
     assert f"{gid}: 1 changed: def_plays_allowed_home 2263->2386" in out
+
+
+MODEL_INPUTS = ["pass_epa_per_db_rolling3_diff", "rest_days_diff", "sched_spread_close_diff"]
+
+
+def test_fingerprint_covers_only_model_inputs():
+    gid = "2026_12_A_B"
+    feats = pd.DataFrame({"game_id": [gid], "pass_epa_per_db_rolling3_diff": [0.1], "sched_spread_close_diff": [-3.0],
+                          "rest_days_home": [7.0], "rest_days_away": [6.0],  # model builds rest_days_diff itself
+                          "roster_espn_id_home": [2.6e8], "roster_espn_id_away": [2.5e8], "epa_home": [-16.7]})
+    h1 = por.static_feature_hashes(feats, [gid], MODEL_INPUTS)
+    # columns no model uses (roster_* ID sums, raw EPA totals) no longer move the fingerprint
+    h2 = por.static_feature_hashes(feats.assign(roster_espn_id_home=2.7e8, epa_home=-18.9), [gid], MODEL_INPUTS)
+    assert h1[gid] == h2[gid]
+    # a model input that the model builds at training time (rest_days_diff) still does
+    h3 = por.static_feature_hashes(feats.assign(rest_days_away=3.0), [gid], MODEL_INPUTS)
+    assert h3[gid] != h1[gid]
+    values = por.static_feature_values(feats, [gid], MODEL_INPUTS)
+    assert list(values.columns) == ["pass_epa_per_db_rolling3_diff", "rest_days_diff"]  # spread: pick-time
+    # without the model's columns, every numeric column counts (the old behaviour)
+    assert "roster_espn_id_home" in por.static_feature_values(feats, [gid]).columns
+
+
+def test_stored_diff_wins_over_rebuilt_one():
+    gid = "2026_12_A_B"
+    feats = pd.DataFrame({"game_id": [gid], "rest_days_home": [7.0], "rest_days_away": [6.0], "rest_days_diff": [5.0]})
+    assert por.static_feature_values(feats, [gid], ["rest_days_diff"])["rest_days_diff"].tolist() == [5.0]
+
+
+def test_model_input_columns_reads_tree_and_logistic_features(tmp_path):
+    import joblib
+
+    joblib.dump({"features": ["b_diff", "a_diff"], "logistic_features": ["spread_line"]}, tmp_path / "w.pkl")
+    joblib.dump({"features": ["a_diff", "c_diff"]}, tmp_path / "s.pkl")
+    assert por.model_input_columns([tmp_path / "w.pkl", tmp_path / "s.pkl"]) == ["a_diff", "b_diff", "c_diff",
+                                                                                "spread_line"]

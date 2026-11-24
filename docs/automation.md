@@ -113,8 +113,9 @@ The dispatcher holds it from the first write into MTB until `publish_site.py` fi
   learn from that week's earlier results.
 - Games already kicked off are never recorded; ledger rows are never rewritten.
 - The ledger refuses a `predictions.csv` older than the current run.
-- Each row fingerprints the game's slow-moving features; a change between a game's
-  picks (other than odds/injuries/news/weather) logs a warning the review escalates.
+- Each row fingerprints the game's slow-moving **model inputs** (the columns the saved win and spread models use,
+  other than odds/injuries/news/weather: 74 in Week 12); a change between a game's picks logs a warning the review
+  escalates. Columns no model uses (e.g. `roster_*` sums of player IDs, raw EPA totals) are not fingerprinted.
 
 ## Operating
 
