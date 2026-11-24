@@ -24,6 +24,8 @@ MARKET_SPREAD_EDGE_BINS_PATH = Path("analysis/market_roi_spread_edge_bins.csv")
 MARKET_SPREAD_KEY_NUMBERS_PATH = Path("analysis/market_spread_key_numbers.csv")
 MARKET_EDGE_POLICY_PATH = Path("analysis/market_edge_policy.csv")
 LIVE_RESULTS_SUMMARY_DIR = Path("predictions/evaluation")
+LIVE_RESULTS_DETAIL_PATH = LIVE_RESULTS_SUMMARY_DIR / "live_prediction_vs_actual.csv"
+SEASON_TO_DATE_SECTION = "live_published_season"
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,115 @@ def _select_live_results_summary_row(path: Path) -> pd.Series | None:
     return df.iloc[-1]
 
 
+def _record_text(wins: int, losses: int, pushes: int) -> str:
+    return f"{wins}-{losses}-{pushes}" if pushes else f"{wins}-{losses}"
+
+
+def _week_range_text(weeks: list[int]) -> str:
+    if not weeks:
+        return ""
+    if weeks == list(range(weeks[0], weeks[-1] + 1)):
+        return f"week {weeks[0]}" if len(weeks) == 1 else f"weeks {weeks[0]}-{weeks[-1]}"
+    return "weeks " + ", ".join(str(w) for w in weeks)
+
+
+def build_season_to_date_rows(
+    *,
+    season: int,
+    week: int,
+    generated_at: str,
+    live_results_detail_path: Path = LIVE_RESULTS_DETAIL_PATH,
+) -> list[MetricRow]:
+    """Season-to-date published-pick rows from the cumulative graded detail file.
+
+    Counts every graded game with a pick of record in ``season`` up to ``week``. No-pick
+    rows are left out (pick-of-record rule) and counted in the record row's description.
+    Metrics come from the grader's own summary, so they match the weekly grading report.
+    """
+    from src.evaluation.live_results import has_pick, summarize_detail
+
+    detail = _read_csv_if_exists(live_results_detail_path)
+    if detail.empty or not {"season", "week", "su_result"}.issubset(detail.columns):
+        return []
+    detail = detail[
+        (pd.to_numeric(detail["season"], errors="coerce") == season)
+        & (pd.to_numeric(detail["week"], errors="coerce") <= week)
+    ]
+    picked = detail[has_pick(detail)]
+    if picked.empty:
+        return []
+    no_pick = int(len(detail) - len(picked))
+    summary = summarize_detail(picked).iloc[0]
+    weeks = sorted(int(w) for w in pd.to_numeric(picked["week"], errors="coerce").dropna().unique())
+    su = picked["su_result"].astype(str)
+    su_w, su_l, su_p = (int(su.eq(r).sum()) for r in ("win", "loss", "push"))
+    n_games = int(len(picked))
+    ats_w, ats_l, ats_p = (int(_value(summary, k, 0) or 0) for k in ("ats_wins", "ats_losses", "ats_pushes"))
+    if "moneyline_profit_unit" in picked.columns:
+        ml_profit = pd.to_numeric(picked["moneyline_profit_unit"], errors="coerce").dropna()
+    else:
+        ml_profit = pd.Series(dtype=float)
+    ml_priced = int(len(ml_profit))
+
+    rows: list[MetricRow] = []
+    common = {"season": season, "week": week, "generated_at": generated_at,
+              "section": SEASON_TO_DATE_SECTION, "source_artifact": live_results_detail_path}
+    no_pick_text = f" {no_pick} final games with no pick of record are not counted." if no_pick else ""
+    record = _record_text(su_w, su_l, su_p)
+    _add_metric(
+        rows, **common, sort_order=101, metric_key="live_season_su_record",
+        label=f"{season} published-pick record", value=record, display_value=record, unit="record",
+        sample_size=n_games,
+        description=(f"Straight-up wins-losses{'-ties' if su_p else ''} for every graded published pick of "
+                     f"record, {_week_range_text(weeks)}.{no_pick_text}"),
+    )
+    for order, key, metric_key, label, unit, formatter, description in [
+        (102, "accuracy", "live_season_accuracy", "SU accuracy", "percent", _fmt_percent,
+         "Straight-up accuracy over the season's graded published picks (ties not counted)."),
+        (103, "auc", "live_season_auc", "AUC", "decimal", _fmt_decimal,
+         "Rank-order separation of the published home-win probabilities, season to date."),
+        (104, "brier", "live_season_brier", "Brier", "decimal", _fmt_decimal,
+         "Brier score of the published probabilities, season to date; lower is better."),
+        (105, "log_loss", "live_season_log_loss", "log loss", "decimal", _fmt_decimal,
+         "Log loss of the published probabilities, season to date; lower is better."),
+    ]:
+        value = _value(summary, key)
+        _add_metric(rows, **common, sort_order=order, metric_key=metric_key,
+                    label=f"{season} published-pick {label}", value=value, display_value=formatter(value),
+                    unit=unit, sample_size=n_games, description=description)
+    if ats_w + ats_l + ats_p:
+        ats_record = _record_text(ats_w, ats_l, ats_p)
+        _add_metric(
+            rows, **common, sort_order=106, metric_key="live_season_ats_record",
+            label=f"{season} published-pick ATS record", value=ats_record, display_value=ats_record,
+            unit="record", sample_size=ats_w + ats_l + ats_p,
+            description="Against-the-spread wins-losses-pushes for published picks with a valid market line.",
+        )
+        value = _value(summary, "ats_hit_rate")
+        _add_metric(
+            rows, **common, sort_order=107, metric_key="live_season_ats_hit_rate",
+            label=f"{season} published-pick ATS hit rate", value=value, display_value=_fmt_percent(value),
+            unit="percent", sample_size=ats_w + ats_l,
+            description="ATS hit rate excluding pushes; about 52.4% breaks even at standard -110 vig.",
+        )
+    if ml_priced:
+        units = float(ml_profit.sum())
+        _add_metric(
+            rows, **common, sort_order=108, metric_key="live_season_moneyline_units",
+            label=f"{season} published-pick moneyline units", value=units, display_value=f"{units:+.2f}",
+            unit="units", sample_size=ml_priced,
+            description="Flat one-unit moneyline profit on the model's side for published picks with odds.",
+        )
+        roi = units / ml_priced
+        _add_metric(
+            rows, **common, sort_order=109, metric_key="live_season_moneyline_roi",
+            label=f"{season} published-pick moneyline ROI", value=roi, display_value=_fmt_percent(roi),
+            unit="percent", sample_size=ml_priced,
+            description="Moneyline units divided by priced games, season to date.",
+        )
+    return rows
+
+
 def _fmt_percent(value: float | int | str | None, digits: int = 1) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -304,6 +415,7 @@ def build_model_metrics_rows(
     market_edge_policy_path: Path = MARKET_EDGE_POLICY_PATH,
     live_results_summary_path: Path | None = None,
     live_results_summary_dir: Path = LIVE_RESULTS_SUMMARY_DIR,
+    live_results_detail_path: Path = LIVE_RESULTS_DETAIL_PATH,
     min_spread_edge_bin_bets: int = 50,
     start_season: int | None = None,
     exclude_from_season: int | None = None,
@@ -518,6 +630,15 @@ def build_model_metrics_rows(
             description=description,
             source_artifact=live_summary_path,
         )
+
+    rows.extend(
+        build_season_to_date_rows(
+            season=season,
+            week=week,
+            generated_at=generated_at,
+            live_results_detail_path=live_results_detail_path,
+        )
+    )
 
     market_all = _select_market_row(market_benchmark_summary_path, segment="all")
     market_disagree = _select_market_row(market_benchmark_summary_path, segment="disagree")
