@@ -524,7 +524,11 @@ def _load_weather_sources() -> pd.DataFrame:
             }
         )
 
-        filled["_venue_home_team"] = filled["home_team"].astype(str).str.upper().str.strip().apply(_norm_abbr)
+        # The schedule calls the Rams "LA"; team_locations.csv has "LAR" (venues.TEAM_ALIASES),
+        # so NOAA rows for Rams home games never got coordinates.
+        filled["_venue_home_team"] = (
+            filled["home_team"].astype(str).str.upper().str.strip().apply(_norm_abbr).replace({"LA": "LAR"})
+        )
         filled = filled.merge(loc, on="_venue_home_team", how="left")
         for col in ("venue_lat", "venue_lon"):
             if col not in filled.columns:
