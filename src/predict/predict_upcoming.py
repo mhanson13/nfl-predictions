@@ -75,6 +75,25 @@ def _column_or_default(
     return pd.Series(default_value, index=df.index)
 
 
+def _market_cap_input(preds: pd.DataFrame, feature_rows: pd.DataFrame) -> pd.Series | None:
+    """Home market probability that lets apply_probability_caps relax its 0.85/0.15 cap.
+
+    Same source as walk-forward (predict_history): the game's feature row,
+    ``sched_implied_prob_home``, else ``home_moneyline``. ``preds`` only holds teams and
+    context columns, so reading the market from it (as this code used to) found nothing
+    and heavy favourites were held at 85% live while walk-forward let them follow the
+    market. ``feature_rows`` must share ``preds``' index (both come from this week's rows).
+    """
+    for frame in (feature_rows, preds):
+        if frame is None:
+            continue
+        if "sched_implied_prob_home" in frame.columns:
+            return pd.to_numeric(frame["sched_implied_prob_home"], errors="coerce").reindex(preds.index)
+        if "home_moneyline" in frame.columns:
+            return pd.Series(moneyline_to_prob(frame["home_moneyline"]), index=frame.index).reindex(preds.index)
+    return None
+
+
 def _coerce_probability_series(values: Any, index: pd.Index) -> pd.Series:
     """Return numeric probabilities aligned to *index*."""
     if isinstance(values, pd.Series):
@@ -4264,15 +4283,7 @@ def main():
 
                     print(f"[win_prob][predict] calibrator load failed: {ex}")
 
-            market_caps = None
-
-            if "sched_implied_prob_home" in preds.columns:
-
-                market_caps = pd.to_numeric(preds["sched_implied_prob_home"], errors="coerce")
-
-            elif "home_moneyline" in preds.columns:
-
-                market_caps = moneyline_to_prob(preds["home_moneyline"])
+            market_caps = _market_cap_input(preds, this_week_nodup)
 
             fallback_reasons: list[str] = []
             calibrated_proba = _coerce_probability_series(final_proba, preds.index)
