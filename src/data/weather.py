@@ -598,7 +598,7 @@ def _pick_nearest_hourly(df: pd.DataFrame, target_ts: pd.Timestamp) -> Optional[
 
         row = df.sort_values("abs_diff").iloc[0]
 
-        if float(row["abs_diff"]) > 12 * 3600:
+        if float(row["abs_diff"]) > HOURLY_MATCH_TOLERANCE_H * 3600:
 
             return None
 
@@ -669,11 +669,52 @@ def _print_weather_request_summary(*, debug: bool = False, max_details: int = 12
     print(f"[weather] Tomorrow.io {label}:\n", detail.to_string(index=False))
 
 
+# Tomorrow.io rate limits are per second as well as per hour/day. Back-to-back calls
+# drew 429s on most game-day runs (retried 0.6-1.2 s later, usually fine, but the
+# 11-23 Monday run lost a game after three quick 429s), so space the calls out and
+# back off properly on a 429.
+TOMORROW_MIN_INTERVAL_S = 0.4          # at most ~2.5 calls/second
+TOMORROW_429_MAX_WAIT_S = 10.0         # cap on a Retry-After we honour
+TOMORROW_RETRIES = 4                   # 429 waits: Retry-After, else 1 s, 2 s, 4 s
+# The hourly forecast covers 120 h and _pick_nearest_hourly accepts a row within 12 h of
+# kickoff, so a kickoff later than this can only come from the daily forecast: skip the
+# hourly call (it would return no usable row and cost a request).
+TOMORROW_HOURLY_HORIZON_H = 120
+HOURLY_MATCH_TOLERANCE_H = 12
+TOMORROW_HOURLY_SKIP_AFTER_H = TOMORROW_HOURLY_HORIZON_H + HOURLY_MATCH_TOLERANCE_H + 1
+_tomorrow_last_call = 0.0
+
+
+def _tomorrow_get(url: str, params: dict[str, Any]) -> requests.Response:
+    """GET a Tomorrow.io endpoint, at least TOMORROW_MIN_INTERVAL_S after the previous call."""
+    global _tomorrow_last_call
+    wait = _tomorrow_last_call + TOMORROW_MIN_INTERVAL_S - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        return requests.get(url, params=params, timeout=20)
+    finally:
+        _tomorrow_last_call = time.monotonic()
+
+
+def _retry_delay(response: requests.Response, attempt: int, pause: float) -> float:
+    """Seconds to wait before retrying: Retry-After / exponential for 429, linear for 5xx."""
+    if response.status_code == 429:
+        try:
+            after = float(response.headers.get("Retry-After", ""))
+        except (TypeError, ValueError):
+            after = None
+        if after is not None and after > 0:
+            return min(after, TOMORROW_429_MAX_WAIT_S)
+        return float(2 ** attempt)  # 1, 2, 4 s
+    return pause * (attempt + 1)
+
+
 def _tomorrow_forecast_hourly(
     lat: float,
     lon: float,
     api_key: str,
-    retries: int = 3,
+    retries: int = TOMORROW_RETRIES,
     pause: float = 0.6,
     *,
     context: Optional[str] = None,
@@ -705,7 +746,7 @@ def _tomorrow_forecast_hourly(
 
         try:
 
-            r = requests.get(base, params=params, timeout=20)
+            r = _tomorrow_get(base, params)
 
             if r.status_code == 200:
 
@@ -757,7 +798,7 @@ def _tomorrow_forecast_hourly(
                     message=_sanitize_response_body(r),
                 )
 
-                time.sleep(pause * (i + 1))
+                time.sleep(_retry_delay(r, i, pause))
 
                 continue
 
@@ -799,7 +840,7 @@ def _tomorrow_forecast_daily(
     lat: float,
     lon: float,
     api_key: str,
-    retries: int = 3,
+    retries: int = TOMORROW_RETRIES,
     pause: float = 0.6,
     *,
     context: Optional[str] = None,
@@ -843,7 +884,7 @@ def _tomorrow_forecast_daily(
 
         try:
 
-            r = requests.get(base, params=params, timeout=20)
+            r = _tomorrow_get(base, params)
 
             if r.status_code == 200:
 
@@ -895,7 +936,7 @@ def _tomorrow_forecast_daily(
                     message=_sanitize_response_body(r),
                 )
 
-                time.sleep(pause * (i + 1))
+                time.sleep(_retry_delay(r, i, pause))
 
                 continue
 
@@ -1333,7 +1374,10 @@ def build_game_weather(
 
         pick = None
 
-        hourly = _tomorrow_forecast_hourly(float(lat), float(lon), api_key, context=context)
+        hours_out = (pd.to_datetime(dt, utc=True) - pd.Timestamp.now(tz="UTC")).total_seconds() / 3600.0
+        hourly = None
+        if hours_out <= TOMORROW_HOURLY_SKIP_AFTER_H:
+            hourly = _tomorrow_forecast_hourly(float(lat), float(lon), api_key, context=context)
         if hourly is not None and not hourly.empty:
             pick = _pick_nearest_hourly(hourly, pd.to_datetime(dt, utc=True))
         from_hourly = pick is not None
