@@ -40,8 +40,13 @@ The dispatcher holds it from the first write into MTB until `publish_site.py` fi
 1. `weekly_run` runs the pipeline with `--mtb-publish-plan logs/dispatcher/<slot>_mtb_publish_plan.json`.
    `run_pipeline` then does **not** run its last two jobs (`tools.publish_mtb_csvs`, the CSV copy,
    and `tools.import_mtb_predictions`); it writes their exact commands to the plan once every
-   other job has succeeded. (A manual `weekly_run` / `run_pipeline` without the flag still runs
-   them itself, unlocked; avoid that while MLB may be publishing.)
+   other job has succeeded. A manual `weekly_run` does the same with its own plan
+   (`logs/pipeline/<season>/output_wk<NN>_<phase>_<stamp>_mtb_publish_plan.json`, next to the
+   debug log) and then runs the copy and import itself inside the lock, with the same 300 s wait
+   (`--publish-lock-wait-sec`). If the lock is still busy it copies nothing and exits **75**;
+   `python -m tools.weekly_run --publish-only <plan>` publishes that run later without re-running
+   the pipeline. Manual runs still don't deploy the site; run `publish_site.py` yourself as before.
+   Only a bare `run_pipeline --publish-mtb` without the flag still copies into MTB unlocked.
 2. The dispatcher takes the lock (`sport=nfl`, `stale_after_minutes=90`). If it is busy, it waits
    up to **300 s** (`--publish-lock-wait-sec`; default `PUBLISH_LOCK_WAIT_SEC` in `tools/dispatcher.py`,
    the same wait MLB uses), so an MLB publish that is partway through its ~8-10 min usually finishes
@@ -128,7 +133,7 @@ pwsh -File tools\install_dispatcher_task.ps1 -Uninstall    # stop automation
 ```
 
 - Re-run a failed slot by hand: `python -m tools.weekly_run --season 2026 --week 10`
-  (copies into MTB without the publish lock, see above), or delete the slot from
+  (copies into MTB under the publish lock; exit 75 means the lock was busy, see above), or delete the slot from
   `logs/dispatcher/state.json` to let the dispatcher retry (it publishes under the lock).
 - The task runs only while you are logged on (keeps git/gh/npm credentials working).
   Leave the PC signed in (locking the screen is fine); it may sleep — the task wakes it.

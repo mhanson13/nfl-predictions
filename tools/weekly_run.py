@@ -19,6 +19,15 @@ Phase policy:
 * pre_kickoff (within 36h of the first game): full slate; keep the existing archive.
 * in_progress (a game has kicked off): partial slate; keep the existing archive.
 * offseason: nothing to predict; exits without running.
+
+MTB publish lock: NFL and MLB both write into ``C:\\Code\\mtb``. A run that publishes
+passes ``--mtb-publish-plan`` to the pipeline, so the pipeline defers its MTB CSV copy
+and JSON import; after a successful run they run here inside MTB's shared publish lock
+(``tools.dispatcher.run_locked_publish``, same 300 s wait). If the lock stays busy,
+nothing is copied, the run exits 75, and ``--publish-only <plan>`` publishes that run
+later without re-running the pipeline. The site deploy (``scripts/publish_site.py``)
+stays a separate manual step, as before. When the caller already passes
+``--mtb-publish-plan`` (the dispatcher), the caller owns the publish and nothing changes.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
+from src.utils import publish_lock
 from src.utils.nfl_calendar import (
     DEFAULT_SCHEDULE_PATH,
     PHASE_EARLY_WEEK,
@@ -48,6 +58,7 @@ from src.utils.run_log import (
 )
 
 DEFAULT_MTB_REPO = Path(r"C:\Code\mtb")
+PUBLISH_PLAN_FLAG = "--mtb-publish-plan"
 STANDARD_FLAGS = [
     "--start-year", "2017",
     "--train-start-year", "2017",
@@ -72,6 +83,7 @@ class RunPlan:
     latest_copy: Path
     overwrite_archive: bool
     notes: list[str] = field(default_factory=list)
+    publish_plan: Path | None = None  # set when this run copies into MTB itself, under the lock
 
 
 def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
@@ -84,6 +96,10 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, l
     parser.add_argument("--mtb-repo-dir", type=Path, default=DEFAULT_MTB_REPO)
     parser.add_argument("--no-publish", action="store_true", help="Do not publish to MattyTheBookie.")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan (and write it to the log) without running.")
+    parser.add_argument("--publish-only", type=Path, metavar="PLAN",
+                        help="Skip the pipeline; copy/import a finished run's MTB publish plan under the publish lock.")
+    parser.add_argument("--publish-lock-wait-sec", type=float, default=None,
+                        help="Seconds to wait for a busy MTB publish lock (default: the dispatcher's).")
     argv = list(sys.argv[1:] if argv is None else argv)
     extra: list[str] = []
     if "--" in argv:
@@ -111,9 +127,40 @@ def build_plan(args: argparse.Namespace, extra: list[str], now: Optional[datetim
         command += ["--publish-mtb", "--mtb-repo-dir", str(args.mtb_repo_dir)]
         if overwrite:
             command.append("--mtb-overwrite-week-archive")
-    command += extra
     log_path, latest = debug_log_paths(season, week, phase, log_dir=args.log_dir)
-    return RunPlan(ctx, season, week, phase, command, log_path, latest, overwrite, notes)
+    publish_plan = None
+    if not args.no_publish and PUBLISH_PLAN_FLAG not in extra:
+        publish_plan = log_path.with_name(log_path.name.replace("_debug.txt", "_mtb_publish_plan.json")).resolve()
+        command += [PUBLISH_PLAN_FLAG, str(publish_plan)]
+    command += extra
+    return RunPlan(ctx, season, week, phase, command, log_path, latest, overwrite, notes, publish_plan)
+
+
+def publish_locked(plan_path: Path, mtb_repo_dir: Path, *, log_path: Path | None = None,
+                   wait_seconds: float | None = None, runner=None) -> int:
+    """Run a deferred MTB copy/import plan inside MTB's publish lock.
+
+    Returns 0 on success, 75 when the lock stayed busy (nothing copied), otherwise the failing
+    step's exit code (1 when the plan is missing or the lock could not be taken).
+    """
+    from tools import dispatcher
+
+    jobs = dispatcher.load_publish_plan(plan_path)
+    if jobs is None:
+        print(f"[weekly_run] no MTB publish plan at {plan_path}; nothing was copied.")
+        return 1
+    steps = [{"cmd": cmd, "timeout": dispatcher.PUBLISH_COPY_TIMEOUT, "log": log_path} for cmd in jobs]
+    wait = dispatcher.PUBLISH_LOCK_WAIT_SEC if wait_seconds is None else float(wait_seconds)
+    pub = dispatcher.run_locked_publish(steps, mtb_repo_dir, runner=runner or dispatcher._run, wait_seconds=wait)
+    if pub["outcome"] == dispatcher.PUBLISH_PENDING:
+        print(f"[weekly_run] MTB publish lock busy ({pub['note']}); nothing was copied into MTB. "
+              f"Publish this run later with: python -m tools.weekly_run --publish-only {plan_path}")
+        return publish_lock.LOCK_HELD_EXIT_CODE
+    if pub["outcome"] != "success":
+        print(f"[weekly_run] MTB copy/import failed: {pub['note']}")
+        return int(pub["rc"]) if pub["rc"] not in (None, 0) else 1
+    print(f"[weekly_run] MTB copy/import done under the publish lock ({len(jobs)} steps).")
+    return 0
 
 
 def _header(plan: RunPlan, env_lines: list[str]) -> str:
@@ -136,6 +183,8 @@ def _header(plan: RunPlan, env_lines: list[str]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args, extra = parse_args(argv)
+    if args.publish_only is not None:
+        return publish_locked(args.publish_only, args.mtb_repo_dir, wait_seconds=args.publish_lock_wait_sec)
     plan = build_plan(args, extra)
     header = _header(plan, preflight(args.schedule))
     context = "[weekly_run] context: " + json.dumps(plan.context.as_dict()) + "\n"
@@ -146,8 +195,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan.log_path.write_text(text, encoding="utf-8")
         print(text)
         return 0
+    if plan.publish_plan is not None:
+        plan.publish_plan.unlink(missing_ok=True)
     rc = run_logged(plan.command, header + context, [plan.log_path, plan.latest_copy])
     print(f"[weekly_run] debug log: {plan.log_path} (latest: {plan.latest_copy})")
+    if rc == 0 and plan.publish_plan is not None:
+        rc = publish_locked(plan.publish_plan, args.mtb_repo_dir, log_path=plan.log_path.resolve(),
+                            wait_seconds=args.publish_lock_wait_sec)
     return rc
 
 
