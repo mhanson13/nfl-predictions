@@ -37,6 +37,13 @@ the pick MTB showed), copies the results to MTB (``tools.publish_mtb_csvs
 scores are final it re-checks hourly; game-day slots always run first. Game-day
 alerts also carry the latest grading outcome.
 
+Previews: after grading succeeds, it builds the next week's game previews
+(``src.data.game_previews``: schedule and market data, no model output) and, from
+``PREVIEWS_LIVE_FROM`` on, copies them with the results under the same publish lock.
+Best-effort: a preview failure never stops or fails the results publish. On Wednesday
+from noon ET it rebuilds the upcoming week's previews with fresh odds and publishes
+them only if something changed, and never while a game-day launch window is open.
+
 State lives in ``logs/dispatcher/state.json``; a lock file prevents overlap.
 """
 
@@ -74,6 +81,14 @@ GRADE_DELAY = timedelta(hours=8)        # after a week's last kickoff (MNF 8:15 
 GRADE_RECHECK = timedelta(hours=1)      # scores not final yet / retry after an error
 GRADE_WINDOW = timedelta(hours=60)      # stop trying after this; older weeks are a manual backfill
 GRADE_MAX_FAILURES = 4
+# Game previews (src.data.game_previews). Weeks before PREVIEWS_LIVE_FROM are built locally only.
+PREVIEWS_LIVE_FROM = (2026, 14)
+PREVIEW_MAX_AGE_HOURS = 6               # a lock-busy grading retry reuses a build this recent (no new Odds API call)
+PREVIEW_TIMEOUT = 10 * 60
+PREVIEW_REFRESH_WEEKDAY = 2             # Wednesday (ET)
+PREVIEW_REFRESH_HOUR_ET = 12
+PREVIEW_REFRESH_RECHECK = timedelta(hours=1)
+PREVIEW_REFRESH_MAX_FAILURES = 3
 GRADE_EXIT_NOT_FINAL = 3                # src.evaluation.live_results EXIT_NOT_FINAL
 # MTB's shared publish lock (src/utils/publish_lock.py, MTB docs/publish-lock.md). Held from
 # the first CSV copy into the MTB checkout until scripts/publish_site.py finishes.
@@ -361,10 +376,16 @@ def run_grading(season: int, week: int, args: argparse.Namespace, *, runner: Opt
 
     result["publish_rc"] = None
     result["status"] = "success"
+    preview = None
+    if not getattr(args, "no_previews", False):
+        preview = build_preview_step(season, week, args, runner=runner, log=log)
+        result["preview"] = preview
     if not args.no_publish:
-        steps = [{"cmd": [py, "-m", "tools.publish_mtb_csvs", "--repo-dir", str(args.mtb_repo_dir),
-                          "--season", str(season), "--results-only"],
-                  "timeout": PUBLISH_COPY_TIMEOUT, "log": log}]
+        copy_cmd = [py, "-m", "tools.publish_mtb_csvs", "--repo-dir", str(args.mtb_repo_dir),
+                    "--season", str(season), "--results-only"]
+        if preview and preview.get("publish"):
+            copy_cmd += ["--preview-week", str(preview["week"])]
+        steps = [{"cmd": copy_cmd, "timeout": PUBLISH_COPY_TIMEOUT, "log": log}]
         if not args.no_site_deploy:
             site_log = (STATE_DIR / f"{grade_key(season, week)}_publish.txt").resolve()
             steps.append({"cmd": [py, "scripts/publish_site.py", "--commit-message",
@@ -375,7 +396,149 @@ def run_grading(season: int, week: int, args: argparse.Namespace, *, runner: Opt
         result.update(publish_rc=pub["rc"], status=pub["outcome"])
         if pub["note"]:
             result["publish_note"] = pub["note"]
+        if preview and preview.get("publish") and pub["outcome"] == "success":
+            preview["status"] = "published"
+            preview["note"] = f"week {preview['week']} previews published with the results"
     return result
+
+
+def preview_key(season: int, week: int) -> str:
+    return f"previews_{season}_wk{week:02d}"
+
+
+def previews_live(season: int, week: int) -> bool:
+    return (season, week) >= PREVIEWS_LIVE_FROM
+
+
+def _preview_content_key(season: int, week: int) -> str | None:
+    from src.data.game_previews import content_key, week_paths
+
+    try:
+        return content_key(pd.read_csv(week_paths(season, week)[1], dtype={"game_id": str}))
+    except Exception:
+        return None
+
+
+def build_preview_step(season: int, week: int, args: argparse.Namespace, *, runner: Callable,
+                       log: Path, max_age_hours: float = PREVIEW_MAX_AGE_HOURS) -> dict:
+    """Build the previews for the week after ``week`` (best-effort; never raises).
+
+    Returns ``{"week", "status": built|failed|skipped, "publish": bool, "note", "content_key"}``.
+    ``publish`` is True only for a successful build of a week at or after ``PREVIEWS_LIVE_FROM``.
+    """
+    from src.data.game_previews import next_week
+
+    try:
+        target = next_week(pd.read_parquet(args.schedule), season, week)
+    except Exception as exc:
+        return {"status": "failed", "publish": False, "note": f"previews not built: schedule unreadable ({exc})"}
+    if target is None:
+        return {"status": "skipped", "publish": False, "note": f"no week after {season} week {week}; no previews"}
+    try:
+        rc = runner([sys.executable, "-m", "src.data.game_previews", "--season", str(season), "--week", str(target),
+                     "--max-age-hours", str(max_age_hours)], timeout=PREVIEW_TIMEOUT, log=log)
+    except Exception as exc:
+        rc = f"{type(exc).__name__}: {exc}"
+    if rc != 0:
+        return {"week": target, "status": "failed", "publish": False, "rc": rc,
+                "note": f"week {target} previews failed (exit {rc}); results published without them"}
+    live = previews_live(season, target)
+    note = f"week {target} previews built"
+    if not live:
+        note += f" locally only (published from {PREVIEWS_LIVE_FROM[0]} week {PREVIEWS_LIVE_FROM[1]})"
+    return {"week": target, "status": "built", "publish": live, "rc": 0, "note": note,
+            "content_key": _preview_content_key(season, target)}
+
+
+def due_preview_refresh(slots: Sequence[Slot], state: dict, now: datetime, *,
+                        start_lead: timedelta = START_LEAD,
+                        last_start_lead: timedelta = LAST_START_LEAD) -> tuple[int, int] | None:
+    """The (season, week) whose previews to refresh now, or None.
+
+    Wednesday from noon ET, for the earliest week not yet kicked off, once that week is live.
+    Never while a game-day launch window is open (the pick run comes first). Once it is
+    published or found unchanged that day, it is done; failures re-check hourly, up to a limit.
+    """
+    now_et = now.astimezone(EASTERN)
+    if now_et.weekday() != PREVIEW_REFRESH_WEEKDAY or now_et.hour < PREVIEW_REFRESH_HOUR_ET:
+        return None
+    if any(s.window_open(now, start_lead, last_start_lead) for s in slots):
+        return None
+    upcoming = [s for s in slots if s.first_kickoff > now]
+    if not upcoming:
+        return None
+    season, week = upcoming[0].season, upcoming[0].week
+    if not previews_live(season, week):
+        return None
+    rec = state.get(preview_key(season, week), {})
+    if rec.get("refresh_day") == now_et.date().isoformat():
+        if rec.get("refresh_status") in ("published", "unchanged"):
+            return None
+        if int(rec.get("refresh_failures", 0)) >= PREVIEW_REFRESH_MAX_FAILURES:
+            return None
+        last = rec.get("refresh_attempt")
+        recent = bool(last) and now - datetime.fromisoformat(last) < PREVIEW_REFRESH_RECHECK
+        if recent and rec.get("refresh_status") != PUBLISH_PENDING:
+            return None
+    return season, week
+
+
+def handle_preview_refresh(season: int, week: int, args: argparse.Namespace, state: dict, now: datetime, *,
+                           runner: Callable | None = None, alert: Callable | None = None) -> dict:
+    """Rebuild the week's previews with fresh odds; copy and publish them only if they changed."""
+    runner = runner or _run
+    py = sys.executable
+    rec = state.setdefault(preview_key(season, week), {})
+    today = now.astimezone(EASTERN).date().isoformat()
+    if rec.get("refresh_day") != today:
+        rec.update(refresh_day=today, refresh_failures=0)
+    rec["refresh_attempt"] = now.isoformat(timespec="seconds")
+    log = (STATE_DIR / f"{preview_key(season, week)}_refresh.txt").resolve()
+    rc = runner([py, "-m", "src.data.game_previews", "--season", str(season), "--week", str(week)],
+                timeout=PREVIEW_TIMEOUT, log=log)
+    key = _preview_content_key(season, week) if rc == 0 else None
+    if key is None:
+        rec["refresh_failures"] = int(rec.get("refresh_failures", 0)) + 1
+        rec.update(refresh_status="failed", refresh_note=f"preview build failed (exit {rc})")
+        if alert is not None and rec["refresh_failures"] in (1, PREVIEW_REFRESH_MAX_FAILURES):
+            alert(season, week, rec)
+        return rec
+    if key == rec.get("published_key"):
+        rec.update(refresh_status="unchanged", refresh_note="no change since the last publish; nothing published")
+        return rec
+    if args.no_publish:
+        rec.update(refresh_status="unchanged", refresh_note="changed, but --no-publish")
+        return rec
+    steps = [{"cmd": [py, "-m", "tools.publish_mtb_csvs", "--repo-dir", str(args.mtb_repo_dir),
+                      "--season", str(season), "--previews-only", "--preview-week", str(week)],
+              "timeout": PUBLISH_COPY_TIMEOUT, "log": log}]
+    if not args.no_site_deploy:
+        steps.append({"cmd": [py, "scripts/publish_site.py", "--commit-message",
+                              f"Refresh NFL previews {season} week {week}"],
+                      "cwd": args.mtb_repo_dir, "timeout": args.publish_timeout_min * 60,
+                      "log": (STATE_DIR / f"{preview_key(season, week)}_publish.txt").resolve()})
+    pub = run_locked_publish(steps, args.mtb_repo_dir, runner=runner, wait_seconds=_lock_wait(args))
+    rec.update(refresh_status=pub["outcome"], refresh_note=pub["note"] or "published")
+    if pub["outcome"] == "success":
+        rec.update(refresh_status="published", published_key=key, published_at=now.isoformat(timespec="seconds"))
+    elif pub["outcome"] == "failed":
+        rec["refresh_failures"] = int(rec.get("refresh_failures", 0)) + 1
+        if alert is not None and rec["refresh_failures"] in (1, PREVIEW_REFRESH_MAX_FAILURES):
+            alert(season, week, rec)
+    return rec
+
+
+def send_preview_alert(season: int, week: int, rec: dict) -> None:
+    from src.utils.alerts import send_alert
+
+    body = "\n".join([
+        f"Status: {rec.get('refresh_status')}",
+        f"Note: {rec.get('refresh_note')}",
+        f"Failures today: {rec.get('refresh_failures')}/{PREVIEW_REFRESH_MAX_FAILURES}",
+        f"Log: {STATE_DIR / (preview_key(season, week) + '_refresh.txt')}",
+        "The previously published previews stay up; the game-day runs are unaffected.",
+    ])
+    send_alert(f"[NFL pipeline] PREVIEWS REFRESH FAILED: {season} week {week}", body)
 
 
 def grading_summary(state: dict) -> Optional[str]:
@@ -409,6 +572,8 @@ def send_grading_alert(season: int, week: int, result: dict, *, final: bool) -> 
         lines.append(f"Publish log: {result['publish_log']}")
     if result.get("publish_note"):
         lines.append(f"Publish: {result['publish_note']}")
+    if result.get("preview"):
+        lines.append(f"Previews: {result['preview'].get('note')}")
     if status != "success":
         lines.append("Results were not published. " + (
             "Giving up; grade by hand (docs/automation.md)." if final else "Will retry within the hour."))
@@ -430,6 +595,12 @@ def handle_grading(season: int, week: int, args: argparse.Namespace, state: dict
     rec.update({k: v for k, v in result.items() if k not in ("season", "week")})
     if result["status"] == "failed":
         rec["failures"] = int(rec.get("failures", 0)) + 1
+    preview = result.get("preview") or {}
+    if preview.get("week") is not None:
+        prec = state.setdefault(preview_key(season, preview["week"]), {})
+        prec.update(built_after_grading=now.isoformat(timespec="seconds"), build_status=preview["status"])
+        if preview["status"] == "published" and preview.get("content_key"):
+            prec.update(published_key=preview["content_key"], published_at=now.isoformat(timespec="seconds"))
     final = int(rec.get("failures", 0)) >= GRADE_MAX_FAILURES
     if result["status"] == "pending":
         print(f"[dispatcher] {grade_key(season, week)}: scores not final yet; re-checking later")
@@ -696,6 +867,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="Show slots and what would run now.")
     p.add_argument("--now", help="Override current time (ISO, for testing).")
     p.add_argument("--no-grading", action="store_true", help="Skip grading completed weeks.")
+    p.add_argument("--no-previews", action="store_true",
+                   help="Skip building/publishing game previews (after grading and the Wednesday refresh).")
     return p.parse_args(argv)
 
 
@@ -728,10 +901,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"[dispatcher] would mark {s.slot_id} failed: deferred publish outlived its window")
         grade = None if args.no_grading else due_grading(slots, state, now)
         print(f"[dispatcher] grading due: {grade_key(*grade) if grade else 'nothing'}")
+        refresh = None if args.no_previews else due_preview_refresh(slots, state, now, start_lead=start_lead,
+                                                                    last_start_lead=last_lead)
+        print(f"[dispatcher] preview refresh due: {preview_key(*refresh) if refresh else 'nothing'}")
         return 0
     grade = None if (slot is not None or args.no_grading) else due_grading(slots, state, now)
+    refresh = None
+    if slot is None and grade is None and not args.no_previews:
+        refresh = due_preview_refresh(slots, state, now, start_lead=start_lead, last_start_lead=last_lead)
     expired = expired_deferred_publishes(slots, state, now, start_lead=start_lead, last_start_lead=last_lead)
-    if slot is None and grade is None and not expired:
+    if slot is None and grade is None and refresh is None and not expired:
         return 0
     if not acquire_lock(now):
         print("[dispatcher] another run holds the lock; skipping")
@@ -740,6 +919,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if expired:
             fail_expired_publishes(expired, state, alert=None if args.no_alert else send_slot_alert)
+        if refresh is not None:
+            rec = handle_preview_refresh(*refresh, args, state, now,
+                                         alert=None if args.no_alert else send_preview_alert)
+            save_state(state)
+            print(f"[dispatcher] {preview_key(*refresh)} refresh: {rec.get('refresh_status')} "
+                  f"({rec.get('refresh_note')})")
+            return 0
         if slot is None and grade is None:
             return 0
         if slot is None:  # game-day slots always take priority over grading

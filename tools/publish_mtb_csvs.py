@@ -96,6 +96,20 @@ def picks_of_record_artifacts(season: int) -> list[CsvArtifact]:
     ]
 
 
+# Early-week game previews (src.data.game_previews): schedule and market data only.
+# Overwritable (refreshed on Wednesday), so they live outside the immutable seasons/ archive.
+PREVIEW_SOURCE_DIR = Path("predictions/previews")
+
+
+def preview_artifacts(season: int, week: int, *, required: bool) -> list[CsvArtifact]:
+    source = PREVIEW_SOURCE_DIR / f"previews_{season}_week_{week:02d}.csv"
+    return [
+        CsvArtifact(source, Path("current") / "previews.csv", required=required, never_required=not required),
+        CsvArtifact(source, Path("previews") / str(season) / f"week_{week:02d}.csv",
+                    required=required, never_required=not required),
+    ]
+
+
 DIAGNOSTIC_CSV_ARTIFACTS = [
     CsvArtifact(Path("predictions/evaluation/overall_metrics.csv"), Path("evaluation/overall_metrics.csv")),
     CsvArtifact(Path("predictions/evaluation/weekly_metrics.csv"), Path("evaluation/weekly_metrics.csv")),
@@ -274,6 +288,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--preview-week",
+        type=int,
+        default=None,
+        help=(
+            "Also copy the early-week previews for this week (needs --season): current/previews.csv and "
+            "previews/<season>/week_<nn>.csv. Optional (skipped if missing) unless --previews-only."
+        ),
+    )
+    parser.add_argument(
+        "--previews-only",
+        action="store_true",
+        help="Copy only the previews for --season/--preview-week (Wednesday refresh); fails if they are missing.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail if any selected CSV is missing. By default only predictions.csv is required.",
@@ -306,11 +334,21 @@ def build_artifact_plan(
     week: int | None = None,
     source_root: Path = Path("."),
     results_only: bool = False,
+    preview_week: int | None = None,
+    previews_only: bool = False,
 ) -> list[CsvArtifact]:
+    if (preview_week is not None or previews_only) and season is None:
+        raise ValueError("--preview-week/--previews-only need --season")
+    if previews_only:
+        if preview_week is None:
+            raise ValueError("--previews-only needs --preview-week")
+        return preview_artifacts(season, preview_week, required=True)
     if results_only:
         artifacts = live_results_artifacts(source_root)
         if season is not None:
             artifacts.extend(picks_of_record_artifacts(season))
+        if preview_week is not None:
+            artifacts.extend(preview_artifacts(season, preview_week, required=False))
         return artifacts
 
     artifacts = list(CURRENT_CSV_ARTIFACTS)
@@ -463,6 +501,8 @@ def publish_csvs(
     allow_partial_week_archive: bool = False,
     dry_run: bool = False,
     results_only: bool = False,
+    preview_week: int | None = None,
+    previews_only: bool = False,
 ) -> list[PublishedCsv]:
     source_root = source_root.resolve()
     destination_root = _resolve_destination_root(repo_dir, dest_dir)
@@ -472,6 +512,8 @@ def publish_csvs(
         week=week,
         source_root=source_root,
         results_only=results_only,
+        preview_week=preview_week,
+        previews_only=previews_only,
     )
     published: list[PublishedCsv] = []
     missing: list[Path] = []
@@ -540,6 +582,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_partial_week_archive=args.allow_partial_week_archive,
         dry_run=args.dry_run,
         results_only=args.results_only,
+        preview_week=args.preview_week,
+        previews_only=args.previews_only,
     )
     action = "Planned" if args.dry_run else "Published"
     print(f"[publish_mtb] {action} {len(published)} CSV artifact(s).")
