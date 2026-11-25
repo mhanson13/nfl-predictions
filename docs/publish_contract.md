@@ -17,7 +17,15 @@ It describes the format in use today; writing it down changed no format.
 - `lib/picks-of-record.ts`
 - `lib/venues.ts`
 - `lib/model-metrics.ts`
+- `app/about/page.tsx` (metric keys)
 - `lib/blog/generator.ts`, which also reads several of these files.
+
+**Outside the contract until MTB moves it.** MTB's blog source (`lib/blog/nfl-source.ts`, `scripts/export-nfl-blog-source.py`) reads three things **straight from the nfl-predictions repo**, not from MTB's published copy:
+- `predictions/predictions.csv`;
+- `predictions/player_props_public.csv`;
+- the ESPN news parquet files.
+
+Those reads aren't covered here. When MTB moves the blog onto `data/prediction-csvs/`, the columns it uses become part of the contract. The required columns below already include `market_model_pick` for that reason.
 
 ## Rules for MTB
 
@@ -62,7 +70,9 @@ Each file is either:
 | `evaluation/player_props/edge_backtest_detail.csv`, `edge_backtest_summary.csv`, `edge_backtest_market_thresholds.csv`, `edge_recommendation_policy.csv`, `edge_policy_diagnostics.csv`, `confidence_tier_metrics.csv` | every slot run | overwritten | none |
 | `evaluation/overall_metrics.csv`, `weekly_metrics.csv`, `calibration_by_prob_bin.csv`, `team_error_summary.csv`, `high_confidence_misclassifications.csv`, `largest_margin_errors.csv`, `feature_quality.csv`, `feature_family_ablation.csv`, `merged_predictions_actuals.csv` | every slot run | overwritten | none |
 | `analysis/market_*.csv` (the remaining market files: ROI, disagreement, calibration, blend, spread, policy) and `analysis/volatility_classifier_*.csv` | every slot run | overwritten | none |
-| `evaluation/live_prediction_vs_actual_week_<nn>.csv`, `_summary_week_<nn>.csv`, `_segments_week_<nn>.csv` | every slot run, for every graded week | overwritten (a regrade replaces it) | result-overlays, blog |
+| `evaluation/live_prediction_vs_actual_week_<nn>.csv` | every slot run, for every graded week | overwritten (a regrade replaces it) | result-overlays, blog |
+| `evaluation/live_prediction_vs_actual_summary_week_<nn>.csv` | every slot run, for every graded week | overwritten (a regrade replaces it) | blog (row count only) |
+| `evaluation/live_prediction_vs_actual_segments_week_<nn>.csv` | every slot run, for every graded week | overwritten (a regrade replaces it) | none |
 | `picks_of_record/picks_of_record_<season>.csv`, `picks_of_record/picks_ledger_<season>.csv` | every slot run | overwritten; locked rows never change; the ledger is append-only | none (informational) |
 | `reference/game_venues_<season>.csv` | every slot run | overwritten | venues |
 
@@ -70,8 +80,10 @@ Each file is either:
 
 | MTB path | Mode | MTB reader |
 |---|---|---|
-| `evaluation/live_prediction_vs_actual.csv`, `evaluation/live_prediction_vs_actual_summary.csv` (cumulative, every graded week) | overwritten | result-overlays, blog (fallbacks) |
-| `evaluation/live_prediction_vs_actual[_summary\|_segments]_week_<nn>.csv` for **every** graded week | overwritten (a regrade replaces it) | result-overlays, blog |
+| `evaluation/live_prediction_vs_actual.csv` (cumulative game file, every graded week) | overwritten | result-overlays, blog (fallback) |
+| `evaluation/live_prediction_vs_actual_summary.csv` (cumulative summary) | overwritten | blog (fallback, row count only) |
+| `evaluation/live_prediction_vs_actual_week_<nn>.csv` for **every** graded week | overwritten (a regrade replaces it) | result-overlays, blog |
+| `evaluation/live_prediction_vs_actual_summary_week_<nn>.csv`, `_segments_week_<nn>.csv` for every graded week | overwritten (a regrade replaces it) | blog row count only (summary) / none (segments) |
 | `picks_of_record/picks_of_record_<season>.csv`, `picks_ledger_<season>.csv` | as above | none |
 
 ### Previews (1.1.0, live from Week 14 on Tue 2026-12-08)
@@ -92,13 +104,17 @@ Each file is either:
   - `home_pick`: the picked team's abbreviation, which may be the away team despite the name;
   - `home_confidence_pct`;
   - `market_moneyline_model_pick_prob`: the model's probability for the picked side, which MTB prefers for "confidence";
-  - `market_model_pick`.
+  - `market_model_pick` (kept required for the blog, see "Outside the contract").
+- **Market moneylines:** `market_home_moneyline`, `market_away_moneyline`.
+  - These are the median price across US books for each side.
+  - From PR #51 (Tue 2026-12-01), the median is taken in decimal odds. Any value between −100 and +100 counts as missing.
+  - MTB shows the pick's market price from these columns.
 - **Model odds:** `home_odds_american`, `home_odds_decimal`. These are the **model's fair odds for the home team**, computed from `home_win_prob`. They are not a sportsbook price, and they are not the price of the pick when the pick is the away team. See "Known disagreements".
 - **Text:** `pick_expl`, `decision_explanation`, `decision_narrative`.
 
 ### `current/predictions_players_{qb,offense,defense}.csv` (one row per player)
 
-- **Every group:** `season`, `week`, `game_id`, `kickoff`, `team`, `team_side`, `player_rank`, `player_id`, `player_name`, `jersey_number`, `games_sampled`.
+- **Every group:** `season`, `week`, `game_id`, `kickoff`, `kickoff_mt`, `team`, `team_side`, `player_rank`, `player_id`, `player_name`, `jersey_number`, `games_sampled`.
 - **qb:** `projected_passing_yards`, `projected_passing_tds`, `projected_rushing_tds`, `projected_passing_attempts`, `projected_interceptions`, `projected_completions`, `projected_rushing_yards`.
 - **offense:** `projected_rushing_yards`, `projected_rushing_tds`, `projected_carries`, `projected_receiving_yards`, `projected_receiving_tds`, `projected_receptions`, `projected_targets`, `projected_total_yards`, `projected_total_tds`, `penalties_per_game`, `penalty_count`, `penalty_yards`.
 - **defense:** `projected_sacks`, `projected_qb_hits`, `projected_tfl`, `projected_blocked_punts`, `projected_loss_yards`, `penalties_per_game`, `penalty_count`, `penalty_yards`.
@@ -130,7 +146,7 @@ The blog filters on `scope == "overall"` and `prediction_group == "all"`.
 - **Weekly and cumulative game files:** `season`, `week`, `game_id`, `model_pick_team`, `actual_winner`, `home_score`, `away_score`, `home_team`, `away_team`, `home_team_actual`, `away_team_actual`, `margin_error`, `abs_margin_error`, `model_pick_moneyline`, `moneyline_profit_unit`, `moneyline_result`, `selected_spread_result`, `su_correct`, `su_result`.
 - **A blank `model_pick_team` means "no pick of record".** MTB doesn't grade such a row.
 - **MTB also displays every column whose name contains `clv`**, so CLV columns count as required in meaning.
-- **Summary files:** `scope`, `segment_column`, `segment_value`, `n_games`, plus the metric columns.
+- **Summary and segments files:** no required columns. The blog only counts the summary files' rows, and nothing reads the segments files. All their columns (`scope`, `segment_column`, `segment_value`, `n_games`, the metrics) are informational.
 
 ### `reference/game_venues_<season>.csv`
 
@@ -142,13 +158,19 @@ The blog filters on `scope == "overall"` and `prediction_group == "all"`.
 ### `analysis/model_metrics_week_<nn>.csv` (one row per metric)
 
 - **Columns:** `season`, `week`, `generated_at`, `metric_key`, `value`, `display_value`, `label`, `description`, `section`, `sort_order`, `sample_size`, `unit`, `source_artifact`.
-- **Metric keys MTB looks up by name:** `accuracy`, `evaluation_games`, `evaluation_start_season`, `excluded_from_week`, `clv_moneyline_disagreement_tracked_games`, `clv_moneyline_disagreement_avg_prob_delta`, `clv_moneyline_disagreement_positive_rate`. These keys must stay present with the same meaning.
+- **Metric keys MTB looks up by name** must stay present with the same meaning:
+  - `lib/model-metrics.ts` and its callers: `accuracy`, `evaluation_games`, `evaluation_start_season`, `excluded_from_week`, `clv_moneyline_disagreement_tracked_games`, `clv_moneyline_disagreement_avg_prob_delta`, `clv_moneyline_disagreement_positive_rate`;
+    - **Conditional:** `clv_moneyline_disagreement_avg_prob_delta` and `clv_moneyline_disagreement_positive_rate` are written only when at least one disagreement game has both a pick-time and a closing price. They were absent in 2026 Weeks 6, 8, 10 and 11. MTB must treat a missing key as "no value", as `getMetric` already does.
+  - the blog (`lib/blog/generator.ts`): `auc`;
+  - `app/about/page.tsx`: `vegas_favorite_accuracy`, `model_vegas_agreement_rate`, `disagreement_model_accuracy`, `disagreement_moneyline_roi`, `best_spread_roi`, `best_spread_edge_bin_roi`, `brier`, `log_loss`, `f1`, `mae_margin`, `rmse_margin`.
 - **Other keys** (for example `live_published_season_*` and `wf_*`) are informational until an MTB page uses them.
 
 ### `analysis/market_benchmark_summary.csv`, `analysis/market_clv_summary.csv`, `analysis/market_edge_policy.csv` (blog)
 
-- The benchmark and CLV summaries need `scope` and `segment`. The blog filters on `scope == "overall"` and `segment == "all"`.
-- `market_edge_policy.csv` is read as a whole. Its current header counts as required.
+- The blog takes the row with `scope == "overall"` and `segment == "all"` from both summaries.
+- `market_benchmark_summary.csv` requires `scope`, `segment`, `model_accuracy`, `vegas_accuracy`, `model_side_roi`.
+- `market_clv_summary.csv` requires `scope`, `segment`, `moneyline_clv_available`, `positive_moneyline_clv_rate`.
+- `market_edge_policy.csv` has no required columns. The blog only counts its rows.
 
 ### Previews (1.1.0): `current/previews.csv` and `previews/<season>/week_<nn>.csv`
 
@@ -186,13 +208,16 @@ The file contains **no model output** (no probability, pick, margin, edge or con
   - game and prop files: `True` / `False`;
   - graded files: `1.0` / `0.0`, or blank when unknown (pandas floats; for example `su_correct`);
   - previews: lower-case `true` / `false`.
-  - MTB reads `1`, `true`, `y`, `yes` (in any case) as true. In graded files, `0` and `false` read as false and a blank means unknown.
+  - Which values each MTB reader accepts (none of them is case-sensitive):
+    - `scripts/import-predictions.ts`: `1`, `true`, `y`, `yes` mean true; anything else means false; a blank is unset where the field is optional.
+    - `lib/result-overlays.ts`: `1`, `true`, `yes` (or the number 1, such as `1.0`) mean true; `0`, `false`, `no` (or `0.0`) mean false; a blank means unknown. It does **not** accept `y`.
+    - `lib/venues.ts`: `neutral_site` is true only when it equals `true`.
 - **Blanks:** a missing or NaN value is an **empty field**. Files never contain the literal text `nan`, `None` or `NaN`; the result overlays treat `nan` as blank anyway.
 - **Numbers:** plain decimal, no thousands separators. Probabilities are 0–1 unless the column name ends in `_pct`, which is 0–100.
 - **Odds:**
   - American odds are whole numbers or at most 2 decimals (`-110`, `+125`, `-101.48`); decimal odds are greater than 1.
-  - The market columns (`market_home_moneyline`, `market_away_moneyline`, and the preview `home_ml` / `away_ml`) are medians across US books.
-  - From nfl-predictions PR #51 (merging Tue 2026-12-01), moneyline medians are taken in decimal odds and rounded to cents, so no published market moneyline lies between −100 and +100. MTB treats any value in that range as missing.
+  - Market moneylines (`market_home_moneyline` / `market_away_moneyline`, required in `predictions.csv`, and the preview `home_ml` / `away_ml`) are medians across US books.
+  - From nfl-predictions PR #51 (merging Tue 2026-12-01), the median is taken in decimal odds and rounded to cents, so no published market moneyline lies between −100 and +100. MTB treats any value in that range as missing.
   - Spreads are the home team's handicap: **negative means the home team is favored**.
 - **Encoding:** UTF-8 without a byte-order mark, comma-separated, one header row.
 - **Line endings:** CRLF for most files (pandas on Windows); LF for `game_venues_<season>.csv`, `picks_of_record/` and previews. Readers must accept both. The line ending isn't part of the contract.
@@ -234,7 +259,10 @@ These aren't format changes. They're places where MTB's reading and nfl-predicti
    - The column is actually the model's fair odds for the **home** team (from `home_win_prob`).
    - Example: 2026_11_CIN_WAS. The pick was CIN, and MTB showed +261, the model's price for WAS. The sportsbook had CIN at −310.
    - In the last 40 runs, 293 game rows had an away-team pick.
-   - Proposed fix, non-breaking, 1.2.0: nfl-predictions adds `pick_market_moneyline` (the market median price for the picked side) and `pick_model_odds_american` (the model's fair price for the picked side). MTB switches its "Odds" display to the one it means.
+   - **MTB's decision (review of 5ca41a4):** MTB will show both prices for the pick, each labelled. No NFL format change is needed.
+     - the market price, from `market_home_moneyline` / `market_away_moneyline` (now required);
+     - the model's fair price, computed from `home_win_prob`.
+   - The earlier proposal to add `pick_market_moneyline` / `pick_model_odds_american` is withdrawn.
 2. **`lib/model-metrics.ts` picks the "latest" metrics file by week number only, across seasons.** Once 2027 starts, `model_metrics_week_18.csv` from 2026 (or a playoff week 19–22) would outrank 2027's `week_01`. Suggested MTB fix: choose by the file's `season` column first, then the week (or by modification time). No format change is needed.
 3. **`picks_of_record/*.csv` has no MTB reader.** `lib/picks-of-record.ts` re-applies the 2-hour lock to MTB's own JSON archive instead. The CSVs stay informational, an audit copy.
 4. **Week CSV archives can be missing** (see the Files section): 2026 Week 11 has none. The blog falls back to `current/player_props_public.csv` for that week.
