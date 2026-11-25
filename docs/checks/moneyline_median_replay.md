@@ -30,3 +30,5 @@ scratchpad `mlfix/replay.py` (read-only).
 
 Past picks, the MTB archives and MTB data are **not** rewritten: published picks stand as
 published (pick-of-record transparency rule). The fix applies from its merge (Tue 12-01) on.
+
+**MTB (2026-11-25):** MTB does not read or display the market moneyline, no-vig probability or moneyline-edge columns, so no published page showed the impossible prices and nothing needs suppressing.
