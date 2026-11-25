@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 import concurrent.futures
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -33,6 +35,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+RETRY_DELAY_SEC = 2.0
+_THREAD_STATE = threading.local()
 
 
 def _coerce_int(val: Any) -> Optional[int]:
@@ -44,15 +49,57 @@ def _coerce_int(val: Any) -> Optional[int]:
         return None
 
 
-def _fetch_player_news(player_id: int, limit: int) -> List[Dict[str, Any]]:
-    params = {"limit": limit, "playerId": str(player_id)}
-    try:
-        resp = requests.get(NEWS_ENDPOINT, params=params, timeout=10, headers={"User-Agent": USER_AGENT})
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception:
-        return []
+def _thread_session() -> requests.Session:
+    """One HTTP session per worker thread, so connections are reused between requests."""
+    session = getattr(_THREAD_STATE, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers["User-Agent"] = USER_AGENT
+        _THREAD_STATE.session = session
+    return session
 
+
+def _fetch_player_news_result(
+    player_id: int,
+    limit: int,
+    *,
+    session: requests.Session | None = None,
+    retry_delay: float = RETRY_DELAY_SEC,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch one player's news: ``(rows, None)`` on success, ``([], reason)`` on failure.
+
+    Rate limits (429), server errors and timeouts are retried once after ``retry_delay``.
+    """
+    session = session or _thread_session()
+    params = {"limit": limit, "playerId": str(player_id)}
+    error: str | None = None
+    for attempt in range(2):
+        if attempt and retry_delay > 0:
+            time.sleep(retry_delay)
+        try:
+            resp = session.get(NEWS_ENDPOINT, params=params, timeout=10)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            error = type(exc).__name__
+            continue
+        except Exception as exc:
+            return [], type(exc).__name__
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+            except ValueError:
+                return [], "invalid JSON"
+            return _news_rows(player_id, data if isinstance(data, dict) else {}), None
+        error = f"HTTP {resp.status_code}"
+        if resp.status_code not in RETRY_STATUS:
+            return [], error
+    return [], error
+
+
+def _fetch_player_news(player_id: int, limit: int) -> List[Dict[str, Any]]:
+    return _fetch_player_news_result(player_id, limit)[0]
+
+
+def _news_rows(player_id: int, data: dict[str, Any]) -> list[dict[str, Any]]:
     feed = data.get("feed") or []
     rows: List[Dict[str, Any]] = []
     for item in feed:
@@ -81,11 +128,25 @@ def _fetch_player_news(player_id: int, limit: int) -> List[Dict[str, Any]]:
         )
     return rows
 
-def _fetch_player_news_with_delay(player_id: int, limit: int, delay: float) -> List[Dict[str, Any]]:
-    rows = _fetch_player_news(player_id, limit)
+
+def _fetch_player_news_with_delay(
+    player_id: int, limit: int, delay: float
+) -> tuple[list[dict[str, Any]], str | None]:
+    result = _fetch_player_news_result(player_id, limit)
     if delay > 0:
         time.sleep(delay)
-    return rows
+    return result
+
+
+def _failure_summary(season: int, requests_made: int, failures: Counter, elapsed: float, workers: int) -> str:
+    """One line for the run log; a line with failures is picked up as an issue by src.utils.run_log."""
+    if not failures:
+        return (f"[espn_player_news] season {season}: all {requests_made} player requests succeeded "
+                f"in {elapsed:.0f}s ({workers} workers).")
+    detail = ", ".join(f"{reason}: {n}" for reason, n in failures.most_common())
+    return (f"[espn_player_news] Warning: season {season}: {sum(failures.values())} of {requests_made} player "
+            f"requests failed ({detail}) in {elapsed:.0f}s ({workers} workers); "
+            "news for those players is missing from this run.")
 
 
 def _load_roster_player_ids(seasons: Iterable[int]) -> pd.DataFrame:
@@ -196,8 +257,10 @@ def main() -> None:
 
         total_players += len(player_ids)
         season_rows: List[Dict[str, Any]] = []
+        failures: Counter = Counter()
         throttle_delay = max(args.sleep, 0.0)
         max_workers = max(1, args.max_workers)
+        season_started = time.perf_counter()
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(_fetch_player_news_with_delay, pid, args.limit, throttle_delay): pid
@@ -207,15 +270,18 @@ def main() -> None:
                 pid = futures[future]
                 processed += 1
                 try:
-                    rows = future.result()
+                    rows, error = future.result()
                 except Exception as exc:
+                    rows, error = [], type(exc).__name__
+                if error:
+                    failures[error] += 1
                     if args.debug:
-                        print(f"[espn_player_news] player {pid} request failed: {exc}")
-                    rows = []
+                        print(f"[espn_player_news] player {pid} request failed: {error}")
                 if rows:
                     season_rows.extend(rows)
                 if processed % 100 == 0:
                     print(f"[espn_player_news] processed {processed}/{total_players} player ids...")
+        print(_failure_summary(season, len(player_ids), failures, time.perf_counter() - season_started, max_workers))
 
         df_season = pd.DataFrame(season_rows)
         if not df_season.empty:

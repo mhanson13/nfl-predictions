@@ -783,7 +783,9 @@ def build_data_jobs(
 
             "espn_player_news",
 
-            ["python", "-m", "src.data.espn_player_news", "--season", str(current_year), "--limit", "4", *debug],
+            # 8 workers: ~1.5 min instead of ~18 for ~2,150 players (benchmarked 2026-11-25, no 429s up to 16).
+            ["python", "-m", "src.data.espn_player_news", "--season", str(current_year), "--limit", "4",
+             "--max-workers", "8", *debug],
 
         )
 
