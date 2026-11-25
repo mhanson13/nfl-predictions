@@ -1,7 +1,7 @@
 """A blog post that fails to publish is a heads-up in the alert, never a run failure."""
 from datetime import datetime, timezone
 
-from tests.test_dispatcher import _args, _schedule
+from test_dispatcher import _args, _schedule
 from tools import dispatcher as d
 from tools import review_run
 
