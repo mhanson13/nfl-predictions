@@ -108,7 +108,8 @@ The dispatcher holds it from the first write into MTB until `publish_site.py` fi
   ~3 credits), median across books (`odds_source = the-odds-api:us-median`, the books
   the pick page uses; moneylines are medianed in decimal odds). A game without an Odds
   API line falls back to the nflverse schedule line (`nflverse-schedule`); with neither,
-  the odds columns are blank and the row is still written. `roof` stays blank for
+  the odds columns are blank and the row is still written. MTB treats a home_ml/away_ml between -100 and +100 as missing (a guard; the decimal median never
+  produces one). `roof` stays blank for
   retractable roofs until nflverse fills in open/closed.
 - **Files:** `predictions/previews/previews_<season>_week_<nn>.csv` and
   `predictions/previews/previews.csv`; MTB gets `current/previews.csv` and
