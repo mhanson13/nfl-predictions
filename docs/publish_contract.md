@@ -160,7 +160,7 @@ The blog filters on `scope == "overall"` and `prediction_group == "all"`.
 - **Columns:** `season`, `week`, `generated_at`, `metric_key`, `value`, `display_value`, `label`, `description`, `section`, `sort_order`, `sample_size`, `unit`, `source_artifact`.
 - **Metric keys MTB looks up by name** must stay present with the same meaning:
   - `lib/model-metrics.ts` and its callers: `accuracy`, `evaluation_games`, `evaluation_start_season`, `excluded_from_week`, `clv_moneyline_disagreement_tracked_games`, `clv_moneyline_disagreement_avg_prob_delta`, `clv_moneyline_disagreement_positive_rate`;
-    - **Conditional:** `clv_moneyline_disagreement_avg_prob_delta` and `clv_moneyline_disagreement_positive_rate` are written only when at least one disagreement game has both a pick-time and a closing price. They were absent in 2026 Weeks 6, 8, 10 and 11. MTB must treat a missing key as "no value", as `getMetric` already does.
+    - **Conditional:** `clv_moneyline_disagreement_avg_prob_delta` and `clv_moneyline_disagreement_positive_rate` are written only when at least one disagreement game has both a pick-time and a closing price. Any week's file may lack them (in 2026 they were missing from Weeks 3, 4, 8, 10 and 11 as published to MTB). MTB must treat a missing key as "no value", as `getMetric` already does.
   - the blog (`lib/blog/generator.ts`): `auc`;
   - `app/about/page.tsx`: `vegas_favorite_accuracy`, `model_vegas_agreement_rate`, `disagreement_model_accuracy`, `disagreement_moneyline_roi`, `best_spread_roi`, `best_spread_edge_bin_roi`, `brier`, `log_loss`, `f1`, `mae_margin`, `rmse_margin`.
 - **Other keys** (for example `live_published_season_*` and `wf_*`) are informational until an MTB page uses them.
