@@ -1217,6 +1217,28 @@ def _first_existing_numeric_median(df: pd.DataFrame, pattern: str) -> pd.Series:
     return values.median(axis=1, skipna=True).astype(float)
 
 
+def _first_existing_moneyline_median(df: pd.DataFrame, pattern: str) -> pd.Series:
+    """Median American moneyline across books, taken in decimal odds.
+
+    A plain median of American prices is wrong when books straddle even money: -105 and
+    +100 give -2.5, an impossible price. Decimal odds are continuous through even money,
+    so the median there is a real price. With an odd number of books it is the same book
+    price as before; with an even number it is the decimal midpoint of the two middle ones.
+    """
+    cols = [col for col in df.columns if re.match(pattern, str(col))]
+    if not cols:
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    american = df[cols].apply(pd.to_numeric, errors="coerce").astype(float)
+    american = american.where(american.abs() >= 100)  # not a valid American price (e.g. 0) -> ignored
+    decimal = american.where(american < 0, 1.0 + american / 100.0)
+    decimal = decimal.where(american >= 0, 1.0 + 100.0 / american.abs())
+    median = decimal.median(axis=1, skipna=True)
+    out = np.where(median >= 2.0, (median - 1.0) * 100.0, -100.0 / (median - 1.0))
+    # Round to cents: the round trip leaves float noise (+120 -> 120.00000000000001) that would
+    # move a price across the odds-bucket edges downstream.
+    return pd.Series(out, index=df.index, dtype=float).round(2).where(median.notna())
+
+
 def _attach_market_policy_fields(
     preds: pd.DataFrame,
     *,
@@ -1282,8 +1304,8 @@ def _attach_market_policy_fields(
     home_prob = pd.to_numeric(_column_or_default(preds, "home_win_prob"), errors="coerce").astype(float)
     away_prob = 1.0 - home_prob
 
-    preds["market_home_moneyline"] = _first_existing_numeric_median(preds, r"^odds_.*_home_moneyline$")
-    preds["market_away_moneyline"] = _first_existing_numeric_median(preds, r"^odds_.*_away_moneyline$")
+    preds["market_home_moneyline"] = _first_existing_moneyline_median(preds, r"^odds_.*_home_moneyline$")
+    preds["market_away_moneyline"] = _first_existing_moneyline_median(preds, r"^odds_.*_away_moneyline$")
     home_implied = pd.Series(moneyline_to_prob(preds["market_home_moneyline"]), index=preds.index, dtype=float)
     away_implied = pd.Series(moneyline_to_prob(preds["market_away_moneyline"]), index=preds.index, dtype=float)
     implied_sum = home_implied + away_implied
