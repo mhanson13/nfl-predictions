@@ -996,7 +996,14 @@ def build_sequential_jobs(
     volatility_dataset_path = Path(vol_cfg.get("dataset_path", Path("analysis/volatility_classifier_dataset.csv")))
     skip_volatility = vol_cfg.get("skip", False)
 
-    jobs.append(Job("nfl_reference_refresh", ["python", "-m", "src.data.reference.update_regular_season", *debug]))
+    # Season history (List_of_NFL_seasons) only changes between seasons; skipping it keeps a
+    # Wikipedia 429 from failing a live run. Refresh it by hand off-season.
+    jobs.append(
+        Job(
+            "nfl_reference_refresh",
+            ["python", "-m", "src.data.reference.update_regular_season", "--skip-history", *debug],
+        )
+    )
     winprob_config_path = tuning_dir / "winprob_best.json"
     spread_config_path = tuning_dir / "spread_best.json"
 

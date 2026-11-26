@@ -507,6 +507,9 @@ class TestBuildSequentialJobs:
         assert names.index("player_prop_labels") < names.index("player_prop_features")
         assert names.index("player_prop_features") < names.index("build_features")
 
+        reference_job = next(job for job in jobs if job.name == "nfl_reference_refresh")
+        assert "--skip-history" in reference_job.command
+
         labels_job = next(job for job in jobs if job.name == "player_prop_labels")
         assert "--include-novelty-td-labels" in labels_job.command
 
