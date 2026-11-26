@@ -11,6 +11,11 @@ MTB uses when it imports the run. Rows are never rewritten, rows recorded
 at/after kickoff are never written, and resolution only looks at rows recorded
 before the lock deadline, so a locked pick cannot change after the fact.
 
+A pick counts only if the site published it before kickoff. Games on the committed
+no-pick list (``docs/checks/no_pick_of_record_<season>.csv``: game_id, reason) resolve
+as ``not_published`` with the reason in ``note`` and blank grade columns; their ledger
+rows stay as recorded, so the file still shows the pick that was made but never shown.
+
 Each row also stores the market line at pick time and a fingerprint of the
 game's slow-moving model inputs (the saved models' input columns, except odds, injuries,
 news, weather).
@@ -71,6 +76,21 @@ PICK_TIME_MARKERS = (
     "inj_", "qb_", "news_", "team_news_", "weather_", "wx_", "kickoff",
 )
 LEDGER_KEY = ["game_id", "run_id"]
+# Committed list of games with no pick of record (never published before kickoff, or
+# only a faulty publish). Grading (src.evaluation.live_results) reads the same file.
+KNOWN_NO_PICK_DIR = Path("docs/checks")
+KNOWN_NO_PICK_TEMPLATE = "no_pick_of_record_{season}.csv"
+NOT_PUBLISHED = "not_published"
+GRADE_COLUMNS = ("home_won", "pick_correct", "brier", "market_brier")
+
+
+def load_known_no_picks(season: int, known_dir: Path = KNOWN_NO_PICK_DIR) -> dict[str, str]:
+    """game_id -> reason for games known to have no pick of record (empty if no list)."""
+    path = known_dir / KNOWN_NO_PICK_TEMPLATE.format(season=season)
+    if not path.exists():
+        return {}
+    known = pd.read_csv(path, dtype=str).fillna("")
+    return dict(zip(known["game_id"].str.strip(), known["reason"].str.strip()))
 
 
 def ledger_path(season: int, out_dir: Path = OUT_DIR) -> Path:
@@ -253,13 +273,17 @@ def resolve_records(
     now: datetime,
     lead: timedelta = DEFAULT_LEAD,
     schedule: Optional[pd.DataFrame] = None,
+    not_published: Optional[dict[str, str]] = None,
 ) -> pd.DataFrame:
     """One row per game: the pick of record and its lock status.
 
     status: ``locked`` (lock deadline passed; latest row recorded by the deadline),
     ``late`` (no row by the deadline; the first row after it, as MTB shows), ``provisional``
-    (deadline not reached yet), ``missed`` is implied by absence.
+    (deadline not reached yet), ``not_published`` (on the no-pick list ``not_published``,
+    game_id -> reason: the row the rule would pick, kept for the record, but it never
+    reached the site before kickoff and is never graded), ``missed`` is implied by absence.
     """
+    not_published = not_published or {}
     if ledger.empty:
         return pd.DataFrame()
     led = ledger.copy()
@@ -279,6 +303,9 @@ def resolve_records(
         else:
             pick, status = rows.iloc[0], "late"
         rec = pick.drop(labels=["kickoff_ts", "recorded_ts"]).to_dict()
+        if str(game_id) in not_published:
+            status = NOT_PUBLISHED
+            rec["note"] = not_published[str(game_id)] or "never published before kickoff"
         rec["status"] = status
         rec["lock_deadline_utc"] = deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
         rec["n_versions"] = int(len(rows))
@@ -292,6 +319,11 @@ def resolve_records(
     records = pd.DataFrame(out)
     if schedule is not None and not records.empty:
         records = attach_results(records, schedule)
+    if not records.empty and records["status"].eq(NOT_PUBLISHED).any():
+        hidden = records["status"].eq(NOT_PUBLISHED)
+        for col in GRADE_COLUMNS:
+            if col in records.columns:
+                records.loc[hidden, col] = np.nan
     return records.sort_values(["kickoff_utc", "game_id"]).reset_index(drop=True)
 
 
@@ -392,14 +424,16 @@ def record(season: int, week: Optional[int], run_started_at: datetime, *, now: O
 
 
 def resolve(season: int, *, now: Optional[datetime] = None, out_dir: Path = OUT_DIR,
-            lead: timedelta = DEFAULT_LEAD, schedule_path: Path = SCHEDULE_PATH) -> pd.DataFrame:
+            lead: timedelta = DEFAULT_LEAD, schedule_path: Path = SCHEDULE_PATH,
+            known_no_pick_dir: Path = KNOWN_NO_PICK_DIR) -> pd.DataFrame:
     path = ledger_path(season, out_dir)
     if not path.exists():
         print(f"[picks_of_record] no ledger at {path}")
         return pd.DataFrame()
     ledger = pd.read_csv(path)
     records = resolve_records(
-        ledger, now=now or datetime.now(timezone.utc), lead=lead, schedule=_read_schedule(schedule_path)
+        ledger, now=now or datetime.now(timezone.utc), lead=lead, schedule=_read_schedule(schedule_path),
+        not_published=load_known_no_picks(season, known_no_pick_dir),
     )
     dest = records_path(season, out_dir)
     records.to_csv(dest, index=False, lineterminator="\n")

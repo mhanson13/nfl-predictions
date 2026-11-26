@@ -419,6 +419,36 @@ def test_final_game_without_pick_gets_score_row_with_blank_grades(tmp_path: Path
     assert "1 final games with no pick of record" in lr.format_report([grade], record, 2026)
 
 
+def test_listed_game_is_not_graded_even_with_ledger_pick_and_archive_row(tmp_path: Path):
+    # 2026_12_GB_LA shape: the pipeline recorded a locked pick and MTB's week archive CSV
+    # carries the game, but the publish failed, so nothing was on the site before kickoff.
+    mtb_root = tmp_path / "mtb_csvs"
+    _write_mtb_archive(mtb_root)  # both games, DEN 0.62
+    picks_dir = tmp_path / "picks"
+    _write_ledger(picks_dir, [(_ledger_preds(0.45), KICK_DEN - timedelta(hours=6), "wed")])  # both lock
+    schedule = pd.DataFrame(_actual_rows())
+    out = tmp_path / "eval"
+    known = tmp_path / "known"
+    known.mkdir()
+    (known / "no_pick_of_record_2026.csv").write_text("game_id,reason\n2026_07_KC_DEN,publish failed\n",
+                                                      encoding="utf-8")
+    grade = lr.grade_week(season=2026, week=7, schedule=schedule, output_dir=out, mtb_csv_root=mtb_root,
+                          market_clv_detail_path=tmp_path / "none.csv", picks_dir=picks_dir,
+                          predictions_log_dir=tmp_path / "no_log", known_no_pick_dir=known,
+                          now=KICK_DEN + timedelta(days=1))
+    assert grade.status == "graded" and grade.games == 1 and grade.alerts == []
+
+    detail = pd.read_csv(out / lr.WEEKLY_DETAIL_TEMPLATE.format(week=7)).set_index("game_id")
+    den = detail.loc["2026_07_KC_DEN"]
+    assert den["prediction_source_type"] == lr.NO_PICK_SOURCE
+    for col in ("model_pick_team", "home_win_prob", "su_correct", "su_result", "moneyline_result",
+                "brier_component"):
+        assert pd.isna(den[col]), col
+    assert detail.loc["2026_07_BUF_NYJ", "prediction_source_type"] == "picks_of_record"
+    record = lr.season_record(out, 2026)
+    assert record["games"] == 1 and record["no_pick_games"] == 1
+
+
 def test_unlisted_no_pick_game_raises_alert(tmp_path: Path, capsys):
     # KC-DEN is final, missing from the archive, and not on the known list: it still gets a
     # score-only row that doesn't count, but grading must alert (it may be a newly dropped game).

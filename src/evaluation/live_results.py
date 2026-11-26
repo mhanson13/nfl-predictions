@@ -42,9 +42,10 @@ NO_PICK_COLUMNS = (
 )
 # Committed list of games known to have no pick of record (game_id, reason). A final game
 # missing from the published picks and not on this list still gets a score-only row, but
-# grading raises an ALERT: it may be a newly dropped game.
-DEFAULT_KNOWN_NO_PICK_DIR = Path("docs/checks")
-KNOWN_NO_PICK_TEMPLATE = "no_pick_of_record_{season}.csv"
+# grading raises an ALERT: it may be a newly dropped game. A listed game is never graded,
+# whatever source carries a pick for it (ledger, override or MTB archive CSV).
+DEFAULT_KNOWN_NO_PICK_DIR = por.KNOWN_NO_PICK_DIR
+KNOWN_NO_PICK_TEMPLATE = por.KNOWN_NO_PICK_TEMPLATE
 UNLISTED_NO_PICK_ALERT = (
     "ALERT: final game with no pick of record, not on the known list -- check the archive history: {games}"
 )
@@ -644,13 +645,20 @@ def build_prediction_vs_actual(
     return _order_detail_columns(merged)
 
 
-def load_known_no_picks(season: int, known_dir: Path = DEFAULT_KNOWN_NO_PICK_DIR) -> dict[str, str]:
-    """game_id -> reason for games known to have no pick of record (empty if no list)."""
-    path = known_dir / KNOWN_NO_PICK_TEMPLATE.format(season=season)
-    if not path.exists():
-        return {}
-    known = pd.read_csv(path, dtype=str).fillna("")
-    return dict(zip(known["game_id"].str.strip(), known["reason"].str.strip()))
+load_known_no_picks = por.load_known_no_picks
+
+
+def drop_known_no_picks(source: PredictionSource, known: Iterable[str]) -> PredictionSource:
+    """Remove listed games from the graded picks; they get score-only rows instead."""
+    known = set(known)
+    if not known or source.frame.empty or "game_id" not in source.frame.columns:
+        return source
+    keep = ~source.frame["game_id"].astype(str).isin(known)
+    if keep.all():
+        return source
+    dropped = sorted(source.frame.loc[~keep, "game_id"].astype(str))
+    print(f"[live_results] not graded (no pick of record, on the known list): {', '.join(dropped)}")
+    return dataclasses.replace(source, frame=source.frame[keep].copy())
 
 
 def unlisted_no_pick_games(detail: pd.DataFrame, known: Iterable[str]) -> list[str]:
@@ -858,6 +866,8 @@ def build_and_write_live_results(
         picks_dir=picks_dir,
         now=now,
     )
+    known_no_picks = load_known_no_picks(season, known_no_pick_dir)
+    prediction_source = drop_known_no_picks(prediction_source, known_no_picks)
     if actuals is None:
         actuals = load_finalized_actuals(features_path, season=season, week=week)
     clv_detail = load_market_clv_detail(market_clv_detail_path, season=season, week=week)
@@ -870,7 +880,7 @@ def build_and_write_live_results(
     summary = summarize_detail(detail)
     segments = summarize_segments(detail)
     detail = append_no_pick_rows(detail, actuals)
-    unlisted = unlisted_no_pick_games(detail, load_known_no_picks(season, known_no_pick_dir))
+    unlisted = unlisted_no_pick_games(detail, known_no_picks)
     if unlisted:
         print(f"[live_results] {UNLISTED_NO_PICK_ALERT.format(games=', '.join(unlisted))}")
     artifacts = write_artifacts(

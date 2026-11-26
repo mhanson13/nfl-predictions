@@ -222,3 +222,42 @@ def test_model_input_columns_reads_tree_and_logistic_features(tmp_path):
     joblib.dump({"features": ["a_diff", "c_diff"]}, tmp_path / "s.pkl")
     assert por.model_input_columns([tmp_path / "w.pkl", tmp_path / "s.pkl"]) == ["a_diff", "b_diff", "c_diff",
                                                                                 "spread_line"]
+
+
+def test_listed_game_resolves_not_published_and_keeps_the_ledger(tmp_path):
+    # A pick was generated (and would lock) but never reached the site before kickoff.
+    path = tmp_path / "ledger.csv"
+    thu = KICK_THU - timedelta(hours=3)
+    por.append_ledger(_rows(_preds(prob_thu=0.60), thu, "thu"), path)
+    before = path.read_bytes()
+    sched = pd.DataFrame({"game_id": ["2026_10_A_B", "2026_10_C_D"], "home_score": [20.0, 10.0],
+                          "away_score": [17.0, 13.0]})
+    rec = por.resolve_records(pd.read_csv(path), now=KICK_SUN + timedelta(hours=4), schedule=sched,
+                              not_published={"2026_10_A_B": "publish failed"}).set_index("game_id")
+
+    hidden = rec.loc["2026_10_A_B"]
+    assert hidden["status"] == por.NOT_PUBLISHED and hidden["note"] == "publish failed"
+    assert hidden["home_pick"] == "B" and hidden["home_win_prob"] == pytest.approx(0.60)  # kept, honestly
+    assert hidden["recorded_at"] == thu.strftime("%Y-%m-%dT%H:%M:%SZ")
+    for col in por.GRADE_COLUMNS:
+        assert pd.isna(hidden[col]), col
+    other = rec.loc["2026_10_C_D"]
+    assert other["status"] == "locked" and pd.isna(other["note"]) and other["pick_correct"] == 0.0
+    assert path.read_bytes() == before  # resolution never rewrites the ledger
+    assert "scored=1" in por.summarize(rec.reset_index())
+
+
+def test_resolve_reads_the_committed_no_pick_list(tmp_path):
+    out = tmp_path / "picks"
+    out.mkdir()
+    por.append_ledger(_rows(_preds(), KICK_THU - timedelta(hours=3), "thu"), por.ledger_path(2026, out))
+    known = tmp_path / "known"
+    known.mkdir()
+    (known / "no_pick_of_record_2026.csv").write_text("game_id,reason\n2026_10_C_D,never published\n",
+                                                      encoding="utf-8")
+    rec = por.resolve(2026, now=KICK_SUN + timedelta(hours=4), out_dir=out, schedule_path=tmp_path / "none.parquet",
+                      known_no_pick_dir=known).set_index("game_id")
+    assert rec.loc["2026_10_C_D", "status"] == por.NOT_PUBLISHED
+    assert rec.loc["2026_10_A_B", "status"] == "locked"
+    written = pd.read_csv(por.records_path(2026, out)).set_index("game_id")
+    assert written.loc["2026_10_C_D", "note"] == "never published"
