@@ -237,14 +237,24 @@ def _write_if_changed(path: Path, df: pd.DataFrame) -> bool:
     return True
 
 
+def _refresh(path: Path, fetch) -> bool:
+    """Fetch and write one reference CSV; on a network error keep the cached file if there is one."""
+    try:
+        df = fetch()
+    except requests.RequestException as exc:
+        if path.exists():
+            print(f"[nfl_reference] WARNING: fetch failed ({exc}); keeping cached {path}")
+            return False
+        raise
+    return _write_if_changed(path, df)
+
+
 def update_references(*, skip_history: bool = False, skip_regular: bool = False) -> None:
     changed = False
     if not skip_regular:
-        regular_df = fetch_regular_season_games()
-        changed |= _write_if_changed(REGULAR_SEASON_PATH, regular_df)
+        changed |= _refresh(REGULAR_SEASON_PATH, fetch_regular_season_games)
     if not skip_history:
-        history_df = fetch_season_history()
-        changed |= _write_if_changed(SEASON_HISTORY_PATH, history_df)
+        changed |= _refresh(SEASON_HISTORY_PATH, fetch_season_history)
     if not changed:
         print("[nfl_reference] Reference files already up-to-date.")
 
