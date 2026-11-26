@@ -8,7 +8,7 @@ run, and sends an alert.
 
 | Piece | What it does |
 |---|---|
-| `tools/install_dispatcher_task.ps1` | Registers Windows task **NFL Pipeline Dispatcher**: every 15 min, hidden, wakes the PC, never overlaps. |
+| `tools/install_dispatcher_task.ps1` | Registers Windows task **NFL Pipeline Dispatcher**: every 2 min, hidden, wakes the PC, never overlaps. |
 | `tools/dispatcher.py` | Decides whether a game-day slot is due; runs it; keeps `logs/dispatcher/state.json`. |
 | `tools/weekly_run.py` | Runs `tools.run_pipeline` for the slot's season/week with the debug log. |
 | `src/evaluation/picks_of_record.py` | Pipeline job: per-game ledger + picks of record (`predictions/picks_of_record/`). |
@@ -26,7 +26,8 @@ run, and sends an alert.
   09:30 ET for the 1 pm slate).
 - New launches are allowed while any of that day's games is **≥ 2h45m away** (catch-up
   if the PC was asleep). A failed slot gets up to 3 attempts; one that fails within
-  10 minutes (a crash) is retried a minute later in the same tick.
+  10 minutes (a crash) is retried a minute later in the same tick; a slower failure is
+  retried on the next tick, within 2 minutes. The 3-attempt cap is per slot, not per tick.
 - A run takes ~30 min, so picks are published ~2.5–3h before kickoff.
 - Each game's **pick of record** = latest ledger row recorded ≥ 2h before *its* kickoff.
   Thursday's game is locked by the Thursday run, Sunday's games by the Sunday run, etc.
