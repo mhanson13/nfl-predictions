@@ -73,6 +73,14 @@ The dispatcher holds it from the first write into MTB until `publish_site.py` fi
    only `data/...`, so it is never committed).
 7. A hard-killed dispatcher leaves the lock until it goes stale (90 min). If its `pid` is gone,
    delete `C:\Code\mtb\.publish.lock` by hand, especially before a Thursday publish.
+8. **Contract gate.** `tools.publish_mtb_csvs` copies nothing unless `CONTRACT_VERSION`
+   (`tools/publish_mtb_csvs.py`) equals `contract_confirmed_version` in
+   `config/publish_contract.json`, read from `--source-root` (default `.`, the repo root, which is
+   the dispatcher's working directory). On a mismatch, or a missing or unreadable setting, it prints
+   `CONTRACT MISMATCH`, writes a `PUBLISH BLOCKED` alert and exits **3**. The dispatcher treats that
+   as a failed publish (attempt used, its own failure alert). Only the user changes the setting,
+   after MTB confirms a version (`docs/publish_contract.md`, Versioning). `--dry-run` reports a
+   mismatch and exits 3 without an alert.
    `python -m tools.dispatcher --dry-run` shows whether the lock is held and by whom.
 
 ## Grading results

@@ -337,3 +337,108 @@ def test_results_only_publishes_every_graded_week_and_cumulative(tmp_path):
     assert "evaluation/live_prediction_vs_actual_segments_week_09.csv" in names
     assert "picks_of_record/picks_of_record_2026.csv" in names
     assert not any(n.startswith(("current/", "seasons/")) for n in names)
+
+
+# --- contract version gate (docs/publish_contract.md, "Versioning") -------------------------
+
+import json  # noqa: E402
+
+import tools.publish_mtb_csvs as pub  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _gate_source(tmp_path: Path, setting: object | None) -> tuple[Path, Path]:
+    """A source tree with predictions.csv and (unless None) the given setting file contents."""
+    source_root = tmp_path / "nfl-predictions"
+    mtb_repo = tmp_path / "mtb"
+    mtb_repo.mkdir()
+    _write_csv(source_root / "predictions" / "predictions.csv", "game_id\nabc\n")
+    _write_csv(source_root / "predictions" / "evaluation" / "live_prediction_vs_actual.csv", "game_id\nabc\n")
+    if setting is not None:
+        text = setting if isinstance(setting, str) else json.dumps(setting)
+        _write_csv(source_root / pub.CONTRACT_SETTING_PATH, text)
+    return source_root, mtb_repo
+
+
+def _run_main(source_root: Path, mtb_repo: Path, *extra: str) -> tuple[int, list]:
+    alerts: list = []
+    rc = pub.main(
+        ["--source-root", str(source_root), "--repo-dir", str(mtb_repo),
+         "--season", "2026", "--week", "12", *extra],
+        alert=lambda reason, argv: alerts.append(reason),
+    )
+    return rc, alerts
+
+
+def _files(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_committed_setting_matches_contract_version():
+    """The setting shipped in the repo must match, or every real slot would be blocked."""
+    confirmed, problem = pub.read_confirmed_version(REPO_ROOT)
+    assert problem is None
+    assert confirmed == pub.CONTRACT_VERSION == "1.1.0"
+    assert pub.contract_mismatch(REPO_ROOT) is None
+
+
+def test_matching_versions_copy_exactly_what_publish_csvs_copies(tmp_path):
+    source_root, mtb_repo = _gate_source(tmp_path, {pub.CONTRACT_SETTING_KEY: pub.CONTRACT_VERSION})
+    rc, alerts = _run_main(source_root, mtb_repo)
+    assert rc == 0
+    assert alerts == []
+
+    baseline_repo = tmp_path / "baseline_mtb"
+    baseline_repo.mkdir()
+    pub.publish_csvs(source_root=source_root, repo_dir=baseline_repo, season=2026, week=12)
+    copied = _files(mtb_repo)
+    assert copied == _files(baseline_repo)
+    assert "data/prediction-csvs/current/predictions.csv" in copied
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_mismatch_exits_nonzero_and_copies_nothing(tmp_path, capsys, dry_run):
+    source_root, mtb_repo = _gate_source(tmp_path, {pub.CONTRACT_SETTING_KEY: "1.0.0"})
+    rc, alerts = _run_main(source_root, mtb_repo, *(["--dry-run"] if dry_run else []))
+    assert rc == pub.CONTRACT_MISMATCH_EXIT_CODE != 0
+    assert _files(mtb_repo) == {}
+    out = capsys.readouterr()
+    assert "CONTRACT MISMATCH" in out.out and "CONTRACT MISMATCH" in out.err
+    assert "1.0.0" in out.out and pub.CONTRACT_VERSION in out.out
+    if dry_run:
+        assert alerts == []
+    else:
+        assert len(alerts) == 1 and "1.0.0" in alerts[0]
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [None, "{not json", json.dumps({"other": "1.1.0"}), json.dumps({pub.CONTRACT_SETTING_KEY: ""}), "[]"],
+    ids=["no-file", "bad-json", "no-key", "empty", "not-an-object"],
+)
+def test_missing_or_unreadable_setting_blocks_like_a_mismatch(tmp_path, setting):
+    source_root, mtb_repo = _gate_source(tmp_path, setting)
+    rc, alerts = _run_main(source_root, mtb_repo)
+    assert rc == pub.CONTRACT_MISMATCH_EXIT_CODE
+    assert _files(mtb_repo) == {}
+    assert len(alerts) == 1
+
+
+def test_default_alert_uses_send_alert(monkeypatch, tmp_path):
+    import src.utils.alerts as alerts_mod
+
+    sent: list = []
+
+    def fake_send_alert(subject, body, **kwargs):
+        sent.append((subject, body))
+        return alerts_mod.AlertResult(tmp_path / "x.md", False, "outbox only")
+
+    monkeypatch.setattr(alerts_mod, "send_alert", fake_send_alert)
+    source_root, mtb_repo = _gate_source(tmp_path, {pub.CONTRACT_SETTING_KEY: "9.9.9"})
+    rc = pub.main(["--source-root", str(source_root), "--repo-dir", str(mtb_repo)])
+    assert rc == pub.CONTRACT_MISMATCH_EXIT_CODE
+    assert len(sent) == 1
+    subject, body = sent[0]
+    assert "PUBLISH BLOCKED" in subject
+    assert "9.9.9" in body and pub.CONTRACT_VERSION in body and "config/publish_contract.json" in body

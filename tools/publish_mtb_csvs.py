@@ -6,12 +6,20 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Publish CSV pipeline artifacts into the local MattyTheBookie repository."""
+"""Publish CSV pipeline artifacts into the local MattyTheBookie repository.
+
+Contract gate (docs/publish_contract.md, "Versioning"): ``main`` copies nothing unless
+``CONTRACT_VERSION`` equals ``contract_confirmed_version`` in ``config/publish_contract.json``.
+On a mismatch, or a missing/unreadable setting, it logs, alerts and exits
+``CONTRACT_MISMATCH_EXIT_CODE``.
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sys
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +28,14 @@ from typing import Sequence
 
 DEFAULT_MTB_REPO_DIR = Path(os.environ.get("MTB_REPO_DIR", Path("..") / "mtb"))
 DEFAULT_MTB_CSV_DIR = Path("data") / "prediction-csvs"
+
+# The NFL -> MTB publish contract version this code writes (docs/publish_contract.md).
+# Bump it in the same PR as any contract change; the user then sets
+# contract_confirmed_version (CONTRACT_SETTING_PATH) to the version MTB confirmed.
+CONTRACT_VERSION = "1.1.0"
+CONTRACT_SETTING_PATH = Path("config") / "publish_contract.json"
+CONTRACT_SETTING_KEY = "contract_confirmed_version"
+CONTRACT_MISMATCH_EXIT_CODE = 3
 
 
 @dataclass(frozen=True)
@@ -526,8 +542,68 @@ def publish_csvs(
     return published
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def read_confirmed_version(source_root: Path) -> tuple[str | None, str | None]:
+    """(version, problem). ``problem`` says why no version could be read."""
+    path = Path(source_root) / CONTRACT_SETTING_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, f"setting file not found: {path}"
+    except (OSError, ValueError) as exc:
+        return None, f"setting file unreadable: {path}: {exc}"
+    value = data.get(CONTRACT_SETTING_KEY) if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        return None, f"{CONTRACT_SETTING_KEY} is missing or empty in {path}"
+    return value.strip(), None
+
+
+def contract_mismatch(source_root: Path) -> str | None:
+    """None when CONTRACT_VERSION equals the confirmed version; otherwise the reason.
+
+    A missing or unreadable setting counts as a mismatch (fail closed): MTB has not
+    confirmed anything we can read, so nothing is copied.
+    """
+    confirmed, problem = read_confirmed_version(source_root)
+    if problem:
+        return f"CONTRACT_VERSION is {CONTRACT_VERSION}, but {problem}"
+    if confirmed != CONTRACT_VERSION:
+        return (f"CONTRACT_VERSION is {CONTRACT_VERSION}, but {CONTRACT_SETTING_KEY} is {confirmed} "
+                f"({Path(source_root) / CONTRACT_SETTING_PATH})")
+    return None
+
+
+def _alert_contract_mismatch(reason: str, argv: Sequence[str] | None) -> None:
+    from src.utils.alerts import send_alert
+
+    body = "\n".join([
+        "tools.publish_mtb_csvs copied nothing into MTB: the publish contract versions differ.",
+        "",
+        reason,
+        "",
+        f"Arguments: {list(argv) if argv is not None else sys.argv[1:]}",
+        "Fix: once MTB has confirmed the version, the user sets "
+        f"{CONTRACT_SETTING_KEY} in {CONTRACT_SETTING_PATH.as_posix()} "
+        "(docs/publish_contract.md, Versioning).",
+    ])
+    try:
+        result = send_alert("[NFL pipeline] PUBLISH BLOCKED: contract version mismatch", body)
+        print(f"[publish_mtb] Alert: {result.detail} ({result.outbox_path})")
+    except Exception as exc:  # the block itself must not depend on the alert
+        print(f"[publish_mtb] Alert could not be written: {exc}")
+
+
+def main(argv: Sequence[str] | None = None, *, alert=_alert_contract_mismatch) -> int:
     args = parse_args(argv)
+    reason = contract_mismatch(args.source_root)
+    if reason:
+        print(f"[publish_mtb] CONTRACT MISMATCH: {reason}. Nothing copied.", flush=True)
+        print(f"[publish_mtb] CONTRACT MISMATCH: {reason}. Nothing copied.", file=sys.stderr, flush=True)
+        if args.dry_run:
+            print("[publish_mtb] Dry run: no alert sent.")
+        else:
+            alert(reason, argv)
+        return CONTRACT_MISMATCH_EXIT_CODE
+    print(f"[publish_mtb] Contract {CONTRACT_VERSION} confirmed.")
     published = publish_csvs(
         source_root=args.source_root,
         repo_dir=args.repo_dir,

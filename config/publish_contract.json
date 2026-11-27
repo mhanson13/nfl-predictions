@@ -1,0 +1,4 @@
+{
+  "_comment": "Set by the user only, to the NFL -> MTB publish contract version MTB confirmed. tools/publish_mtb_csvs.py copies nothing unless this equals CONTRACT_VERSION. See docs/publish_contract.md (Versioning).",
+  "contract_confirmed_version": "1.1.0"
+}
