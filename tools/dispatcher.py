@@ -1,6 +1,6 @@
 """Schedule-driven dispatcher for unattended live runs (Task Scheduler entry point).
 
-Run this every 15 minutes (see tools/install_dispatcher_task.ps1). Each call is
+Run this every 2 minutes (see tools/install_dispatcher_task.ps1). Each call is
 cheap: it reads the local schedule, finds today's game-day slot, and only starts
 work when the slot's launch window is open and the slot has not succeeded yet.
 
@@ -12,7 +12,7 @@ games is still ``--last-start-lead`` or more away (default 2h45m), so a missed
 window (PC asleep) still catches the later games. A failed slot gets up to
 ``MAX_ATTEMPTS`` tries while the window is open; an attempt that fails within
 ``QUICK_FAIL`` (a crash, not a slow run) is retried in the same tick after
-``QUICK_RETRY_DELAY`` instead of waiting 15 minutes for the next one.
+``QUICK_RETRY_DELAY`` instead of waiting for the next one.
 
 For a slot it:
   1. runs ``tools.weekly_run`` for the slot's season/week (debug log + picks of

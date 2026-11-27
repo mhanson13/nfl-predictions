@@ -1,4 +1,4 @@
-# Registers the "NFL Pipeline Dispatcher" scheduled task (runs every 15 minutes).
+# Registers the "NFL Pipeline Dispatcher" scheduled task (runs every 2 minutes).
 #
 #   pwsh -File tools\install_dispatcher_task.ps1            # install / update
 #   pwsh -File tools\install_dispatcher_task.ps1 -DispatcherArgs "--no-site-deploy"  # trial: no site deploy
@@ -11,7 +11,7 @@
 param(
     [string]$Python = "$env:USERPROFILE\anaconda3\envs\nflgpu\python.exe",
     [string]$Repo = (Resolve-Path "$PSScriptRoot\..").Path,
-    [int]$EveryMinutes = 15,
+    [int]$EveryMinutes = 2,
     [string]$DispatcherArgs = "",   # e.g. "--no-site-deploy" for a trial weekend
     [switch]$Uninstall
 )
