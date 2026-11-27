@@ -1,0 +1,725 @@
+{
+ "_source": "ESPN site.web.api.espn.com/apis/site/v2/sports/football/nfl/teams/1/depthcharts, fetched 2026-11-27T18:57:09Z; trimmed to positions with an injured athlete, longComment removed.",
+ "team": {
+  "id": "1",
+  "abbreviation": "ATL",
+  "displayName": "Atlanta Falcons"
+ },
+ "season": {
+  "name": "Regular Season",
+  "type": 2,
+  "year": 2026
+ },
+ "depthchart": [
+  {
+   "id": "15",
+   "name": "Base 3-4 D",
+   "positions": {
+    "lde": {
+     "position": {
+      "abbreviation": "LDE",
+      "displayName": "Left Defensive End",
+      "id": "11",
+      "leaf": true,
+      "name": "Left Defensive End",
+      "parent": {
+       "abbreviation": "DE",
+       "displayName": "Defensive End",
+       "id": "31",
+       "leaf": true,
+       "name": "Defensive End"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4431567",
+       "uid": "s:20~l:28~a:4431567",
+       "guid": "1d2eeda3-a50b-3ef5-8b05-667ce4498691",
+       "displayName": "Maason Smith",
+       "shortName": "M. Smith",
+       "injuries": []
+      },
+      {
+       "id": "3126352",
+       "uid": "s:20~l:28~a:3126352",
+       "guid": "9a7b4580-c9aa-8b9b-c6c5-3109025f623c",
+       "displayName": "Da'Shawn Hand",
+       "shortName": "D. Hand",
+       "injuries": [
+        {
+         "date": "2026-09-17T00:21Z",
+         "shortComment": "The Falcons placed Hand (quadriceps) on injured reserve Wednesday, William McFadden of the team's official site reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "nt": {
+     "position": {
+      "abbreviation": "NT",
+      "displayName": "Nose Tackle",
+      "id": "12",
+      "leaf": true,
+      "name": "Nose Tackle",
+      "parent": {
+       "abbreviation": "DT",
+       "displayName": "Defensive Tackle",
+       "id": "32",
+       "leaf": true,
+       "name": "Defensive Tackle"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4429014",
+       "uid": "s:20~l:28~a:4429014",
+       "guid": "c938ad9f-c58d-3383-84f9-98ed9eb034f9",
+       "displayName": "Gervon Dexter Sr.",
+       "shortName": "G. Dexter Sr.",
+       "injuries": []
+      },
+      {
+       "id": "5150660",
+       "uid": "s:20~l:28~a:5150660",
+       "guid": "5a1759f7-31ad-3ee5-8441-f0c9d6f1ff5c",
+       "displayName": "Anterio Thompson",
+       "shortName": "A. Thompson",
+       "injuries": [
+        {
+         "date": "2026-10-31T02:43Z",
+         "shortComment": "Thompson posted on social media this week that he was diagnosed with a genetic mutation on his spinal cord in early May and indicated that he was told he will \"never play football again,\" Josh Kendall of The Athletic reports.",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "wlb": {
+     "position": {
+      "abbreviation": "WLB",
+      "displayName": "Weakside Linebacker",
+      "id": "26",
+      "leaf": true,
+      "name": "Weakside Linebacker  ",
+      "parent": {
+       "abbreviation": "LB",
+       "displayName": "Linebacker",
+       "id": "30",
+       "leaf": true,
+       "name": "Linebacker"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4361510",
+       "uid": "s:20~l:28~a:4361510",
+       "guid": "2b8dc0cf-e69f-7f12-f0cb-87ae4069e680",
+       "displayName": "Cameron Thomas",
+       "shortName": "C. Thomas",
+       "injuries": []
+      },
+      {
+       "id": "3045527",
+       "uid": "s:20~l:28~a:3045527",
+       "guid": "4d00b09b-f410-447b-4ee2-bf5ab2e8d59a",
+       "displayName": "Samson Ebukam",
+       "shortName": "S. Ebukam",
+       "injuries": [
+        {
+         "date": "2026-11-04T00:37Z",
+         "shortComment": "Ebukam (hamstring) was placed on injured reserve by the Falcons on Tuesday, Tori McElhaney of the team's official website reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "rilb": {
+     "position": {
+      "abbreviation": "RILB",
+      "displayName": "Right Inside Linebacker",
+      "id": "16",
+      "leaf": true,
+      "name": "Right Inside Linebacker",
+      "parent": {
+       "abbreviation": "LB",
+       "displayName": "Linebacker",
+       "id": "30",
+       "leaf": true,
+       "name": "Linebacker"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4037626",
+       "uid": "s:20~l:28~a:4037626",
+       "guid": "d51aeebf-16e9-f850-9199-fddbde6d001c",
+       "displayName": "Divine Deablo",
+       "shortName": "D. Deablo",
+       "injuries": []
+      },
+      {
+       "id": "4428872",
+       "uid": "s:20~l:28~a:4428872",
+       "guid": "d80455a3-ec98-aa77-36e4-df2ce441651b",
+       "displayName": "JD Bertrand",
+       "shortName": "J. Bertrand",
+       "injuries": [
+        {
+         "date": "2026-08-31T23:31Z",
+         "shortComment": "The Falcons placed Bertrand (undisclosed) on injured reserve Monday, Will McFadden of the team's official site reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "ss": {
+     "position": {
+      "abbreviation": "SS",
+      "displayName": "Strong Safety",
+      "id": "20",
+      "leaf": true,
+      "name": "Strong Safety",
+      "parent": {
+       "abbreviation": "S",
+       "displayName": "Safety",
+       "id": "36",
+       "leaf": true,
+       "name": "Safety"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4567111",
+       "uid": "s:20~l:28~a:4567111",
+       "guid": "a4901d84-4eca-fbea-0990-5512b2d373aa",
+       "displayName": "DeMarcco Hellams",
+       "shortName": "D. Hellams",
+       "injuries": [
+        {
+         "date": "2026-11-27T18:27Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "nb": {
+     "position": {
+      "abbreviation": "NB",
+      "displayName": "Nickel Back",
+      "id": "34",
+      "leaf": true,
+      "name": "Nickel Back",
+      "parent": {
+       "abbreviation": "DB",
+       "displayName": "Defensive Back",
+       "id": "35",
+       "leaf": true,
+       "name": "Defensive Back"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4360386",
+       "uid": "s:20~l:28~a:4360386",
+       "guid": "bd416d00-38d9-3c5d-3fd8-27f0daa9ed6d",
+       "displayName": "Sydney Brown",
+       "shortName": "S. Brown",
+       "injuries": []
+      },
+      {
+       "id": "4431194",
+       "uid": "s:20~l:28~a:4431194",
+       "guid": "6be92b2c-3912-3c1d-b8f6-9cd03a559992",
+       "displayName": "Billy Bowman Jr.",
+       "shortName": "B. Bowman Jr.",
+       "injuries": [
+        {
+         "date": "2026-11-27T18:27Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "18",
+   "name": "Special Teams",
+   "positions": {
+    "pr": {
+     "position": {
+      "abbreviation": "PR",
+      "displayName": "Punt Returner",
+      "id": "76",
+      "leaf": true,
+      "name": "Punt Returner",
+      "parent": {
+       "abbreviation": "ST",
+       "displayName": "Special Teams",
+       "id": "72",
+       "leaf": false,
+       "name": "Special Teams"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4870612",
+       "uid": "s:20~l:28~a:4870612",
+       "guid": "f78c0c98-2f82-3e23-b704-95c970ae58db",
+       "displayName": "Zachariah Branch",
+       "shortName": "Z. Branch",
+       "injuries": [
+        {
+         "date": "2026-11-27T18:27Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      },
+      {
+       "id": "4361409",
+       "uid": "s:20~l:28~a:4361409",
+       "guid": "26171769-a750-2898-5ffd-aa95c1ed7621",
+       "displayName": "Jahan Dotson",
+       "shortName": "J. Dotson",
+       "injuries": [
+        {
+         "date": "2026-11-27T17:51Z",
+         "shortComment": "Dotson (hamstring) wasn't spotted at practice Friday, Daniel Flick of the Atlanta Journal-Constitution reports.",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "kr": {
+     "position": {
+      "abbreviation": "KR",
+      "displayName": "Kick Returner",
+      "id": "77",
+      "leaf": true,
+      "name": "Kick Returner",
+      "parent": {
+       "abbreviation": "ST",
+       "displayName": "Special Teams",
+       "id": "72",
+       "leaf": false,
+       "name": "Special Teams"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4035886",
+       "uid": "s:20~l:28~a:4035886",
+       "guid": "29f2e992-34cf-1526-7564-cd0bb9386645",
+       "displayName": "Khalil Herbert",
+       "shortName": "K. Herbert",
+       "injuries": []
+      },
+      {
+       "id": "4870612",
+       "uid": "s:20~l:28~a:4870612",
+       "guid": "f78c0c98-2f82-3e23-b704-95c970ae58db",
+       "displayName": "Zachariah Branch",
+       "shortName": "Z. Branch",
+       "injuries": [
+        {
+         "date": "2026-11-27T18:27Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      },
+      {
+       "id": "4241474",
+       "uid": "s:20~l:28~a:4241474",
+       "guid": "db9245d5-8563-a0ac-7fa0-73b7da5f9de0",
+       "displayName": "Brian Robinson Jr.",
+       "shortName": "B. Robinson Jr.",
+       "injuries": [
+        {
+         "date": "2026-11-07T21:13Z",
+         "shortComment": "Robinson (hamstring) was placed on injured reserve Saturday, Marc Raimondi of ESPN.com reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "21",
+   "name": "3WR 1TE",
+   "positions": {
+    "wr1": {
+     "position": {
+      "abbreviation": "WR",
+      "displayName": "Wide Receiver",
+      "id": "1",
+      "leaf": true,
+      "name": "Wide Receiver",
+      "parent": {
+       "abbreviation": "OFF",
+       "displayName": "Offense",
+       "id": "70",
+       "leaf": false,
+       "name": "Offense"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4426502",
+       "uid": "s:20~l:28~a:4426502",
+       "guid": "4eb7948a-431b-ee11-32de-2f4044548c60",
+       "displayName": "Drake London",
+       "shortName": "D. London",
+       "injuries": []
+      },
+      {
+       "id": "4870612",
+       "uid": "s:20~l:28~a:4870612",
+       "guid": "f78c0c98-2f82-3e23-b704-95c970ae58db",
+       "displayName": "Zachariah Branch",
+       "shortName": "Z. Branch",
+       "injuries": [
+        {
+         "date": "2026-11-27T18:27Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "wr2": {
+     "position": {
+      "abbreviation": "WR",
+      "displayName": "Wide Receiver",
+      "id": "1",
+      "leaf": true,
+      "name": "Wide Receiver",
+      "parent": {
+       "abbreviation": "OFF",
+       "displayName": "Offense",
+       "id": "70",
+       "leaf": false,
+       "name": "Offense"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4361409",
+       "uid": "s:20~l:28~a:4361409",
+       "guid": "26171769-a750-2898-5ffd-aa95c1ed7621",
+       "displayName": "Jahan Dotson",
+       "shortName": "J. Dotson",
+       "injuries": [
+        {
+         "date": "2026-11-27T17:51Z",
+         "shortComment": "Dotson (hamstring) wasn't spotted at practice Friday, Daniel Flick of the Atlanta Journal-Constitution reports.",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "lt": {
+     "position": {
+      "abbreviation": "LT",
+      "displayName": "Left Tackle",
+      "id": "2",
+      "leaf": true,
+      "name": "Left Tackle  ",
+      "parent": {
+       "abbreviation": "OT",
+       "displayName": "Offensive Tackle",
+       "id": "46",
+       "leaf": true,
+       "name": "Offensive Tackle"
+      }
+     },
+     "athletes": [
+      {
+       "id": "16713",
+       "uid": "s:20~l:28~a:16713",
+       "guid": "e39b3568-ead0-3408-9adc-3beb88a677bc",
+       "displayName": "Jake Matthews",
+       "shortName": "J. Matthews",
+       "injuries": []
+      },
+      {
+       "id": "5209093",
+       "uid": "s:20~l:28~a:5209093",
+       "guid": "6b1fcb8b-42cc-31ce-af45-7067cff265a4",
+       "displayName": "Michael Jerrell",
+       "shortName": "M. Jerrell",
+       "injuries": [
+        {
+         "date": "2026-10-24T23:44Z",
+         "shortComment": "The Falcons placed Jerrell (biceps) on injured reserve Saturday, Tori McElhaney of the team's official site reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "lg": {
+     "position": {
+      "abbreviation": "LG",
+      "displayName": "Left Guard",
+      "id": "3",
+      "leaf": true,
+      "name": "Left Guard  ",
+      "parent": {
+       "abbreviation": "OG",
+       "displayName": "Offensive Guard",
+       "id": "47",
+       "leaf": true,
+       "name": "Offensive Guard"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4568510",
+       "uid": "s:20~l:28~a:4568510",
+       "guid": "69be39f4-0a24-2f08-485b-4f9f8238c67a",
+       "displayName": "Matthew Bergeron",
+       "shortName": "M. Bergeron",
+       "injuries": [
+        {
+         "date": "2026-11-27T18:27Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "rt": {
+     "position": {
+      "abbreviation": "RT",
+      "displayName": "Right Tackle",
+      "id": "6",
+      "leaf": true,
+      "name": "Right Tackle",
+      "parent": {
+       "abbreviation": "OG",
+       "displayName": "Offensive Guard",
+       "id": "47",
+       "leaf": true,
+       "name": "Offensive Guard"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4034961",
+       "uid": "s:20~l:28~a:4034961",
+       "guid": "cb7dd5b6-fa73-3b71-3d45-822f9da01570",
+       "displayName": "Jawaan Taylor",
+       "shortName": "J. Taylor",
+       "injuries": []
+      },
+      {
+       "id": "5209093",
+       "uid": "s:20~l:28~a:5209093",
+       "guid": "6b1fcb8b-42cc-31ce-af45-7067cff265a4",
+       "displayName": "Michael Jerrell",
+       "shortName": "M. Jerrell",
+       "injuries": [
+        {
+         "date": "2026-10-24T23:44Z",
+         "shortComment": "The Falcons placed Jerrell (biceps) on injured reserve Saturday, Tori McElhaney of the team's official site reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      },
+      {
+       "id": "2973014",
+       "uid": "s:20~l:28~a:2973014",
+       "guid": "94670afc-5eb6-0b91-a055-979b90412e9c",
+       "displayName": "Storm Norton",
+       "shortName": "S. Norton",
+       "injuries": [
+        {
+         "date": "2026-09-08T20:42Z",
+         "shortComment": "out",
+         "status": "Out",
+         "type": {
+          "abbreviation": "O",
+          "description": "out",
+          "id": "4",
+          "name": "INJURY_STATUS_OUT"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "rb": {
+     "position": {
+      "abbreviation": "RB",
+      "displayName": "Running Back",
+      "id": "9",
+      "leaf": true,
+      "name": "Running Back",
+      "parent": {
+       "abbreviation": "OFF",
+       "displayName": "Offense",
+       "id": "70",
+       "leaf": false,
+       "name": "Offense"
+      }
+     },
+     "athletes": [
+      {
+       "id": "4430807",
+       "uid": "s:20~l:28~a:4430807",
+       "guid": "6667bcb0-dad1-3345-8e5a-a67ed4b010b0",
+       "displayName": "Bijan Robinson",
+       "shortName": "B. Robinson",
+       "injuries": []
+      },
+      {
+       "id": "4241474",
+       "uid": "s:20~l:28~a:4241474",
+       "guid": "db9245d5-8563-a0ac-7fa0-73b7da5f9de0",
+       "displayName": "Brian Robinson Jr.",
+       "shortName": "B. Robinson Jr.",
+       "injuries": [
+        {
+         "date": "2026-11-07T21:13Z",
+         "shortComment": "Robinson (hamstring) was placed on injured reserve Saturday, Marc Raimondi of ESPN.com reports.",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      },
+      {
+       "id": "4241401",
+       "uid": "s:20~l:28~a:4241401",
+       "guid": "463c03c0-95ec-a7b7-6900-71a295abb4a9",
+       "displayName": "Trey Sermon",
+       "shortName": "T. Sermon",
+       "injuries": [
+        {
+         "date": "2026-09-08T20:42Z",
+         "shortComment": "ir",
+         "status": "Injured Reserve",
+         "type": {
+          "abbreviation": "IR",
+          "description": "Injured Reserve",
+          "id": "5",
+          "name": "INJURY_STATUS_IR"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  }
+ ]
+}
