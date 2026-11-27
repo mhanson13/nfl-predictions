@@ -9,7 +9,7 @@ This contract covers what nfl-predictions publishes into MattyTheBookie (MTB):
 
 It describes the format in use today; writing it down changed no format.
 
-**Confirmation.** MTB confirms each version through the user. Its index of cross-repo agreements is `mtb/docs/contracts.md`. Once the version check ships (a separate PR), `publish_mtb_csvs.py` refuses to copy into MTB when `CONTRACT_VERSION` differs from `contract_confirmed_version`.
+**Confirmation.** MTB confirms each version through the user. Its index of cross-repo agreements is `mtb/docs/contracts.md`. `publish_mtb_csvs.py` refuses to copy into MTB when `CONTRACT_VERSION` (in that file) differs from `contract_confirmed_version` (in `config/publish_contract.json`, set by the user).
 
 **Readers checked.** The column lists below come from MTB's readers, read on 2026-11-25 at MTB `b07a21c`:
 - `scripts/import-predictions.ts`
@@ -248,8 +248,8 @@ Versions follow MAJOR.MINOR.PATCH, the same as mlb-predictions' contract.
   - changing the `game_id` format, or which runs write a file.
 - **Every change, including 1.x additions MTB is meant to use, is confirmed by MTB through the user before it ships.**
   - nfl-predictions bumps `CONTRACT_VERSION` in the same PR.
-  - The user sets `contract_confirmed_version` to the version MTB confirmed.
-  - Until both match, `publish_mtb_csvs.py` logs the mismatch, alerts, exits non-zero, and copies nothing. *(The version check is a separate PR, built after MTB confirms this document.)*
+  - The user sets `contract_confirmed_version` in `config/publish_contract.json` to the version MTB confirmed.
+  - Until both match, `publish_mtb_csvs.py` logs the mismatch, alerts, exits 3, and copies nothing. A missing or unreadable setting counts as a mismatch. A `--dry-run` reports the mismatch and exits 3 but sends no alert.
 
 ## Known disagreements (found writing 1.0.0, open with MTB)
 
