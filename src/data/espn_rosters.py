@@ -1,3 +1,10 @@
+"""ESPN NFL rosters, depth charts and injuries.
+
+Injuries come from the depth-chart athletes' ``injuries`` arrays (status, type, date, comments).
+The ``teams/{id}/injuries`` endpoint returns ``{}`` (HTTP 200) and never produced a row, so it is
+no longer called. Empty payloads and empty outputs print ``[espn_rosters] Warning:`` lines.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -44,6 +51,15 @@ def _request_endpoint(session: requests.Session, endpoint: str, *, timeout: floa
     if errors:
         raise errors[-1]
     raise RuntimeError(f"No ESPN base URLs configured for endpoint {endpoint!r}")
+
+
+def _warn(message: str) -> None:
+    logging.warning(message)
+    print(f"[espn_rosters] Warning: {message}", flush=True)
+
+
+def _is_empty_payload(payload: Any) -> bool:
+    return payload is None or (isinstance(payload, (dict, list)) and len(payload) == 0)
 
 
 def _get_nested(value: Any, *keys: str) -> Any:
@@ -221,6 +237,62 @@ def normalize_injuries(payload: Any, *, season: int, week: int, team: str | None
     return pd.DataFrame(rows)
 
 
+def _injury_type(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get("abbreviation") or value.get("name") or value.get("description")
+    return value
+
+
+INJURY_COLUMNS = [
+    "season", "week", "team", "espn_player_id", "display_name", "short_name",
+    "injury_status", "injury_type", "injury_detail", "injury_date",
+]
+
+
+def injuries_from_depthchart(
+    payload: dict[str, Any], *, season: int, week: int, team: str | None = None
+) -> pd.DataFrame:
+    """One row per injured athlete from a ``teams/{id}/depthcharts`` payload.
+
+    An athlete listed at several depth slots appears once; with several injury entries the
+    latest ``date`` wins. Columns match :func:`normalize_injuries`.
+    """
+    team_obj = payload.get("team") if isinstance(payload, dict) and isinstance(payload.get("team"), dict) else {}
+    team_abbr = team or _team_abbr(team_obj)
+    rows: list[dict[str, Any]] = []
+    for section in (payload.get("depthchart") if isinstance(payload, dict) else None) or []:
+        if not isinstance(section, dict):
+            continue
+        positions = section.get("positions") or {}
+        iterable = positions.values() if isinstance(positions, dict) else positions
+        for _, position_info in _iter_positions(positions, iterable):
+            for athlete in position_info.get("athletes") or []:
+                if not isinstance(athlete, dict) or athlete.get("id") is None:
+                    continue
+                for injury in athlete.get("injuries") or []:
+                    if not isinstance(injury, dict):
+                        continue
+                    rows.append(
+                        {
+                            "season": int(season),
+                            "week": int(week),
+                            "team": team_abbr,
+                            "espn_player_id": str(athlete.get("id")),
+                            "display_name": athlete.get("displayName") or athlete.get("fullName"),
+                            "short_name": athlete.get("shortName"),
+                            "injury_status": injury.get("status") or _get_nested(injury, "type", "description"),
+                            "injury_type": _injury_type(injury.get("type")),
+                            "injury_detail": injury.get("shortComment") or injury.get("details"),
+                            "injury_date": injury.get("date"),
+                        }
+                    )
+    if not rows:
+        return pd.DataFrame(columns=INJURY_COLUMNS)
+    out = pd.DataFrame(rows, columns=INJURY_COLUMNS)
+    out = out.sort_values(["espn_player_id", "injury_date"], kind="stable", na_position="first")
+    return out.drop_duplicates("espn_player_id", keep="last").reset_index(drop=True)
+
+
 def fetch_espn_roster_snapshots(
     *,
     season: int,
@@ -241,32 +313,46 @@ def fetch_espn_roster_snapshots(
     injury_frames: list[pd.DataFrame] = []
     team_lookup = teams.set_index("espn_team_id")["team"].to_dict() if not teams.empty else {}
 
+    if _is_empty_payload(teams_payload) or teams.empty:
+        _warn("ESPN teams endpoint returned no teams")
+    empty_endpoints: list[str] = []
+
     for team_id in selected_ids:
         logging.info("Fetching ESPN roster for team_id=%s", team_id)
         roster_payload = _request_endpoint(session, f"teams/{team_id}/roster", timeout=timeout)
+        if _is_empty_payload(roster_payload):
+            empty_endpoints.append(f"teams/{team_id}/roster")
         roster_frames.append(normalize_roster(roster_payload, season=season, week=week))
         if sleep > 0:
             time.sleep(sleep)
 
-        if include_depthcharts:
+        # One depth-chart request serves both the depth chart and the injuries (its athletes
+        # carry ``injuries`` arrays). teams/{id}/injuries returns {} and is not called.
+        if include_depthcharts or include_injuries:
             logging.info("Fetching ESPN depthchart for team_id=%s", team_id)
             depth_payload = _request_endpoint(session, f"teams/{team_id}/depthcharts", timeout=timeout)
-            depth_frames.append(normalize_depthchart(depth_payload, season=season, week=week))
+            if _is_empty_payload(depth_payload):
+                empty_endpoints.append(f"teams/{team_id}/depthcharts")
+            if include_depthcharts:
+                depth_frames.append(normalize_depthchart(depth_payload, season=season, week=week))
+            if include_injuries:
+                injury_frames.append(
+                    injuries_from_depthchart(
+                        depth_payload, season=season, week=week, team=team_lookup.get(str(team_id))
+                    )
+                )
             if sleep > 0:
                 time.sleep(sleep)
 
-        if include_injuries:
-            logging.info("Fetching ESPN injuries for team_id=%s", team_id)
-            injury_payload = _request_endpoint(session, f"teams/{team_id}/injuries", timeout=timeout)
-            injury_frames.append(
-                normalize_injuries(injury_payload, season=season, week=week, team=team_lookup.get(str(team_id)))
-            )
-            if sleep > 0:
-                time.sleep(sleep)
+    if empty_endpoints:
+        _warn(f"{len(empty_endpoints)} ESPN endpoint(s) returned an empty payload: {', '.join(empty_endpoints[:8])}")
 
     rosters = pd.concat(roster_frames, ignore_index=True, sort=False) if roster_frames else pd.DataFrame()
     depthcharts = pd.concat(depth_frames, ignore_index=True, sort=False) if depth_frames else pd.DataFrame()
-    injuries = pd.concat(injury_frames, ignore_index=True, sort=False) if injury_frames else pd.DataFrame()
+    injury_frames = [f for f in injury_frames if not f.empty]
+    injuries = (
+        pd.concat(injury_frames, ignore_index=True, sort=False) if injury_frames else pd.DataFrame(columns=INJURY_COLUMNS)
+    )
     return teams, rosters, depthcharts, injuries
 
 
@@ -307,6 +393,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"[espn_rosters] wrote roster rows={len(rosters)} -> {rosters_path.resolve()}")
     print(f"[espn_rosters] wrote depthchart rows={len(depthcharts)} -> {depth_path.resolve()}")
     print(f"[espn_rosters] wrote injury rows={len(injuries)} -> {injuries_path.resolve()}")
+    expected = {"teams": teams, "roster": rosters}
+    if not args.skip_depthcharts:
+        expected["depthchart"] = depthcharts
+    if not args.skip_injuries:
+        # In season every depth chart lists some injured athletes; 0 means the source changed.
+        expected["injury"] = injuries
+    for name, frame in expected.items():
+        if frame.empty:
+            _warn(f"wrote 0 {name} rows for {int(args.season)} week {int(args.week)}; check the ESPN response")
     return 0
 
 
