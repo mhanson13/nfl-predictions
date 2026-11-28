@@ -105,6 +105,39 @@ The dispatcher holds it from the first write into MTB until `publish_site.py` fi
   `python -m tools.publish_mtb_csvs --season 2026 --results-only`. State key:
   `grade_<season>_wkNN` in `logs/dispatcher/state.json` (delete it to retry).
 
+## Game previews (for MTB's early-week game pages)
+
+- **What:** one row per game of the next week, schedule and market data only
+  (`src.data.game_previews`; no model output, and the builder never reads predictions).
+  Columns: season, week, game_id, home_team, away_team, kickoff (UTC), pick_expected_at
+  (when that game's pick run window opens, UTC), roof, venue_name, venue_city,
+  neutral_site, spread_home (negative = home favoured), total, home_ml, away_ml,
+  odds_source, odds_captured_at, generated_at. A test pins the exact column list.
+- **Odds:** one The Odds API call on the free key (moneyline, spread, total; region `us`,
+  ~3 credits), median across books (`odds_source = the-odds-api:us-median`, the books
+  the pick page uses; moneylines are medianed in decimal odds). A game without an Odds
+  API line falls back to the nflverse schedule line (`nflverse-schedule`); with neither,
+  the odds columns are blank and the row is still written. MTB treats a home_ml/away_ml between -100 and +100 as missing (a guard; the decimal median never
+  produces one). `roof` stays blank for
+  retractable roofs until nflverse fills in open/closed.
+- **Files:** `predictions/previews/previews_<season>_week_<nn>.csv` and
+  `predictions/previews/previews.csv`; MTB gets `current/previews.csv` and
+  `previews/<season>/week_<nn>.csv` (overwritable, outside `seasons/`).
+- **Tuesday:** after grading succeeds, the dispatcher builds the next week's previews
+  before taking the publish lock and, from `PREVIEWS_LIVE_FROM` (2026 week 14) on, adds
+  them to the results copy (`publish_mtb_csvs --results-only --preview-week N`). Earlier
+  weeks are built locally only. Best-effort: a failed build is noted in the results alert
+  and the results publish goes out without previews. A lock-busy retry reuses a build
+  from the last 6h (no second Odds API call).
+- **Wednesday refresh:** from 12:00 ET, on a tick with no game-day slot or grading due
+  and no launch window open, it rebuilds the upcoming week with fresh odds and publishes
+  (`publish_mtb_csvs --previews-only`, then `publish_site.py`, under the publish lock)
+  only if the content changed since the last publish (timestamps ignored). Failures
+  re-check hourly, up to 3 a day; the first and last alert. State key:
+  `previews_<season>_wkNN`.
+- **By hand:** `python -m src.data.game_previews --season 2026 --week 14` (add
+  `--no-odds-api` to skip the API). `--no-previews` on the dispatcher turns both steps off.
+
 ## When something dies
 
 - **A data job** (nflverse, ESPN, etc.) that exits non-zero logs
